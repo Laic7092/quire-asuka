@@ -1,6 +1,5 @@
-// Quire on Asuka, slice 1: the shelf and the reading page, over plain-text
-// books. Quire's own EPUB engine (layx) is not ported yet; what is here is
-// the part above it — chapters, reading position, paper and ink.
+// Quire on Asuka: the shelf, and a reading page whose layout is the engine's
+// (ebook-engine, Rust, through its C ABI), drawn by each platform's own view.
 
 app {
   provide Library()

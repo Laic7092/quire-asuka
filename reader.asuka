@@ -179,7 +179,7 @@ screen Reader(book: lib.Book) {
     let pagesNow = engine.layout(
       engineId, spine, frame.width, frame.height,
       marginsOf(frame.width, frame.height),
-      library.size / baseSize, 1.6
+      library.size / baseSize, 1.6,
     )
     if pagesNow <= 0 { return }
     pages = pagesNow
@@ -256,10 +256,12 @@ screen Reader(book: lib.Book) {
     Button("目录") {
       icon: "list.bullet"
       on press {
-        present(Contents(engine.contents(engineId), spine) { on pick(i) {
-          let items = engine.contents(engineId)
-          if i >= 0 && i < items.count() { jump(items[i].spine) }
-        } })
+        present(Contents(engine.contents(engineId), spine) {
+          on pick(i) {
+            let items = engine.contents(engineId)
+            if i >= 0 && i < items.count() { jump(items[i].spine) }
+          }
+        })
       }
     }
     Button("外观") {
@@ -273,43 +275,43 @@ screen Reader(book: lib.Book) {
     grow: 1
     on layout(f) { frame = f }
     Stack {
-    grow: 1
+      grow: 1
 
-    if !failed.isEmpty() {
-      Column {
-        grow: 1
-        justify: .center
-        align: .center
-        padding: 32
-        Text(failed) {
-          color: palette.muted
-          textAlign: .center
-        }
-      }
-    } else if pagePath.isEmpty() {
-      Column {
-        grow: 1
-        justify: .center
-        align: .center
-        Text("排版中…") { color: palette.muted }
-      }
-    } else {
-      // The page itself takes the tap: its left third goes back, its right
-      // third forward, and its middle does nothing (that one opens chrome,
-      // once there is chrome to open).
-      bookpage.BookPage(path: pagePath) {
-        grow: 1
-        on press(x, y) {
-          let width = if frame.width > 0 { frame.width } else { 320.0 }
-          if x < width / 3 {
-            back()
-          } else if x > width * 2 / 3 {
-            next()
+      if !failed.isEmpty() {
+        Column {
+          grow: 1
+          justify: .center
+          align: .center
+          padding: 32
+          Text(failed) {
+            color: palette.muted
+            textAlign: .center
           }
-          let _where = y
+        }
+      } else if pagePath.isEmpty() {
+        Column {
+          grow: 1
+          justify: .center
+          align: .center
+          Text("排版中…") { color: palette.muted }
+        }
+      } else {
+        // The page itself takes the tap: its left third goes back, its right
+        // third forward, and its middle does nothing (that one opens chrome,
+        // once there is chrome to open).
+        bookpage.BookPage(path: pagePath) {
+          grow: 1
+          on press(x, y) {
+            let width = if frame.width > 0 { frame.width } else { 320.0 }
+            if x < width / 3 {
+              back()
+            } else if x > width * 2 / 3 {
+              next()
+            }
+            let _where = y
+          }
         }
       }
-    }
     }
   }
 

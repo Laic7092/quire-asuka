@@ -37,13 +37,13 @@ extern fn eb_plain_register_font(id: Int32, data: bytes) -> Int32
 extern fn eb_plain_layout(
   id: Int32, spine: UInt32, width: Float32, height: Float32,
   top: Float32, right: Float32, bottom: Float32, left: Float32,
-  fontScale: Float32, lineScale: Float32, letterPx: Float32, align: UInt32
+  fontScale: Float32, lineScale: Float32, letterPx: Float32, align: UInt32,
 ) -> Int32
 extern fn eb_plain_spine(id: Int32) -> Int32
 extern fn eb_plain_page_count(id: Int32) -> UInt32
 extern fn eb_plain_page_info(id: Int32, page: UInt32) -> PageInfo
 extern fn eb_plain_page_raw(
-  id: Int32, page: UInt32, scale: Float32, ink: UInt32, paper: UInt32, bold: bool, path: CString
+  id: Int32, page: UInt32, scale: Float32, ink: UInt32, paper: UInt32, bold: bool, path: CString,
 ) -> Int32
 extern fn eb_plain_hit(id: Int32, page: UInt32, x: Float32, y: Float32) -> Loc
 extern fn eb_plain_progress(id: Int32, page: UInt32, line: UInt32, byte: UInt32) -> Float32
@@ -104,7 +104,7 @@ pub fn layout(id: int, spine: int, width: float, height: float, margins: Margins
   let rc = eb_plain_layout(
     i32(clamping: id), u32(clamping: spine), width, height,
     margins.top, margins.right, margins.bottom, margins.left,
-    fontScale, lineScale, 0, 0
+    fontScale, lineScale, 0, 0,
   )
   if rc < 0 { return -1 }
   return int(eb_plain_page_count(i32(clamping: id)))
@@ -134,11 +134,11 @@ pub fn contents(id: int) -> [TocItem] {
   if id <= 0 { return items }
   let key = i32(clamping: id)
   let count = eb_plain_toc_count(key)
-  for i in 0 ..< int(count) {
+  for i in 0..<int(count) {
     items.push(TocItem(
       title: eb_plain_toc_title(key, u32(clamping: i)),
       spine: int(eb_plain_toc_spine(key, u32(clamping: i))),
-      depth: int(eb_plain_toc_depth(key, u32(clamping: i)))
+      depth: int(eb_plain_toc_depth(key, u32(clamping: i))),
     ))
   }
   return items
