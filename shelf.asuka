@@ -1,0 +1,130 @@
+// The shelf: one cell a book, the way Quire's library shows it — covers,
+// titles, and where each one was left.
+
+import platform/dialog
+
+import ./lib
+
+/// Cover colors from Quire's icon sheet: ink, seal, cloth, dusk.
+let spines = [#2b2b2f, #8c3a2e, #3d5143, #4a3f63, #7a5b33, #2c5560]
+
+/// A title's cover color, the same every launch.
+fn spine(title: string) -> Color {
+  var h = 0
+  for c in title {
+    h = (h * 31 + c.code()) % 9973
+  }
+  return spines[h % spines.count()]
+}
+
+component Cover(book: lib.Book) {
+  View {
+    aspectRatio: 0.68
+    radius: 8
+    background: spine(book.title)
+    Column {
+      grow: 1
+      justify: .center
+      align: .center
+      padding: 10
+      Text(book.title) {
+        font: .headline
+        color: #f4efe6
+        lines: 3
+        textAlign: .center
+      }
+    }
+  }
+}
+
+component BookCell(book: lib.Book, reading: lib.Reading) {
+  event open
+
+  Column {
+    gap: 6
+    align: .center
+    padding: [0, 10]
+    on press { emit open }
+    Cover(book) { width: 150 }
+    Text(book.title) {
+      font: .subheadline
+      lines: 1
+      textAlign: .center
+    }
+    Text(if book.author.isEmpty() { reading.label() } else { "{book.author} · {reading.label()}" }) {
+      font: .caption
+      color: .secondaryLabel
+      lines: 1
+      textAlign: .center
+    }
+  }
+}
+
+screen Shelf {
+  use library: Library
+
+  title: "书架"
+  largeTitle: true
+
+  // Runs the import, and says so when it can't.
+  async fn bring(paths: [string]) {
+    for p in paths {
+      do {
+        try await library.importFile(p)
+        snackbar("已加入《{lib.titleOf(lib.fileName(p))}》")
+      } catch e {
+        snackbar(e.message)
+      }
+    }
+  }
+
+  async fn pick() {
+    do {
+      let paths = try await dialog.open(
+        title: "导入纯文本",
+        button: "导入",
+        filters: [dialog.Filter(name: "纯文本", extensions: ["txt"])],
+        multiple: false,
+      )
+      await bring(paths)
+    } catch e {
+      snackbar(e.message)
+    }
+  }
+
+  // Files handed over by Files, Mail or another app (iOS's "Open in").
+  // onOpenFiles can't wait, so hand them to a task that can.
+  state incoming: [string] = []
+
+  task(incoming) {
+    if !incoming.isEmpty() {
+      let paths = incoming
+      incoming = []
+      await bring(paths)
+    }
+  }
+
+  onOpenFiles(paths => { incoming = paths })
+
+  toolbar {
+    Button("导入") {
+      icon: "plus"
+      on press { await pick() }
+    }
+  }
+
+  // As many covers in a row as the window has room for, 150 points each.
+  let width = environment().width
+  let columns = if width > 1180 { 6 } else if width > 980 { 5 } else if width > 780 { 4 } else if width > 560 { 3 } else { 2 }
+
+  List {
+    columns: columns
+    gap: 22
+    padding: [22, 20]
+    for b in library.books key b.id {
+      BookCell(b, library.readingOf(b.id)) {
+        on open { push(Reader(b)) }
+      }
+    }
+  }
+}

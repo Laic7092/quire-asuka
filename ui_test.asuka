@@ -1,0 +1,106 @@
+// The shelf and the reading page, tested without a device: what shows,
+// what a tap does, and what is remembered.
+
+import platform/dialog
+import std/fs
+import ./lib
+
+/// The app as it runs: a stack with the shelf at its root.
+component Harness {
+  Stack { Shelf() }
+}
+
+test "the shelf shows the sample books" {
+  let app = mount(Harness(), provide: Library())
+  await app.idle()
+  app.expect("书架")
+  app.expect("散文選")
+  app.expect("野草")
+}
+
+test "a book opens on its first chapter" {
+  let lib = Library()
+  let book = lib.books.find(b => b.title == "散文選") ?? lib.books[0]
+  let app = mount(Harness(), provide: lib)
+  app.tap("散文選")
+  await app.idle()
+  app.expect("第1章 背影")
+  app.expect("共 5 章 · 约 {book.chapters[0].chars()} 字")
+}
+
+test "the whole book is one continuous page" {
+  let app = mount(Harness(), provide: Library())
+  app.tap("散文選")
+  // Scrolling reaches a later chapter in the same list, without a new screen.
+  app.scrollTo("第3章 春")
+  app.expect("第3章 春")
+}
+
+test "next and previous chapter move, and the position is kept" {
+  let lib = Library()
+  let app = mount(Harness(), provide: lib)
+  app.tap("野草")
+  app.tap("下一章")
+  expect(lib.readingOf("魯迅·野草").chapter == 1)
+  app.tap("上一章")
+  expect(lib.readingOf("魯迅·野草").chapter == 0)
+}
+
+test "the table of contents jumps to a chapter" {
+  let lib = Library()
+  let app = mount(Harness(), provide: lib)
+  app.tap("散文選")
+  app.tap("目录")
+  app.tap("第3章 春")
+  expect(lib.readingOf("朱自清·散文選").chapter == 2)
+}
+
+test "a position is kept, one row a book" {
+  let lib = Library()
+  lib.save("测试书", 2, 0.5)
+  expect(lib.readingOf("测试书").chapter == 2)
+  expect(lib.readingOf("测试书").percent == 0.5)
+  lib.save("测试书", 3, 0.75)
+  expect(lib.readings.count(b => b.id == "测试书") == 1)
+  expect(lib.readingOf("测试书").label() == "第 4 章 · 75%")
+}
+
+test "an unread book says so" {
+  let lib = Library()
+  expect(lib.readingOf("没读过").label() == "未开始")
+  expect(lib.books.count() == 2)
+  expect(lib.books.all(b => !b.empty()))
+}
+
+test "the appearance sheet changes the type and the paper" {
+  let app = mount(Harness(), provide: Library())
+  app.tap("散文選")
+  app.tap("外观")
+  app.expect("字号")
+  app.expect("纸色")
+  app.tap("夜间")
+  app.expect("正文用衬线（serif）：iOS 与 macOS 上是宋体（Songti SC），其余平台用系统衬线。")
+}
+
+test "a .txt picked from the document picker lands on the shelf" {
+  let path = "{fs.tempDir()}/quire-import-test.txt"
+  try await spawn { try fs.writeText(path, text: "第1章 测试\n\n一段文字。\n") }
+  let fake = dialog.fake()
+  fake.opens = [path]
+  let app = mount(Harness(), provide: Library())
+  app.tap("导入")
+  await app.idle()
+  app.expect("quire-import-test")
+  app.tap("quire-import-test")
+  app.expect("第1章 测试")
+  app.expect("一段文字。")
+}
+
+test "a file that is not a .txt is refused" {
+  let lib = Library()
+  do {
+    try await lib.importFile("/tmp/not-a-book.epub")
+  } catch e {
+    expect(e.message == "只支持 .txt；EPUB 的解析还没搬过来")
+  }
+}

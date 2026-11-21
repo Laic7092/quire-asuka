@@ -1,0 +1,65 @@
+name: iOS IPA
+
+# An UNSIGNED device .ipa, built on a macOS runner with no Apple developer
+# account: a throwaway self-signed identity and stub profile get asuka through
+# its signing step, then the signature is stripped. Install it with Sideloadly
+# or AltStore (a free Apple ID re-signs it, 7 days at a time), on a jailbroken
+# device, or with TrollStore on iOS 17.0 and older.
+#
+# The build needs Xcode 26 or newer, which is what asuka compiles against.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A newer push on the same branch cancels the run before it: a macOS runner is
+# the expensive part.
+concurrency:
+  group: ios-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ipa:
+    name: Unsigned IPA
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Xcode
+        run: |
+          # macos-latest may carry more than one Xcode; asuka needs 26+.
+          for app in /Applications/Xcode_26*.app; do
+            [ -d "$app" ] && sudo xcode-select -s "$app" && break
+          done
+          xcodebuild -version
+          major="$(xcodebuild -version | sed -n 's/^Xcode \([0-9]*\).*/\1/p')"
+          if [ "${major:-0}" -lt 26 ]; then
+            echo "::error::asuka needs Xcode 26 or newer; this image has ${major:-none}. Use a runner image with it (runs-on: macos-26, when the label exists)."
+            exit 1
+          fi
+          xcrun --sdk iphoneos --show-sdk-version
+
+      - name: Install the asuka CLI
+        run: |
+          curl -fsSL https://asuka.egoist.dev/install.sh | sh
+          echo "$HOME/.asuka/bin" >> "$GITHUB_PATH"
+
+      - name: Check and test
+        run: |
+          asuka version
+          asuka check
+          asuka test
+
+      - name: Build the unsigned IPA
+        run: bash .github/scripts/build-unsigned-ipa.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ios-unsigned-ipa
+          path: dist/*-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14

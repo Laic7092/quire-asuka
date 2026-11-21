@@ -1,0 +1,27 @@
+# Quire: a reader for plain text and (soon) EPUB, written in Asuka so the
+# views are each platform's own — the iOS build is the one this targets.
+
+name = "Quire"
+id = "dev.laix.quire"
+version = "0.1"
+build = 1
+icon = "icon.png"
+accent = "#8c3a2e"
+orientations = ["portrait", "landscape"]
+
+# What the app opens: a .txt handed over by Files, Mail, or another app.
+[[fileTypes]]
+name = "Plain Text"
+extensions = ["txt"]
+role = "viewer"
+conformsTo = ["public.plain-text", "public.text"]
+
+[splash]
+background = "#fbfaf7"
+darkBackground = "#16161a"
+
+[ios]
+# team = "ABCDE12345"          # your Apple Developer team, for the .ipa
+# profile = "Quire Distribution"  # else the best match in the keychain
+iphoneOnly = false
+nonExemptEncryption = "no"

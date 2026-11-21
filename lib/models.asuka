@@ -1,0 +1,61 @@
+// What a book is once it is open: chapters, and each chapter's paragraphs.
+// Ported from Quire's internal/book (Go); this file has no UI and no I/O.
+
+pub struct Chapter {
+  title: string
+  paragraphs: [string]
+
+  pub fn chars() -> int = paragraphs.reduce(0, (n, p) => n + p.count())
+}
+
+pub struct Book {
+  id: string
+  title: string
+  author: string
+  chapters: [Chapter]
+
+  pub fn empty() -> bool = chapters.isEmpty() || chapters.all(c => c.paragraphs.isEmpty())
+
+  /// All the text of the book, for a shelf's word count.
+  pub fn chars() -> int = chapters.reduce(0, (n, c) => n + c.chars())
+
+  pub fn firstChapter() -> string = chapters.first()?.title ?? ""
+}
+
+/// Where a book was left: the chapter, and how far into it (0…1).
+pub struct Reading {
+  id: string
+  chapter: int = 0
+  percent: float = 0
+
+  pub fn label() -> string {
+    if chapter <= 0 && percent <= 0 { return "未开始" }
+    if percent >= 0.999 { return "已读完" }
+    return "第 {chapter + 1} 章 · {(percent * 100).int()}%"
+  }
+}
+
+/// The colors a page is drawn in: Quire's paper and ink.
+pub struct Palette {
+  paper: Color
+  ink: Color
+  muted: Color
+  rule: Color
+}
+
+pub fn paletteFor(theme: string) -> Palette {
+  if theme == "sepia" {
+    return Palette(paper: #f6ecd9, ink: #3d3324, muted: #8a7a5e, rule: #e0d2b8)
+  }
+  if theme == "night" {
+    return Palette(paper: #16161a, ink: #d8d6cf, muted: #8b8a86, rule: #2a2a31)
+  }
+  return Palette(paper: #fbfaf7, ink: #23211c, muted: #86817a, rule: #e6e2da)
+}
+
+/// The body face: a serif the platform actually has. On Apple's platforms
+/// that's Songti SC for Chinese; elsewhere the generic serif.
+pub fn bodyFamily() -> string {
+  if @platform == .iOS || @platform == .macOS { return "Songti SC" }
+  return "serif"
+}

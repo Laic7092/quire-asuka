@@ -1,0 +1,365 @@
+// Turning a plain-text book into chapters and paragraphs, the way Quire's
+// internal/book does it (txt.go). Chapters are found by their headings —
+// 第…章, 卷…, Chapter 1, 序, 楔子 — and paragraphs either by blank lines
+// (hard-wrapped files) or by line (the shape most Chinese web novels keep).
+
+/// Bounds a chapter (and a paragraph) when the file has no headings or one
+/// enormous block, so a scraped page never becomes one page-long block.
+pub let maxChapterRunes = 20000
+
+/// A normal sentence that merely starts with 第… stays body text.
+let maxHeadingRunes = 40
+
+let sentenceEnds = "。！？…‥.!?"
+
+let closingQuotes = "”’」』）】》\"'"
+
+let specialHeadings = [
+  "序", "序章", "序言", "楔子", "引子", "前言", "后记", "後記",
+  "尾声", "尾聲", "终章", "終章", "番外", "完本感言", "作者的话", "作者的話",
+]
+
+let chineseNumerals = "零〇一二三四五六七八九十百千万两"
+
+enum ParagraphMode {
+  block
+  line
+}
+
+/// A text file opened: its title is its file name, its chapters split.
+pub fn openText(name: string, text: string) -> Book {
+  let chapters = chaptersOf(text)
+  return Book(id: idOf(name), title: titleOf(name), author: "", chapters: chapters)
+}
+
+/// The last segment of a path: "samples/背影.txt" is "背影.txt".
+pub fn fileName(path: string) -> string {
+  if let at = path.findLast("/") {
+    return path.slice(at + 1, path.count())
+  }
+  return path
+}
+
+/// A book's id: its file name, so the same file reopens where it was left.
+pub fn idOf(name: string) -> string = name.trim().lower()
+
+/// A plain text file's only title is its name without its extension.
+pub fn titleOf(name: string) -> string {
+  let base = name.trim()
+  // findLast gives a byte offset; byteSlice turns it into the name before it.
+  if let d = base.findLast("."), d > 0 {
+    let cut = base.byteSlice(0, d).trim()
+    if !cut.isEmpty() { return cut }
+  }
+  return if base.isEmpty() { "未命名书籍" } else { base }
+}
+
+/// The whole text, split into chapters of paragraphs.
+pub fn chaptersOf(text: string) -> [Chapter] {
+  let lines = cleanText(text).split("\n")
+  let mode = detectMode(lines)
+  var b = Builder()
+
+  var block: [string] = []
+  for raw in lines {
+    let line = raw.trim()
+    if line.isEmpty() {
+      b.addBlock(block, mode)
+      block = []
+      continue
+    }
+    if looksLikeHeading(line) {
+      b.addBlock(block, mode)
+      block = []
+      b.flush()
+      b.begin(headingTitle(line))
+      continue
+    }
+    block.push(raw)
+  }
+  b.addBlock(block, mode)
+  b.flush()
+  return b.chapters
+}
+
+/// The chapters so far, and the paragraphs of the one being read.
+struct Builder {
+  chapters: [Chapter] = []
+  paragraphs: [string] = []
+  base: string = ""
+  part: int = 0
+  settled: bool = false
+  runes: int = 0
+
+  mut fn begin(title: string) {
+    base = title
+    part = 0
+    settled = false
+  }
+
+  mut fn flush() {
+    if paragraphs.isEmpty() && (base.isEmpty() || settled) { return }
+    var title = base
+    if title.isEmpty() {
+      title = "第 {chapters.count() + 1} 节"
+    } else if part > 0 {
+      title = "{base}（{part + 1}）"
+    }
+    var copy = paragraphs
+    chapters.push(Chapter(title: title, paragraphs: copy))
+    paragraphs = []
+    runes = 0
+    if !base.isEmpty() {
+      part += 1
+      settled = true
+    }
+  }
+
+  mut fn addParagraph(p: string) {
+    for piece in splitParagraph(p, maxChapterRunes) {
+      paragraphs.push(piece)
+      runes += piece.count()
+      if runes >= maxChapterRunes { flush() }
+    }
+  }
+
+  /// Turns the lines since the last blank line into paragraphs. In block
+  /// mode the lines of one hard-wrapped paragraph are joined; text saved one
+  /// paragraph per line stays one paragraph per line.
+  mut fn addBlock(block: [string], mode: ParagraphMode) {
+    if block.isEmpty() { return }
+    if mode == .line || blockIsParagraphs(block) {
+      for raw in block {
+        let line = raw.trim()
+        if !line.isEmpty() { addParagraph(line) }
+      }
+      return
+    }
+    let width = wrapWidth(block)
+    var acc = ""
+    var prev = ""
+    for raw in block {
+      let line = raw.trim()
+      if line.isEmpty() { continue }
+      if acc.isEmpty() {
+        acc = line
+      } else if isIndentedLine(raw) || closesParagraph(prev, width) {
+        addParagraph(acc)
+        acc = line
+      } else {
+        acc = joinWrapped(acc, line)
+      }
+      prev = line
+    }
+    if !acc.isEmpty() { addParagraph(acc) }
+  }
+}
+
+/// A blank line anywhere (but at the end) divides the file into blocks.
+fn detectMode(lines: [string]) -> ParagraphMode {
+  var end = lines.count()
+  while end > 0 && lines[end - 1].trim().isEmpty() { end -= 1 }
+  for raw in lines.slice(0, end) {
+    if raw.trim().isEmpty() { return .block }
+  }
+  return .line
+}
+
+/// An ideographic space or two spaces before the first word is an indent.
+fn isIndentedLine(raw: string) -> bool =
+  raw.hasPrefix("\u{3000}") || raw.hasPrefix("  ")
+
+/// Joining two hard-wrapped lines, with a space only between ASCII words.
+fn joinWrapped(a: string, b: string) -> string {
+  if a.isEmpty() { return b }
+  if b.isEmpty() { return a }
+  let last = a.chars().last()
+  let first = b.chars().first()
+  if let l = last, l == ' ' || l == '\t' { return a + b }
+  if let l = last, let f = first, isASCIIWord(l) && isASCIIWord(f) {
+    return a + " " + b
+  }
+  return a + b
+}
+
+fn isASCIIWord(c: char) -> bool =
+  (c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+
+/// The longest line of a block: hard-wrapped lines are cut at it.
+fn wrapWidth(block: [string]) -> int {
+  var width = 0
+  for raw in block {
+    let n = raw.trim().count()
+    if n > width { width = n }
+  }
+  return width
+}
+
+/// A line well short of the wrap width that ends a sentence closed its
+/// paragraph: every other line of a wrapped paragraph fills the width.
+fn closesParagraph(line: string, width: int) -> bool {
+  let n = line.count()
+  return width - n >= 2 && n * 10 <= width * 9 && endsParagraph(line)
+}
+
+/// Most lines ending a sentence means the block is whole paragraphs, one per
+/// line, rather than one hard-wrapped paragraph.
+fn blockIsParagraphs(block: [string]) -> bool {
+  if block.count() < 2 { return false }
+  var ends = 0
+  for raw in block {
+    if endsParagraph(raw.trim()) { ends += 1 }
+  }
+  return ends * 2 >= block.count()
+}
+
+/// Does the line end a sentence, past its closing quotes and brackets?
+fn endsParagraph(line: string) -> bool {
+  var rest = line
+  while !rest.isEmpty() {
+    let last = rest.chars().last() ?? ' '
+    if closingQuotes.contains("{last}") {
+      rest = rest.slice(0, rest.count() - 1).trimEnd()
+      continue
+    }
+    return isSentenceEnd(last)
+  }
+  return false
+}
+
+fn isSentenceEnd(c: char) -> bool = sentenceEnds.contains("{c}")
+
+/// A heading: a short line without sentence punctuation, matching one of the
+/// shapes novels use, or one of the fixed ones (序, 楔子, 番外).
+pub fn looksLikeHeading(line: string) -> bool {
+  let text = line.trim()
+  if text.isEmpty() || text.count() > maxHeadingRunes { return false }
+  for bad in ["。", "！", "？", "；", "…", "，", ","] {
+    if text.contains(bad) { return false }
+  }
+  for special in specialHeadings {
+    if text == special || text.hasPrefix("{special} ") ||
+      text.hasPrefix("{special}\u{3000}") || text.hasPrefix("{special}：") {
+      return true
+    }
+  }
+  let cs = text.chars()
+  if cs.isEmpty() { return false }
+
+  // 第 1 章, 第十二回, 第 3 节 …
+  if cs[0] == '第' {
+    var i = 1
+    while i < cs.count() && isGap(cs[i]) { i += 1 }
+    let from = i
+    while i < cs.count() && isNumeral(cs[i]) { i += 1 }
+    if i > from {
+      while i < cs.count() && isGap(cs[i]) { i += 1 }
+      if i < cs.count() && isChapterMarker(cs[i]) { return true }
+    }
+  }
+  // 卷一, 部 2, 篇三 …
+  if cs[0] == '卷' || cs[0] == '部' || cs[0] == '篇' {
+    var i = 1
+    while i < cs.count() && isGap(cs[i]) { i += 1 }
+    let from = i
+    while i < cs.count() && isNumeral(cs[i]) { i += 1 }
+    if i > from { return true }
+  }
+  return isEnglishHeading(text)
+}
+
+/// Chapter 1, Part IV, Book 3 …
+fn isEnglishHeading(text: string) -> bool {
+  let lower = text.lower()
+  for word in ["chapter", "volume", "part", "book"] {
+    if lower.hasPrefix("{word} ") {
+      let rest = lower.slice(word.count() + 1, lower.count()).trimStart()
+      let cs = rest.chars()
+      if cs.isEmpty() { continue }
+      var digits = 0
+      while digits < cs.count() && cs[digits] >= '0' && cs[digits] <= '9' { digits += 1 }
+      if digits > 0 { return true }
+      var roman = 0
+      while roman < cs.count() && isRoman(cs[roman]) { roman += 1 }
+      if roman > 0 && roman < cs.count() && cs[roman] == ' ' { return true }
+    }
+  }
+  return false
+}
+
+fn isRoman(c: char) -> bool =
+  c == 'i' || c == 'v' || c == 'x' || c == 'l' || c == 'c' || c == 'd' || c == 'm'
+
+fn isGap(c: char) -> bool = c == ' ' || c == '\t' || c == '\u{3000}'
+
+fn isNumeral(c: char) -> bool =
+  (c >= '0' && c <= '9') || (c >= '０' && c <= '９') ||
+    chineseNumerals.contains("{c}")
+
+fn isChapterMarker(c: char) -> bool =
+  c == '章' || c == '节' || c == '節' || c == '回' || c == '卷' ||
+    c == '篇' || c == '部' || c == '集' || c == '幕'
+
+/// The heading as a table of contents shows it: trimmed, its run of spaces
+/// (from a padded separator) collapsed to one.
+pub fn headingTitle(line: string) -> string {
+  let text = line.trim()
+  if !text.contains("  ") { return text }
+  var out = ""
+  var space = false
+  for c in text {
+    if c == ' ' {
+      if space { continue }
+      space = true
+    } else {
+      space = false
+    }
+    out += c
+  }
+  return out
+}
+
+/// CRLF and CR become LF, tabs become spaces, a stray BOM and the control
+/// characters no font has a glyph for go.
+pub fn cleanText(text: string) -> string {
+  var out = text.replace("\r\n", "\n").replace("\r", "\n").replace("\t", " ")
+  out = out.replace("\u{FEFF}", "")
+  return out
+}
+
+/// Cuts a paragraph longer than limit characters into pieces, preferring to
+/// end a piece just after a sentence so a page break falls between sentences.
+pub fn splitParagraph(p: string, limit: int) -> [string] {
+  if limit <= 0 || p.count() <= limit { return [p] }
+  var out: [string] = []
+  let cs = p.chars()
+  var start = 0
+  var count = 0
+  var endAt = 0
+  var endRune = 0
+  var i = 0
+  while i < cs.count() {
+    let c = cs[i]
+    count += 1
+    if isSentenceEnd(c) {
+      endAt = i + 1
+      endRune = count
+    }
+    if count < limit {
+      i += 1
+      continue
+    }
+    var at = i + 1
+    if endAt > start && count - endRune <= limit / 4 { at = endAt }
+    out.push(cs.slice(start, at).map(c => "{c}").joined(separator: ""))
+    start = at
+    count = 0
+    endAt = 0
+    endRune = 0
+    i = at
+  }
+  if start < cs.count() {
+    out.push(cs.slice(start, cs.count()).map(c => "{c}").joined(separator: ""))
+  }
+  return out
+}

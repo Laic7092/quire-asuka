@@ -1,0 +1,8 @@
+// Quire on Asuka, slice 1: the shelf and the reading page, over plain-text
+// books. Quire's own EPUB engine (layx) is not ported yet; what is here is
+// the part above it — chapters, reading position, paper and ink.
+
+app {
+  provide Library()
+  Stack { Shelf() }
+}

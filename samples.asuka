@@ -1,0 +1,26 @@
+// The books that come with the app: two public-domain collections, split
+// into chapters as they compile (std/embed), so the shelf has something to
+// read before an importer exists.
+
+import std/embed
+import ./lib
+
+let sampleTexts = embed.texts("samples/*.txt")
+
+/// The sample books, in the order samples/ lists them.
+pub fn samples() -> [lib.Book] {
+  var out: [lib.Book] = []
+  for (path, text) in sampleTexts {
+    let name = lib.fileName(path)
+    var book = lib.openText(name, text)
+    // "作者·書名.txt": the author before the dot, the title after it.
+    let parts = lib.titleOf(name).split("·")
+    if parts.count() == 2 {
+      book.author = parts[0]
+      book.title = parts[1]
+      book.id = "{parts[0]}·{parts[1]}"
+    }
+    out.push(book)
+  }
+  return out
+}

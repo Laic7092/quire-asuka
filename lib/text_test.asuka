@@ -1,0 +1,79 @@
+// The parser's tests: chapter headings, paragraph shapes, long paragraphs.
+// Ported from Quire's internal/book/txt_test.go, the shapes that matter.
+
+test "chapters split at headings" {
+  let text = "第一章 开始\n\n第一段。\n\n第二段。\n\n第二章 继续\n\n第三段。\n"
+  let chapters = chaptersOf(text)
+  expect(chapters.count() == 2)
+  expect(chapters[0].title == "第一章 开始")
+  expect(chapters[0].paragraphs.count() == 2)
+  expect(chapters[1].title == "第二章 继续")
+  expect(chapters[1].paragraphs[0] == "第三段。")
+}
+
+test "a text without headings is one chapter" {
+  let chapters = chaptersOf("只有一段话。\n\n还有一段。\n")
+  expect(chapters.count() == 1)
+  expect(chapters[0].title == "第 1 节")
+  expect(chapters[0].paragraphs.count() == 2)
+}
+
+test "numbered volumes and fixed headings" {
+  expect(chaptersOf("卷一 风\n\n正文。\n").first()?.title == "卷一 风")
+  expect(chaptersOf("楔子\n\n正文。\n").first()?.title == "楔子")
+  expect(chaptersOf("Chapter 3\n\nBody.\n").first()?.title == "Chapter 3")
+}
+
+test "a sentence that starts with 第 stays body text" {
+  expect(!looksLikeHeading("第一次见到他的时候，我还小，什么都不懂，只知道跟着走。"))
+  expect(looksLikeHeading("第 12 章 归途"))
+  expect(looksLikeHeading("第十二回"))
+}
+
+test "one paragraph per line when lines end sentences" {
+  let text = "第一章\n第一段。\n第二段。\n第三段。\n"
+  let chapters = chaptersOf(text)
+  expect(chapters.count() == 1)
+  expect(chapters[0].paragraphs.count() == 3)
+}
+
+test "hard-wrapped lines are joined into a paragraph" {
+  // Every line but the last fills the 20 character width.
+  let text = "第一章\nThis paragraph is\nwrapped at twenty\ncharacters by hand.\n\nNext one is here.\n"
+  let chapters = chaptersOf(text)
+  expect(chapters.count() == 1)
+  expect(chapters[0].paragraphs.count() == 2)
+  expect(chapters[0].paragraphs[0] == "This paragraph is wrapped at twenty characters by hand.")
+}
+
+test "an indented line starts a paragraph" {
+  let text = "第一章\n　　hard wrapped\n　　still the same paragraph\n\nnext block\n"
+  let chapters = chaptersOf(text)
+  expect(chapters[0].paragraphs.count() == 3)
+}
+
+test "a long paragraph is cut at a sentence" {
+  let sentence = "这是一个句子。"
+  let long = sentence.repeat(5)
+  let pieces = splitParagraph(long, 10)
+  expect(pieces.count() > 1)
+  expect(pieces.all(p => p.count() <= 10))
+  expect(pieces.joined(separator: "") == long)
+}
+
+test "a book's title is its file name" {
+  expect(titleOf("背影.txt") == "背影")
+  expect(titleOf("no-extension") == "no-extension")
+  expect(idOf("背影.txt") == "背影.txt")
+}
+
+test "crlf and tabs are cleaned" {
+  expect(cleanText("a\r\nb\tc") == "a\nb c")
+}
+
+test "openText keeps the chapters" {
+  let book = openText("故乡.txt", "第一章\n\n闰土。\n")
+  expect(book.title == "故乡")
+  expect(book.chapters.count() == 1)
+  expect(book.chars() > 0)
+}

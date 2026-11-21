@@ -1,0 +1,259 @@
+// The reading page: the whole book in one continuous scroll (Quire's scroll
+// mode), chapter headings and paragraphs as rows of a List, paper and ink
+// from Quire's palette, the position kept in the shelf's store.
+
+import ./lib
+
+/// A row of the continuous page: a chapter's heading, or one paragraph.
+enum RowKind {
+  heading
+  paragraph
+}
+
+struct Line {
+  key: string
+  chapter: int
+  text: string
+  kind: RowKind
+}
+
+/// Every line of the book, in reading order.
+fn rowsOf(book: lib.Book) -> [Line] {
+  var out: [Line] = []
+  for (ci, c) in book.chapters.enumerated() {
+    out.push(Line(key: "{ci}-h", chapter: ci, text: c.title, kind: .heading))
+    for (pi, p) in c.paragraphs.enumerated() {
+      out.push(Line(key: "{ci}-{pi}", chapter: ci, text: p, kind: .paragraph))
+    }
+  }
+  return out
+}
+
+/// Where each chapter starts, in points, as the rows will lay out: a heading's
+/// height plus each paragraph's lines at the current width and size. Chinese
+/// text is one em a character, so this is close enough to follow the scroll.
+fn chapterOffsets(book: lib.Book, width: float, size: float) -> [float] {
+  let available = if width > 88 { width - 44 } else { 320.0 }
+  var perLine = 20
+  if size > 0 { perLine = int(available / size) }
+  if perLine < 1 { perLine = 1 }
+  let heading = 96.0
+  let lineHeight = size * 1.55
+  var out: [float] = []
+  var y = 0.0
+  for c in book.chapters {
+    out.push(y)
+    y += heading
+    for p in c.paragraphs {
+      let lines = float((p.count() + perLine - 1) / perLine)
+      y += lines * lineHeight + 15
+    }
+  }
+  return out
+}
+
+/// The chapter a scroll offset falls in.
+fn chapterAt(offsets: [float], y: float) -> int {
+  var found = 0
+  for (i, top) in offsets.enumerated() {
+    if y >= top - 8 { found = i }
+  }
+  return found
+}
+
+/// One chapter's heading, then its paragraphs in the chosen face and size.
+component Heading(chapter: lib.Chapter, index: int, count: int, palette: lib.Palette) {
+  Column {
+    padding: [30, 22]
+    gap: 6
+    Text("第 {index + 1} 章") {
+      font: .footnote
+      color: palette.muted
+    }
+    Text(chapter.title) {
+      font: .title2
+      color: palette.ink
+    }
+    Text("共 {count} 章 · 约 {chapter.chars()} 字") {
+      font: .footnote
+      color: palette.muted
+    }
+  }
+}
+
+component Paragraph(text: string, palette: lib.Palette, size: float) {
+  Text(text) {
+    padding: [0, 22, 15, 22]
+    font: Font(family: lib.bodyFamily(), size: size)
+    color: palette.ink
+    selectable: true
+  }
+}
+
+/// The table of contents, as a sheet.
+component Contents(book: lib.Book, at: int) {
+  event pick(index: int)
+
+  Column {
+    gap: 0
+    padding: [16, 0]
+    Text("目录") {
+      font: .title3
+      padding: [8, 20]
+    }
+    List {
+      grow: 1
+      for (i, c) in book.chapters.enumerated() key i {
+        Row {
+          padding: [12, 20]
+          gap: 10
+          align: .center
+          on press { emit pick(i) }
+          Text(c.title) {
+            grow: 1
+            lines: 1
+            font: if i == at { .body.bold() } else { .body }
+            color: if i == at { .accent } else { .label }
+          }
+          Text("{c.paragraphs.count()} 段") {
+            font: .caption
+            color: .secondaryLabel
+          }
+        }
+      }
+    }
+  }
+}
+
+/// Type size and paper color.
+component Appearance {
+  use library: Library
+
+  let papers = [
+    ["paper", "纸白"],
+    ["sepia", "米黄"],
+    ["night", "夜间"],
+  ]
+
+  Column {
+    padding: 24
+    gap: 20
+
+    Text("字号") { font: .headline }
+    Row {
+      gap: 12
+      align: .center
+      Text("A") { font: Font(size: 12); color: .secondaryLabel }
+      Slider {
+        bind value: library.size
+        min: 14
+        max: 30
+        grow: 1
+      }
+      Text("A") { font: Font(size: 24); color: .secondaryLabel }
+    }
+    Text("{library.size.int()} 点") { font: .footnote; color: .secondaryLabel }
+
+    Text("纸色") { font: .headline }
+    Segmented(papers.map(p => p[1])) {
+      selected: papers.index(p => p[0] == library.theme) ?? 0
+      on change(i) { library.theme = papers[i][0] }
+    }
+    Text("正文用衬线（serif）：iOS 与 macOS 上是宋体（Songti SC），其余平台用系统衬线。") {
+      font: .footnote
+      color: .secondaryLabel
+    }
+  }
+}
+
+screen Reader(book: lib.Book) {
+  use library: Library
+
+  let lines = rowsOf(book)
+  let count = book.chapters.count()
+  let saved = library.readingOf(book.id)
+  state chapter = if count == 0 { 0 } else if saved.chapter >= count { count - 1 } else if saved.chapter < 0 { 0 } else { saved.chapter }
+
+  let width = environment().width
+  let offsets = chapterOffsets(book, width, library.size)
+  let palette = lib.paletteFor(library.theme)
+  let list = Ref()
+
+  title: book.title
+
+  fn percentOf(index: int) -> float {
+    if count <= 1 { return 1.0 }
+    return float(index) / float(count - 1)
+  }
+
+  /// The chapter the reader is in: saved, and shown by the shelf.
+  fn note(index: int) {
+    if index < 0 || index >= count || index == chapter { return }
+    chapter = index
+    library.save(book.id, index, percentOf(index))
+  }
+
+  /// Scrolls a chapter's heading to the top of the window, and remembers it.
+  // scrollToItem only scrolls the least that shows an item, which lands a
+  // heading at the bottom; from the end of the list it scrolls up to the
+  // heading's top instead, which is where a chapter should start.
+  fn reveal(index: int, animated: bool) {
+    if let row = lines.index(r => r.kind == .heading && r.chapter == index) {
+      list.scrollToEnd(animated: false)
+      list.scrollToItem(row, animated: animated)
+    }
+  }
+
+  fn go(index: int) {
+    if index < 0 || index >= count { return }
+    note(index)
+    reveal(index, true)
+  }
+
+  // Opens where the book was left.
+  task {
+    if chapter > 0 {
+      await sleep(60ms)
+      reveal(chapter, false)
+    }
+  }
+
+  toolbar {
+    Button("目录") {
+      icon: "list.bullet"
+      on press { present(Contents(book, chapter) { on pick(i) { go(i) } }) }
+    }
+    Button("外观") {
+      icon: "textformat"
+      on press { present(Appearance()) }
+    }
+  }
+
+  List {
+    ref: list
+    background: palette.paper
+    grow: 1
+    on scroll(_, y) { note(chapterAt(offsets, y)) }
+    for r in lines key r.key {
+      if r.kind == .heading {
+        Heading(book.chapters[r.chapter], r.chapter, count, palette)
+      } else {
+        Paragraph(r.text, palette, library.size)
+      }
+    }
+  }
+
+  // No `disabled:` on these: in asuka 0.2.12 a bottom-toolbar button whose
+  // disabled changes as its own handler runs corrupts the heap on GTK. go()
+  // ignores a chapter past either end, so the buttons do nothing there.
+  bottomToolbar {
+    Button("上一章") {
+      icon: "chevron.up"
+      on press { go(chapter - 1) }
+    }
+    Button("下一章") {
+      icon: "chevron.down"
+      on press { go(chapter + 1) }
+    }
+  }
+}

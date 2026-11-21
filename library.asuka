@@ -1,0 +1,55 @@
+// The shelf: books, and where each was left. Kept across launches in each
+// platform's own preferences (std/store), the way Quire keeps state.json.
+
+import std/fs
+import std/store
+import ./lib
+
+pub store Library {
+  pub state books: [lib.Book] = samples()
+  pub state readings: [lib.Reading] = store.read("readings", [])
+  pub state theme: string = store.read("reader.theme", "paper")
+  pub state size: float = store.read("reader.size", 19.0)
+
+  effect { store.write("readings", readings) }
+  effect { store.write("reader.theme", theme) }
+  effect { store.write("reader.size", size) }
+
+  /// Reads a .txt the user picked (the document picker on iOS copies it into
+  /// the app's caches) and puts it on the shelf. EPUB waits for a parser.
+  pub async fn importFile(path: string) throws {
+    let name = lib.fileName(path)
+    if !name.lower().hasSuffix(".txt") {
+      throw Error("只支持 .txt；EPUB 的解析还没搬过来")
+    }
+    let text = try await spawn { try fs.readText(path) }
+    var book = lib.openText(name, text)
+    if book.empty() { throw Error("{name} 里没有可读的文字") }
+    books.removeWhere(b => b.id == book.id)
+    books.push(book)
+  }
+
+  pub fn readingOf(id: string) -> lib.Reading {
+    for r in readings {
+      if r.id == id { return r }
+    }
+    return lib.Reading(id: id)
+  }
+
+  /// The further one reads, the fewer bytes get written: one row a book.
+  pub fn save(id: string, chapter: int, percent: float) {
+    let row = lib.Reading(id: id, chapter: chapter, percent: percent)
+    var next: [lib.Reading] = []
+    var replaced = false
+    for old in readings {
+      if old.id == id {
+        next.push(row)
+        replaced = true
+      } else {
+        next.push(old)
+      }
+    }
+    if !replaced { next.push(row) }
+    readings = next
+  }
+}
