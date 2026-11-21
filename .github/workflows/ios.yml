@@ -35,13 +35,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: Laic7092/ebook-engine
-          path: engine
+          path: ebook-engine
           token: ${{ secrets.ENGINE_TOKEN || github.token }}
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Build the engine for the Mac (the tests run on it)
-        run: bash .github/scripts/build-engine.sh macos-arm64 engine
+        run: bash .github/scripts/build-engine.sh macos-arm64 ebook-engine
 
       - name: Xcode
         run: |
@@ -77,8 +77,8 @@ jobs:
 
       - name: Build the engine for iOS
         run: |
-          bash .github/scripts/build-engine.sh ios-arm64 engine
-          bash .github/scripts/build-engine.sh ios-simulator-arm64 engine
+          bash .github/scripts/build-engine.sh ios-arm64 ebook-engine
+          bash .github/scripts/build-engine.sh ios-simulator-arm64 ebook-engine
 
       - name: Build the unsigned IPA
         run: bash .github/scripts/build-unsigned-ipa.sh
