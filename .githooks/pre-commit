@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+#
+# Runs before every commit in quire-asuka: formats the Asuka sources (asuka fmt
+# -w is not lossy: it writes only what differs), then type-checks the app. Both
+# are what CI runs, so a red CI here means something real.
+#
+# Install it once per clone:
+#
+#   git config core.hooksPath .githooks
+#
+# Skip it with `git commit --no-verify`.
+
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+asuka="${ASUKA:-$(command -v asuka || echo "$HOME/.asuka/bin/asuka")}"
+if [ ! -x "$asuka" ]; then
+  echo "pre-commit: no asuka CLI on PATH (or ~/.asuka/bin)" >&2
+  exit 1
+fi
+
+staged="$(git diff --cached --name-only --diff-filter=ACMR)"
+if ! printf '%s\n' "$staged" | grep -q '\.asuka$'; then
+  exit 0
+fi
+
+echo "pre-commit: asuka fmt"
+"$asuka" fmt -w . >/dev/null
+# Formatting the files under review is the point: put them back in the commit.
+for file in $(printf '%s\n' "$staged" | grep '\.asuka$'); do
+  [ -f "$file" ] && git add "$file"
+done
+
+echo "pre-commit: asuka check"
+"$asuka" check || {
+  echo "pre-commit: asuka check failed" >&2
+  exit 1
+}

@@ -8,10 +8,14 @@ name: iOS IPA
 #
 # The build needs Xcode 26 or newer, which is what asuka compiles against.
 #
+# Nothing here builds the book engine: it's released (ebook-engine's Releases)
+# with one static library per target, and both jobs download theirs — no Rust
+# toolchain, no cargo cache, no compile. ENGINE_VERSION pins which release.
+#
 # Two jobs, in parallel: the tests run where they're cheap (a Linux runner, on
-# the engine's Linux build), and the Mac runner only does what needs Xcode — one
-# engine build (the device's), and the .ipa. Add `needs: test` to the `ipa` job
-# to gate the artifact on the tests, at the cost of running them in sequence.
+# the engine's Linux build), and the Mac runner only does what needs Xcode.
+# Add `needs: test` to the `ipa` job to gate the artifact on the tests, at the
+# cost of running them in sequence.
 
 on:
   workflow_dispatch:
@@ -20,6 +24,10 @@ on:
 
 permissions:
   contents: read
+
+env:
+  # The engine release to build against: github.com/Laic7092/ebook-engine.
+  ENGINE_VERSION: v0.1.0
 
 # A newer push on the same branch cancels the run before it: a macOS runner is
 # the expensive part.
@@ -34,23 +42,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The book engine is its own Rust repository: format, layout, the page
-      # rasterizer. A private one needs a token that can read it, in
-      # secrets.ENGINE_TOKEN; a public one needs nothing.
-      - uses: actions/checkout@v4
-        with:
-          repository: Laic7092/ebook-engine
-          path: ebook-engine
-          token: ${{ secrets.ENGINE_TOKEN || github.token }}
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ebook-engine
-
       # The tests link the engine, so they need it for their own machine.
-      - name: Build the engine
-        run: bash .github/scripts/build-engine.sh linux-x64 ebook-engine
+      - name: Fetch the engine
+        run: bash .github/scripts/fetch-engine.sh linux-x64
+
+      # Asuka's prebuilt libraries and the C it compiles: the same between
+      # runs, so the test step doesn't download and build them again.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/asuka
+          key: asuka-${{ runner.os }}-${{ hashFiles('asuka.lock') }}
+          restore-keys: asuka-${{ runner.os }}-
 
       - name: Install the asuka CLI
         run: |
@@ -69,16 +71,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/checkout@v4
-        with:
-          repository: Laic7092/ebook-engine
-          path: ebook-engine
-          token: ${{ secrets.ENGINE_TOKEN || github.token }}
-
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: ebook-engine
+      # The device's library only: a simulator's is for whoever builds for one.
+      - name: Fetch the engine
+        run: bash .github/scripts/fetch-engine.sh ios-arm64
 
       - name: Xcode
         run: |
@@ -101,15 +96,16 @@ jobs:
           fi
           xcrun --sdk iphoneos --show-sdk-version
 
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/asuka
+          key: asuka-${{ runner.os }}-${{ hashFiles('asuka.lock') }}
+          restore-keys: asuka-${{ runner.os }}-
+
       - name: Install the asuka CLI
         run: |
           curl -fsSL https://asuka.egoist.dev/install.sh | sh
           echo "$HOME/.asuka/bin" >> "$GITHUB_PATH"
-
-      # The device's build only: a simulator's library is built by whoever
-      # builds for a simulator, not here.
-      - name: Build the engine for the device
-        run: bash .github/scripts/build-engine.sh ios-arm64 ebook-engine
 
       - name: Check
         run: |
