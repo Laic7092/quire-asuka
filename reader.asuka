@@ -5,6 +5,7 @@
 // and the paper — goes through the same task: lay the chapter out again,
 // rasterize the page, and remember where the reader is.
 
+import std/embed
 import std/fs
 
 import bookpage
@@ -14,6 +15,11 @@ import ./engine
 
 /// Points the engine lays out at, before the reader's own size multiplies it.
 let baseSize = 19.0
+
+/// The face the pages are set in: a serif the app ships, so every device and
+/// every test lays the same book out the same way (and Chinese always has
+/// glyphs). SIL Open Font License; see fonts/OFL.txt.
+let bundledFace = embed.bytes("fonts/NotoSerifSC-Regular.otf")
 
 /// The families to ask the platform for, in order. iOS's font files aren't
 /// where a reader would guess (and some live in the dyld cache), so the
@@ -251,12 +257,19 @@ screen Reader(book: lib.Book) {
       return
     }
     engineId = id
-    let font = fontFile()
-    fontName = lib.fileName(font)
-    if font.isEmpty() {
-      warning = "找不到可用的字体：正文画不出来"
-    } else if !engine.registerFont(id, path: font) {
-      warning = "字体打不开：{lib.fileName(font)}"
+    // The app's own face first: it's what the pages are designed around, and
+    // the platform's fonts aren't readable as files everywhere (iOS keeps
+    // several in the dyld cache).
+    if engine.registerFontBytes(id, data: bundledFace) {
+      fontName = "Noto Serif SC"
+    } else {
+      let font = fontFile()
+      fontName = lib.fileName(font)
+      if font.isEmpty() {
+        warning = "找不到可用的字体：正文画不出来"
+      } else if !engine.registerFont(id, path: font) {
+        warning = "字体打不开：{lib.fileName(font)}"
+      }
     }
     let named = engine.title(id)
     if !named.isEmpty() { shownTitle = named }

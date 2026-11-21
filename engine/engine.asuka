@@ -81,6 +81,12 @@ pub fn registerFont(id: int, path: string) -> bool {
   return false
 }
 
+/// Registers a font the app carries in its own code.
+pub fn registerFontBytes(id: int, data: bytes) -> bool {
+  if id <= 0 || data.isEmpty() { return false }
+  return eb_plain_register_font(i32(clamping: id), data) >= 0
+}
+
 /// The first font that exists, out of the ones a platform has.
 pub fn registerFirstFont(id: int, paths: [string]) -> bool {
   for path in paths {
