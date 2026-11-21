@@ -37,7 +37,7 @@ extern fn eb_plain_register_font(id: Int32, data: bytes) -> Int32
 extern fn eb_plain_layout(
   id: Int32, spine: UInt32, width: Float32, height: Float32,
   top: Float32, right: Float32, bottom: Float32, left: Float32,
-  fontScale: Float32, lineScale: Float32, letterPx: Float32, align: UInt32,
+  fontScale: Float32, lineScale: Float32, letterPx: Float32, wordPx: Float32, align: UInt32,
 ) -> Int32
 extern fn eb_plain_spine(id: Int32) -> Int32
 extern fn eb_plain_page_count(id: Int32) -> UInt32
@@ -105,12 +105,12 @@ pub struct Margins {
 
 /// Lays a chapter (`spine`, 0-based) out for a view of this size. Returns
 /// its page count, -1 when it failed.
-pub fn layout(id: int, spine: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float = 0, align: int = 0) -> int {
+pub fn layout(id: int, spine: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float = 0, word: float = 0, align: int = 0) -> int {
   if id <= 0 { return -1 }
   let rc = eb_plain_layout(
     i32(clamping: id), u32(clamping: spine), width, height,
     margins.top, margins.right, margins.bottom, margins.left,
-    fontScale, lineScale, letter, u32(clamping: align),
+    fontScale, lineScale, letter, word, u32(clamping: align),
   )
   if rc < 0 { return -1 }
   return int(eb_plain_page_count(i32(clamping: id)))

@@ -31,6 +31,16 @@ test "a book opens as a page the engine laid out" {
   app.expect("外观")
 }
 
+test "the reader's back button puts the page away" {
+  let app = mount(Harness(), provide: Library())
+  app.tap("散文選")
+  await app.idle()
+  app.expect("BookPage")
+  app.tap("返回")
+  await app.idle()
+  app.expectNo("BookPage")
+}
+
 test "opening a book remembers where the reader is" {
   let lib = Library()
   let app = mount(Harness(), provide: lib)
@@ -64,6 +74,19 @@ fn pagesMatching(tag: string) -> [string] {
   return (found ?? []).filter(e => !e.isDir && e.name.hasSuffix("-{tag}.eqp")).map(e => e.path)
 }
 
+/// How many pixels of a page are the ink's light colour, not the paper's.
+fn lightPixels(path: string) -> int {
+  let data = try? fs.read(path)
+  let all = data?.count() ?? 0
+  var light = 0
+  var i = 12
+  while i + 3 < all {
+    if (data?.get(i) ?? 0) > 0xc0 { light += 1 }
+    i += 4
+  }
+  return light
+}
+
 /// A page file's first pixel: "EQP1", width, height, then RGBA.
 fn firstPixel(path: string) -> [int] {
   let data = try? fs.read(path)
@@ -80,16 +103,18 @@ test "the type and the paper are laid out again, into a new page file" {
   app.tap("散文選")
   await app.idle()
   // The default: 19 points, 160% line, 100% margins, no letter spacing.
-  let before = pagesMatching("190-16-10-0-paper")
+  let before = pagesMatching("s190-l16-m0-k0-w0-paper")
   expect(!before.isEmpty())
 
   // A different size is a different page: it can't be the file the native
   // view already shows, or the change would wait for a page turn.
   lib.size = 24
   await app.idle()
-  let after = pagesMatching("240-16-10-0-paper")
+  let after = pagesMatching("s240-l16-m0-k0-w0-paper")
   expect(!after.isEmpty())
   expect(before[0] != after[0])
+  // The tests share the development store: put it back as it was found.
+  lib.size = 19
 }
 
 test "a page is drawn in the paper and the ink of its theme" {
@@ -97,7 +122,7 @@ test "a page is drawn in the paper and the ink of its theme" {
   let app = mount(Harness(), provide: lib)
   app.tap("散文選")
   await app.idle()
-  let paper = pagesMatching("190-16-10-0-paper")
+  let paper = pagesMatching("s190-l16-m0-k0-w0-paper")
   expect(!paper.isEmpty())
   // 纸白: #fbfaf7, the background the engine fills the page with.
   let white = firstPixel(paper[paper.count() - 1])
@@ -108,14 +133,18 @@ test "a page is drawn in the paper and the ink of its theme" {
 
   lib.theme = "night"
   await app.idle()
-  let night = pagesMatching("190-16-10-0-night")
+  let night = pagesMatching("s190-l16-m0-k0-w0-night")
   expect(!night.isEmpty())
   // 夜间: #16161a behind text drawn in #d8d6cf — not the light page with the
   // surroundings turned dark.
+  lib.theme = "paper"
   let first = firstPixel(night[night.count() - 1])
   expect(first[0] == 0x16)
   expect(first[1] == 0x16)
   expect(first[2] == 0x1a)
+  // And the text is light: the ink colours the glyphs, or the page would be
+  // black on black — which is what a night page looked like.
+  expect(lightPixels(night[night.count() - 1]) > 500)
 }
 
 test "a position is kept, one row a book" {

@@ -91,10 +91,19 @@ fn fontFile() -> string {
 
 /// The margins a page is set in, from the view it's shown in and the reader's
 /// own factor (1 is the default: the proportion below, with a floor).
-fn marginsOf(width: float, height: float, factor: float) -> engine.Margins {
+fn marginsOf(width: float, height: float, delta: float, env: Environment) -> engine.Margins {
   let side = if width * 0.075 > 24 { width * 0.075 } else { 24.0 }
   let top = if height * 0.055 > 28 { height * 0.055 } else { 28.0 }
-  return engine.Margins(top: top * factor, right: side * factor, bottom: top * factor, left: side * factor)
+  // 0 is the default proportions; the setting is how much wider they get.
+  let factor = if delta > -0.9 { 1.0 + delta } else { 0.1 }
+  // The page covers the screen, so the notch's and the home indicator's room
+  // is the layout's to leave.
+  return engine.Margins(
+    top: top * factor + env.safeTop,
+    right: side * factor + env.safeRight,
+    bottom: top * factor + env.safeBottom,
+    left: side * factor + env.safeLeft,
+  )
 }
 
 /// The page files: one a book, chapter, page and size, next to the app's data.
@@ -137,33 +146,6 @@ component Contents(items: [engine.TocItem], at: int) {
   }
 }
 
-/// One setting: its name, a slider, and the number it's at.
-component Setting(name: string, value: float, min: float, max: float, caption: string) {
-  event set(value: float)
-
-  Row {
-    gap: 12
-    align: .center
-    Text(name) {
-      font: .subheadline
-      width: 42
-    }
-    Slider {
-      value: value
-      min: min
-      max: max
-      grow: 1
-      on change(v) { emit set(v) }
-    }
-    Text(caption) {
-      font: .footnote
-      color: .secondaryLabel
-      width: 44
-      textAlign: .end
-    }
-  }
-}
-
 /// Type size, line spacing, the margins, the letter spacing, and the paper.
 /// Everything a page is laid out with, so nothing has to be guessed at.
 component Appearance(typeface: string) {
@@ -179,17 +161,110 @@ component Appearance(typeface: string) {
     padding: [24, 24]
     gap: 16
 
-    Setting("字号", library.size, 14, 30, "{library.size.int()} 点") {
-      on set(v) { library.size = v }
+    Row {
+      gap: 12
+      align: .center
+      Text("字号") {
+        font: .subheadline
+        width: 42
+      }
+      Slider {
+        bind value: library.size
+        min: 14
+        max: 30
+        grow: 1
+      }
+      Text("{library.size.int()} 点") {
+        font: .footnote
+        color: .secondaryLabel
+        width: 44
+        textAlign: .end
+      }
     }
-    Setting("行距", library.line, 1.2, 2.2, "{(library.line * 100).int()}%") {
-      on set(v) { library.line = v }
+
+    Row {
+      gap: 12
+      align: .center
+      Text("行距") {
+        font: .subheadline
+        width: 42
+      }
+      Slider {
+        bind value: library.line
+        min: 1.2
+        max: 2.2
+        grow: 1
+      }
+      Text("{(library.line * 100).int()}%") {
+        font: .footnote
+        color: .secondaryLabel
+        width: 44
+        textAlign: .end
+      }
     }
-    Setting("边距", library.margins, 0.6, 1.8, "{(library.margins * 100).int()}%") {
-      on set(v) { library.margins = v }
+
+    // 0 is the default留白; the slider goes either way from it.
+    Row {
+      gap: 12
+      align: .center
+      Text("边距") {
+        font: .subheadline
+        width: 42
+      }
+      Slider {
+        bind value: library.margins
+        min: -0.3
+        max: 1
+        grow: 1
+      }
+      Text("{(library.margins * 100).int()}%") {
+        font: .footnote
+        color: .secondaryLabel
+        width: 44
+        textAlign: .end
+      }
     }
-    Setting("字距", library.letter, 0, 2, "{library.letter.fixed(1)}") {
-      on set(v) { library.letter = v }
+
+    Row {
+      gap: 12
+      align: .center
+      Text("字距") {
+        font: .subheadline
+        width: 42
+      }
+      Slider {
+        bind value: library.letter
+        min: -1
+        max: 3
+        grow: 1
+      }
+      Text(library.letter.fixed(1)) {
+        font: .footnote
+        color: .secondaryLabel
+        width: 44
+        textAlign: .end
+      }
+    }
+
+    Row {
+      gap: 12
+      align: .center
+      Text("词距") {
+        font: .subheadline
+        width: 42
+      }
+      Slider {
+        bind value: library.word
+        min: -2
+        max: 8
+        grow: 1
+      }
+      Text(library.word.fixed(1)) {
+        font: .footnote
+        color: .secondaryLabel
+        width: 44
+        textAlign: .end
+      }
     }
 
     Text("纸色") { font: .headline }
@@ -206,7 +281,7 @@ component Appearance(typeface: string) {
   }
 }
 
-screen Reader(book: lib.Book) {
+component Reader(book: lib.Book) {
   use library: Library
 
   state engineId = -1
@@ -229,7 +304,7 @@ screen Reader(book: lib.Book) {
   let scale = if env.scale > 0 { env.scale } else { 2.0 }
   let saved = library.readingOf(book.id)
 
-  title: if shownTitle.isEmpty() { book.title } else { shownTitle }
+  let heading = if shownTitle.isEmpty() { book.title } else { shownTitle }
 
   // Opens where the book was left, in the chapter (spine) it was left in.
   task {
@@ -251,8 +326,8 @@ screen Reader(book: lib.Book) {
     if spine >= chapterCount { spine = if chapterCount > 0 { chapterCount - 1 } else { 0 } }
     let pagesNow = engine.layout(
       engineId, spine, frame.width, frame.height,
-      marginsOf(frame.width, frame.height, library.margins),
-      library.size / baseSize, library.line, library.letter,
+      marginsOf(frame.width, frame.height, library.margins, env),
+      library.size / baseSize, library.line, library.letter, library.word,
     )
     if pagesNow <= 0 { return }
     pages = pagesNow
@@ -273,9 +348,10 @@ screen Reader(book: lib.Book) {
   fn layoutTag() -> string {
     let size = (library.size * 10).int()
     let line = (library.line * 10).int()
-    let margin = (library.margins * 10).int()
+    let margin = (library.margins * 100).int()
     let letter = (library.letter * 10).int()
-    return "{size}-{line}-{margin}-{letter}-{library.theme}"
+    let word = (library.word * 10).int()
+    return "s{size}-l{line}-m{margin}-k{letter}-w{word}-{library.theme}"
   }
 
   /// Opens the engine once, and the font it measures with.
@@ -344,98 +420,121 @@ screen Reader(book: lib.Book) {
     page = 0
   }
 
-  toolbar {
-    Button("目录") {
-      icon: "list.bullet"
-      on press {
-        present(Contents(engine.contents(engineId), spine) {
-          on pick(i) {
-            let items = engine.contents(engineId)
-            if i >= 0 && i < items.count() { jump(items[i].spine) }
-          }
-        })
-      }
+  /// The chapter's name, from the book's own table of contents.
+  fn chapterTitle() -> string {
+    for item in engine.contents(engineId) {
+      if item.spine == spine { return item.title }
     }
-    Button("外观") {
-      icon: "textformat"
-      on press { present(Appearance(typeface: fontName)) }
-    }
+    return heading
   }
 
   View {
     background: palette.paper
     grow: 1
     on layout(f) { frame = f }
-    Stack {
-      grow: 1
 
-      if !error.isEmpty() {
-        Column {
-          grow: 1
-          justify: .center
-          align: .center
-          padding: 32
-          Text(error) {
-            color: palette.muted
-            textAlign: .center
+    if !error.isEmpty() {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        padding: 32
+        Text(error) { color: palette.muted; textAlign: .center }
+      }
+    } else if pagePath.isEmpty() {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        Text("排版中…") { color: palette.muted }
+      }
+    } else {
+      // The page covers the screen and takes the tap: its left third goes
+      // back, its right third forward, its middle puts the chrome away.
+      bookpage.BookPage(path: pagePath) {
+        grow: 1
+        on press(x, y) {
+          let width = if frame.width > 0 { frame.width } else { 320.0 }
+          if x < width / 3 {
+            back()
+          } else if x > width * 2 / 3 {
+            next()
+          } else {
+            chrome = !chrome
           }
+          let _where = y
         }
-      } else if pagePath.isEmpty() {
-        Column {
-          grow: 1
-          justify: .center
-          align: .center
-          Text("排版中…") { color: palette.muted }
-        }
-      } else {
-        // The page itself takes the tap: its left third goes back, its right
-        // third forward, and its middle does nothing (that one opens chrome,
-        // once there is chrome to open).
-        bookpage.BookPage(path: pagePath) {
-          grow: 1
-          on press(x, y) {
-            let width = if frame.width > 0 { frame.width } else { 320.0 }
-            if x < width / 3 {
-              back()
-            } else if x > width * 2 / 3 {
-              next()
-            } else {
-              // The middle: the page, and nothing else.
-              chrome = !chrome
-            }
-            let _where = y
-          }
-        }
+      }
+    }
 
-        // Where the reader is, in the corner of the page: small enough to
-        // forget about, and gone when the chrome is.
-        if chrome && error.isEmpty() && !pagePath.isEmpty() {
-          Column {
-            grow: 1
-            justify: .end
-            align: .end
-            padding: [0, 14, 6, 0]
-            Text("{page + 1} / {pages}") {
-              font: Font(size: 11)
-              color: palette.muted
-            }
+    // The chrome floats over the page: it takes no room from it, and a tap
+    // on the middle of the page puts it away. There's no bar of the
+    // platform's here to hide, which is why the reader is a sheet.
+    if chrome {
+      Row {
+        absolute: true
+        top: 0
+        left: 0
+        right: 0
+        gap: 2
+        align: .center
+        padding: Edges(top: env.safeTop + 4, start: 4, end: 4, bottom: 8)
+        // 浅色主题用平台的毛玻璃（iOS 上就是 UIKit 的 .bar），夜间用实体纸色：
+        // 材质跟的是系统的深浅色，不跟我们的纸色主题，夜里会是一块浅色玻璃。
+        material: .bar
+        background: palette.paper.opacity(if library.theme == "night" { 0.98 } else { 0.55 })
+        Button("返回") {
+          icon: "chevron.left"
+          on press { dismiss() }
+        }
+        Text(chapterTitle()) {
+          grow: 1
+          font: .footnote
+          color: palette.muted
+          textAlign: .center
+          lines: 1
+        }
+        Button("目录") {
+          icon: "list.bullet"
+          on press {
+            present(Contents(engine.contents(engineId), spine) {
+              on pick(i) {
+                let items = engine.contents(engineId)
+                if i >= 0 && i < items.count() { jump(items[i].spine) }
+              }
+            })
           }
         }
+        Button("外观") {
+          icon: "textformat"
+          on press { present(Appearance(typeface: fontName)) }
+        }
+      }
 
-        // A book with no font still pages, with nothing on them: say why
-        // over the page, rather than showing a blank one.
-        if !warning.isEmpty() {
-          Column {
-            grow: 1
-            justify: .start
-            Text(warning) {
-              font: .footnote
-              color: palette.ink
-              padding: [8, 12]
-              background: palette.rule
-              textAlign: .center
-            }
-          }
+      // Where the reader is: small enough to forget, in the page's corner.
+      Row {
+        absolute: true
+        bottom: env.safeBottom + 8
+        right: 16
+        Text("{page + 1} / {pages}") {
+          font: Font(size: 11)
+          color: palette.muted
+        }
+      }
+    }
+
+    // A book with no font still pages, with nothing on them: say why over
+    // the page, rather than showing a blank one.
+    if !warning.isEmpty() {
+      Column {
+        grow: 1
+        justify: .start
+        Text(warning) {
+          font: .footnote
+          color: palette.ink
+          padding: [8, 12]
+          background: palette.rule
+          textAlign: .center
         }
       }
     }
