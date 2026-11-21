@@ -32,6 +32,16 @@ for file in $(printf '%s\n' "$staged" | grep '\.asuka$'); do
   [ -f "$file" ] && git add "$file"
 done
 
+# An ignored .asuka file is a file CI won't have: lib/ was ignored once and
+# the app's own sources under it never reached the runner.
+ignored="$(git ls-files --others --ignored --exclude-standard -- '*.asuka')"
+if [ -n "$ignored" ]; then
+  echo "pre-commit: ignored sources (CI won't have them):" >&2
+  printf '  %s\n' "$ignored" >&2
+  echo "pre-commit: fix .gitignore, or 'git add -f' them" >&2
+  exit 1
+fi
+
 echo "pre-commit: asuka check"
 "$asuka" check || {
   echo "pre-commit: asuka check failed" >&2
@@ -41,5 +51,10 @@ echo "pre-commit: asuka check"
 echo "pre-commit: asuka test"
 "$asuka" test >/dev/null || {
   echo "pre-commit: asuka test failed" >&2
+  exit 1
+}
+# lib/ is a package of its own: its tests don't run as part of the app's.
+"$asuka" test lib >/dev/null || {
+  echo "pre-commit: asuka test lib failed" >&2
   exit 1
 }

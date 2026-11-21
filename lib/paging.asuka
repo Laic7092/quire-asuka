@@ -1,0 +1,37 @@
+// Turning the page: where a turn takes the reader, and what a chapter's page
+// count does to the place it lands on. No UI and no engine here, so the
+// arithmetic across chapter boundaries is tested without a device.
+
+/// Where the reader is: a chapter, and a page in it. A page of -1 means "the
+/// last page of this chapter, once it's laid out" — a turn back across a
+/// chapter boundary can't know that page's count yet.
+pub struct Place {
+  spine: int
+  page: int
+}
+
+/// The next page, or the next chapter's first; the last page of the book
+/// stays put.
+pub fn forward(spine: int, page: int, pages: int, chapters: int) -> Place {
+  if page + 1 < pages { return Place(spine, page + 1) }
+  if spine + 1 < chapters { return Place(spine + 1, 0) }
+  return Place(spine, page)
+}
+
+/// The page before, or the chapter before — at its END, not its beginning:
+/// turning back out of chapter three's first page lands on the last page of
+/// chapter two, where the reader left it.
+pub fn backward(spine: int, page: int, chapters: int) -> Place {
+  if page > 0 { return Place(spine, page - 1) }
+  if spine > 0 { return Place(spine - 1, -1) }
+  return Place(spine, 0)
+}
+
+/// The page actually shown, after the chapter has been laid out: a pending
+/// -1 becomes its last page, and a place past the end becomes the last one.
+pub fn resolve(page: int, pages: int) -> int {
+  if pages <= 0 { return 0 }
+  if page < 0 { return pages - 1 }
+  if page >= pages { return pages - 1 }
+  return page
+}

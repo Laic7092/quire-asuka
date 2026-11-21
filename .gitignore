@@ -4,5 +4,6 @@
 *.jks
 *.keystore
 
-# The engine's static libraries: .github/scripts/build-engine.sh makes them.
-/lib/
+# The engine's static libraries (lib/<target>/libebook_abi.a), downloaded by
+# .github/scripts/fetch-engine.sh: not the app's own sources under lib/.
+/lib/**/libebook_abi.a
