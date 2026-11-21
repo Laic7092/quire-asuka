@@ -7,6 +7,11 @@ name: iOS IPA
 # device, or with TrollStore on iOS 17.0 and older.
 #
 # The build needs Xcode 26 or newer, which is what asuka compiles against.
+#
+# Two jobs, in parallel: the tests run where they're cheap (a Linux runner, on
+# the engine's Linux build), and the Mac runner only does what needs Xcode — one
+# engine build (the device's), and the .ipa. Add `needs: test` to the `ipa` job
+# to gate the artifact on the tests, at the cost of running them in sequence.
 
 on:
   workflow_dispatch:
@@ -23,9 +28,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ipa:
-    name: Unsigned IPA
-    runs-on: macos-latest
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -39,9 +44,41 @@ jobs:
           token: ${{ secrets.ENGINE_TOKEN || github.token }}
 
       - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ebook-engine
 
-      - name: Build the engine for the Mac (the tests run on it)
-        run: bash .github/scripts/build-engine.sh macos-arm64 ebook-engine
+      # The tests link the engine, so they need it for their own machine.
+      - name: Build the engine
+        run: bash .github/scripts/build-engine.sh linux-x64 ebook-engine
+
+      - name: Install the asuka CLI
+        run: |
+          curl -fsSL https://asuka.egoist.dev/install.sh | sh
+          echo "$HOME/.asuka/bin" >> "$GITHUB_PATH"
+
+      - name: Check and test
+        run: |
+          asuka version
+          asuka check
+          asuka test
+
+  ipa:
+    name: Unsigned IPA
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Laic7092/ebook-engine
+          path: ebook-engine
+          token: ${{ secrets.ENGINE_TOKEN || github.token }}
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ebook-engine
 
       - name: Xcode
         run: |
@@ -69,21 +106,32 @@ jobs:
           curl -fsSL https://asuka.egoist.dev/install.sh | sh
           echo "$HOME/.asuka/bin" >> "$GITHUB_PATH"
 
-      - name: Check and test
+      # The device's build only: a simulator's library is built by whoever
+      # builds for a simulator, not here.
+      - name: Build the engine for the device
+        run: bash .github/scripts/build-engine.sh ios-arm64 ebook-engine
+
+      - name: Check
         run: |
           asuka version
           asuka check
-          asuka test
-
-      - name: Build the engine for iOS
-        run: |
-          bash .github/scripts/build-engine.sh ios-arm64 ebook-engine
-          bash .github/scripts/build-engine.sh ios-simulator-arm64 ebook-engine
 
       - name: Build the unsigned IPA
         run: bash .github/scripts/build-unsigned-ipa.sh
 
+      # GitHub's artifact service times out now and then ("Failed to
+      # CreateArtifact"): one more try, and the job says so if both fail.
+      - id: upload
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: ios-unsigned-ipa
+          path: dist/*-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 14
+
       - uses: actions/upload-artifact@v4
+        if: steps.upload.outcome == 'failure'
         with:
           name: ios-unsigned-ipa
           path: dist/*-unsigned.ipa

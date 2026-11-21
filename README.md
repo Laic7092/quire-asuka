@@ -63,8 +63,13 @@ asuka fmt -w               # 格式化
 
 ## GitHub CI：未签名 .ipa
 
-`.github/workflows/ios.yml` + `.github/scripts/build-unsigned-ipa.sh` 在
-`macos-latest` 上出一个**未签名 device .ipa**，不需要 Apple 开发者账号：
+`.github/workflows/ios.yml` 两个作业并行：`test` 在 `ubuntu-latest` 上编引擎的
+Linux 版跑 `asuka check` + `asuka test`（测试不需要 Xcode，也不必占着 Mac runner）；
+`ipa` 在 `macos-latest` 上只编**设备用的那一个**引擎目标，出 ipa。引擎的 cargo 构建由
+`Swatinem/rust-cache` 缓存。想用测试卡住产物，给 `ipa` 加 `needs: test`（就变串行）。
+
+`.github/scripts/build-unsigned-ipa.sh` 在 `macos-latest` 上出一个**未签名 device .ipa**，
+不需要 Apple 开发者账号：
 
 1. 造一个一次性自签证书（Code Signing EKU），导进本次运行专用的 keychain 并信任；
 2. 写一个 stub `.mobileprovision`（app-store 类型、`application-identifier =
