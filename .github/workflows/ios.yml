@@ -31,11 +31,18 @@ jobs:
 
       - name: Xcode
         run: |
-          # macos-latest may carry more than one Xcode; asuka needs 26+.
-          for app in /Applications/Xcode_26*.app; do
-            [ -d "$app" ] && sudo xcode-select -s "$app" && break
-          done
+          # macos-latest carries several Xcodes; asuka needs 26+, and the one
+          # picked must have a simulator runtime matching its iOS SDK, or
+          # actool (the app icon) fails: the newest is the one the image's
+          # runtimes were installed for.
+          apps=(/Applications/Xcode_26*.app)
+          if [ -e "${apps[0]}" ]; then
+            latest="$(printf '%s\n' "${apps[@]}" | sort -V | tail -1)"
+            echo "using $latest"
+            sudo xcode-select -s "$latest"
+          fi
           xcodebuild -version
+          xcrun simctl list runtimes | head -8
           major="$(xcodebuild -version | sed -n 's/^Xcode \([0-9]*\).*/\1/p')"
           if [ "${major:-0}" -lt 26 ]; then
             echo "::error::asuka needs Xcode 26 or newer; this image has ${major:-none}. Use a runner image with it (runs-on: macos-26, when the label exists)."
