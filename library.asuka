@@ -6,7 +6,10 @@ import std/store
 import ./lib
 
 pub store Library {
-  pub state books: [lib.Book] = samples()
+  /// The books brought in, as the files they're read from: what survives a
+  /// launch. The samples come from the app itself (samples/ is compiled in),
+  /// so they're never kept, and they're always on the shelf.
+  pub state shelf: [lib.Shelf] = store.read("shelf", [])
   pub state readings: [lib.Reading] = store.read("readings", [])
   pub state theme: string = store.read("reader.theme", "paper")
   pub state size: float = store.read("reader.size", 19.0)
@@ -28,6 +31,29 @@ pub store Library {
   effect { store.write("reader.marginDelta", margins) }
   effect { store.write("reader.letter", letter) }
   effect { store.write("reader.word", word) }
+
+  /// Every book on the shelf: the samples first, then what was brought in.
+  pub fn books() -> [lib.Book] {
+    var out = samples()
+    for kept in shelf {
+      out.push(kept.book())
+    }
+    return out
+  }
+
+  /// Takes a book off the shelf. The file stays: importing it again is free.
+  pub fn forget(id: string) {
+    shelf.removeWhere(s => s.id == id)
+    readings.removeWhere(r => r.id == id)
+    keep()
+  }
+
+  /// Writes the shelf down now: it changes in two places (an import, and a
+  /// book taken off), and the store is what a later launch reads.
+  fn keep() {
+    store.write("shelf", shelf)
+    store.flush()
+  }
 
   /// Takes a .txt or .epub the user picked (the document picker on iOS hands
   /// over a copy in the app's caches), keeps it in the app's directory, and
@@ -56,8 +82,11 @@ pub store Library {
     }
     book.path = target
     if isText && book.empty() { throw Error("{name} 里没有可读的文字") }
-    books.removeWhere(b => b.id == book.id)
-    books.push(book)
+    // What's kept is the row, not the text: the file in the app's directory
+    // is the book, and the engine reads that.
+    forget(book.id)
+    shelf.push(lib.shelfOf(book))
+    keep()
   }
 
   pub fn readingOf(id: string) -> lib.Reading {

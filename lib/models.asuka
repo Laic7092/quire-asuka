@@ -26,6 +26,22 @@ pub struct Book {
   pub fn firstChapter() -> string = chapters.first()?.title ?? ""
 }
 
+/// A book as the shelf keeps it between launches: the file it's read from,
+/// and what the shelf shows. Its text isn't kept — the file has that, and the
+/// engine reads the file — so a .txt of ten megabytes costs a row.
+pub struct Shelf {
+  id: string
+  title: string
+  author: string
+  /// The file in the app's directory; "" for a book that came with the app.
+  path: string
+
+  pub fn book() -> Book = Book(id: id, title: title, author: author, chapters: [], path: path)
+}
+
+/// The shelf's row for a book.
+pub fn shelfOf(book: Book) -> Shelf = Shelf(id: book.id, title: book.title, author: book.author, path: book.path)
+
 /// Where a book was left: the chapter, and how far into it (0…1).
 pub struct Reading {
   id: string

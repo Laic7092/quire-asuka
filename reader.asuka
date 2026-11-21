@@ -415,17 +415,10 @@ component Reader(book: lib.Book) {
   }
 
   fn jump(index: int) {
-    if index < 0 || index >= engine.chapterCount(engineId) { return }
+    let count = engine.chapterCount(engineId)
+    if index < 0 || index >= count { return }
     spine = index
     page = 0
-  }
-
-  /// The chapter's name, from the book's own table of contents.
-  fn chapterTitle() -> string {
-    for item in engine.contents(engineId) {
-      if item.spine == spine { return item.title }
-    }
-    return heading
   }
 
   View {
@@ -467,34 +460,26 @@ component Reader(book: lib.Book) {
       }
     }
 
-    // The chrome floats over the page: it takes no room from it, and a tap
-    // on the middle of the page puts it away. There's no bar of the
-    // platform's here to hide, which is why the reader is a sheet.
+    // Three buttons, the platform's own, in a row over the page: back, the
+    // type, the contents. Nothing around them.
     if chrome {
       Row {
         absolute: true
-        top: 0
-        left: 0
-        right: 0
-        gap: 2
-        align: .center
-        padding: Edges(top: env.safeTop + 4, start: 4, end: 4, bottom: 8)
-        // 浅色主题用平台的毛玻璃（iOS 上就是 UIKit 的 .bar），夜间用实体纸色：
-        // 材质跟的是系统的深浅色，不跟我们的纸色主题，夜里会是一块浅色玻璃。
-        material: .bar
-        background: palette.paper.opacity(if library.theme == "night" { 0.98 } else { 0.55 })
-        Button("返回") {
+        top: env.safeTop + 6
+        left: 8
+        right: 8
+        gap: 4
+        Button("") {
           icon: "chevron.left"
           on press { dismiss() }
         }
-        Text(chapterTitle()) {
-          grow: 1
-          font: .footnote
-          color: palette.muted
-          textAlign: .center
-          lines: 1
+        // 返回 on the left; the other two at the right, where a reader's are.
+        View { grow: 1 }
+        Button("") {
+          icon: "textformat"
+          on press { present(Appearance(typeface: fontName)) }
         }
-        Button("目录") {
+        Button("") {
           icon: "list.bullet"
           on press {
             present(Contents(engine.contents(engineId), spine) {
@@ -505,20 +490,23 @@ component Reader(book: lib.Book) {
             })
           }
         }
-        Button("外观") {
-          icon: "textformat"
-          on press { present(Appearance(typeface: fontName)) }
-        }
       }
 
-      // Where the reader is: small enough to forget, in the page's corner.
+      // Where the reader is: a capsule in the page's corner, filled with the
+      // platform's own material (asuka has no badge view: a material and a
+      // radius are the native way to float a label over content).
       Row {
         absolute: true
         bottom: env.safeBottom + 8
         right: 16
-        Text("{page + 1} / {pages}") {
-          font: Font(size: 11)
-          color: palette.muted
+        View {
+          material: .thin
+          radius: 11
+          padding: [3, 9]
+          Text("{page + 1} / {pages}") {
+            font: Font(size: 11)
+            color: palette.muted
+          }
         }
       }
     }

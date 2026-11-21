@@ -63,13 +63,23 @@ component BookCell(book: lib.Book, reading: lib.Reading) {
 screen Shelf {
   use library: Library
 
-  /// What the reader has open, and whether its sheet is up. A full-screen
-  /// sheet opens by its own `open`; `present` is for the platform's modals.
+  /// What the reader has open, and whether its page is up: a full-screen
+  /// sheet, so the bar above it is the app's (three buttons over the page).
   state reading = lib.Book(id: "", title: "", author: "", chapters: [])
   state readingOpen = false
 
   title: "书架"
   largeTitle: true
+
+  // Import is the shelf's main action: iOS puts it at the end of the bar as
+  // a prominent +, Android floats it.
+  primary {
+    Button("") {
+      icon: "plus"
+      tooltip: "导入 .txt 或 .epub"
+      on press { await pick() }
+    }
+  }
 
   // Runs the import, and says so when it can't.
   async fn bring(paths: [string]) {
@@ -86,9 +96,11 @@ screen Shelf {
   async fn pick() {
     do {
       let paths = try await dialog.open(
-        title: "导入纯文本",
+        title: "导入书籍",
         button: "导入",
-        filters: [dialog.Filter(name: "纯文本", extensions: ["txt"])],
+        // Both formats the engine reads: it tells them apart by the file's
+        // own bytes, so the picker only has to let them through.
+        filters: [dialog.Filter(name: "文本与 EPUB", extensions: ["txt", "epub"])],
         multiple: false,
       )
       await bring(paths)
@@ -122,11 +134,8 @@ screen Shelf {
       columns: columns
       gap: 22
       padding: [22, 20]
-      for b in library.books key b.id {
+      for b in library.books() key b.id {
         BookCell(b, library.readingOf(b.id)) {
-          // The reader is a sheet: its chrome is the app's own, floating over
-          // the page, so it can be put away. A pushed screen would carry the
-          // platform's bar, which can't be.
           on open {
             reading = b
             readingOpen = true
@@ -135,28 +144,10 @@ screen Shelf {
       }
     }
 
-    // Import doesn't need a row of its own: it floats over the shelf, and
-    // the title stays large.
     Sheet {
       fullScreen: true
       bind open: readingOpen
       Reader(reading)
-    }
-
-    View {
-      absolute: true
-      right: 22
-      bottom: 26
-      Button("") {
-        icon: "plus"
-        label: "导入"
-        tooltip: "导入 .txt 或 .epub"
-        variant: .filled
-        width: 56
-        height: 56
-        radius: 28
-        on press { await pick() }
-      }
     }
   }
 }

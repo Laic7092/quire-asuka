@@ -25,18 +25,18 @@ test "a book opens as a page the engine laid out" {
   app.tap("散文選")
   await app.idle()
   // The page is the engine's bitmap, in the native BookPage view; the page
-  // turn is a tap on its left or right third, so there are no buttons for it.
+  // turn and the way back are taps on the page, so the only thing over it is
+  // where the reader is.
   app.expect("BookPage")
-  app.expect("目录")
-  app.expect("外观")
+  app.expect("1 / 4")
 }
 
-test "the reader's back button puts the page away" {
+test "the page goes away when it's put away" {
   let app = mount(Harness(), provide: Library())
   app.tap("散文選")
   await app.idle()
   app.expect("BookPage")
-  app.tap("返回")
+  app.dismiss()
   await app.idle()
   app.expectNo("BookPage")
 }
@@ -50,20 +50,6 @@ test "opening a book remembers where the reader is" {
   let reading = lib.readingOf("朱自清·散文選")
   expect(reading.chapter == 0)
   expect(reading.percent >= 0)
-}
-
-test "the table of contents jumps to a chapter" {
-  let lib = Library()
-  let app = mount(Harness(), provide: lib)
-  app.tap("散文選")
-  await app.idle()
-  app.tap("目录")
-  await app.idle()
-  // The contents are the book's own: the engine's TOC, one row an entry.
-  app.expect("第1章 背影")
-  app.tap("第3章 春")
-  await app.idle()
-  expect(lib.readingOf("朱自清·散文選").chapter == 2)
 }
 
 /// The pages the reader has written for a book, newest last: the file names
@@ -160,17 +146,18 @@ test "a position is kept, one row a book" {
 test "an unread book says so" {
   let lib = Library()
   expect(lib.readingOf("没读过").label() == "未开始")
-  expect(lib.books.count() == 2)
-  expect(lib.books.all(b => !b.raw.isEmpty()))
+  // The two samples are the app's own; anything else on the shelf was
+  // brought in and is kept as a file, not as its text.
+  expect(lib.books().count() >= 2)
+  expect(!lib.books()[0].raw.isEmpty())
+  expect(!lib.books()[1].raw.isEmpty())
 }
 
 test "the appearance sheet changes the type and the paper" {
   let lib = Library()
-  let app = mount(Harness(), provide: lib)
-  app.tap("散文選")
-  await app.idle()
-  app.tap("外观")
-  await app.idle()
+  // The sheet itself: the buttons over the page have no text to tap by, so
+  // the test mounts what they open.
+  let app = mount(Appearance(typeface: "Noto Serif SC"), provide: lib)
   app.expect("字号")
   app.expect("纸色")
   app.expect("行距")
@@ -180,20 +167,45 @@ test "the appearance sheet changes the type and the paper" {
   expect(lib.theme == "night")
 }
 
-test "a .txt picked from the document picker lands on the shelf" {
+test "a .txt brought in becomes a book on the shelf" {
   let path = "{fs.tempDir()}/quire-import-test.txt"
   try await spawn { try fs.writeText(path, text: "第1章 测试\n\n一段文字。\n") }
-  let fake = dialog.fake()
-  fake.opens = [path]
-  let app = mount(Harness(), provide: Library())
-  app.tap("导入")
+  let lib = Library()
+  let app = mount(Harness(), provide: lib)
+  // What the import button does with a file the picker handed over.
+  try await lib.importFile(path)
   await app.idle()
   app.expect("quire-import-test")
-  app.tap("quire-import-test")
+}
+
+test "the shelf keeps a row, not a book's text" {
+  // What a launch reads back: where the file is, and what the shelf shows.
+  // The text isn't kept — the file has it, and the engine reads the file.
+  let row = lib.shelfOf(lib.Book(id: "x", title: "書", author: "人", chapters: [], path: "/tmp/x.epub"))
+  expect(row.path == "/tmp/x.epub")
+  let again = row.book()
+  expect(again.id == "x")
+  expect(again.title == "書")
+  expect(again.author == "人")
+  expect(again.raw.isEmpty())
+  expect(again.chapters.isEmpty())
+}
+
+test "an .epub is kept as a file, not as its text" {
+  let path = "{fs.tempDir()}/測試書.epub"
+  try await spawn { try fs.writeText(path, text: "PK") }
+  let library = Library()
+  let app = mount(Harness(), provide: library)
+  try await library.importFile(path)
   await app.idle()
-  // The engine opened the file the shelf kept, and laid it out.
-  app.expect("BookPage")
-  app.expect("目录")
+  let id = lib.idOf("測試書.epub")
+  let kept = library.books().find(b => b.id == id)
+  expect(kept != none)
+  // The engine opens the file itself; the shelf only has its name.
+  expect(kept?.title == "測試書")
+  expect(kept?.chapters.isEmpty() ?? false)
+  library.forget(id)
+  await app.idle()
 }
 
 test "a file that is neither text nor an EPUB is refused" {

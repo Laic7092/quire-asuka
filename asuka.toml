@@ -16,6 +16,12 @@ extensions = ["txt"]
 role = "viewer"
 conformsTo = ["public.plain-text", "public.text"]
 
+[[fileTypes]]
+name = "EPUB"
+extensions = ["epub"]
+role = "viewer"
+conformsTo = ["org.idpf.epub-container", "public.data"]
+
 [splash]
 background = "#fbfaf7"
 darkBackground = "#16161a"
