@@ -15,9 +15,12 @@ import ./engine
 /// Points the engine lays out at, before the reader's own size multiplies it.
 let baseSize = 19.0
 
-/// The fonts to try, in order: the first one that exists is registered.
-/// iOS has Songti for Chinese, PingFang for sans; the desktops the fallbacks
-/// a distribution ships. A book's own embedded fonts come from the engine.
+/// The families to ask the platform for, in order. iOS's font files aren't
+/// where a reader would guess (and some live in the dyld cache), so the
+/// platform's own font layer gives the path.
+let fontFamilies = ["Songti SC", "PingFang SC", "Hiragino Sans GB", "Songti TC", "Noto Serif CJK SC"]
+
+/// The file list to try when the platform can't name one.
 fn fontCandidates() -> [string] {
   if @platform == .iOS || @platform == .macOS {
     return [
@@ -48,6 +51,36 @@ async fn bookFileOf(book: lib.Book) throws -> string {
     }
   }
   return path
+}
+
+/// The font the engine measures with: the platform's, by family name; else
+/// a file at one of the usual paths.
+fn fontFile() -> string {
+  let files = try? bookpage.FontFiles()
+  if let files = files {
+    for family in fontFamilies {
+      if let found = try? files.path(family: family) {
+        if !found.isEmpty() { return found }
+      }
+    }
+  }
+  for path in fontCandidates() {
+    if fs.exists(path) { return path }
+  }
+  // Nothing named: whatever the system's font directory has. The Chinese
+  // faces by name first, since that's what the text is.
+  for dir in ["/System/Library/Fonts", "/System/Library/Fonts/Supplemental", "/System/Library/Fonts/LanguageSupport", "/System/Library/Fonts/Core"] {
+    if let entries = try? fs.walk(dir) {
+      let fonts = entries.filter(e => !e.isDir && (e.name.lower().hasSuffix(".ttc") || e.name.lower().hasSuffix(".ttf")))
+      for key in ["song", "ping", "hiragino", "heiti", "kai", "noto", "wqy", "droid"] {
+        for entry in fonts {
+          if entry.name.lower().contains(key) { return entry.path }
+        }
+      }
+      if let first = fonts.first() { return first.path }
+    }
+  }
+  return ""
 }
 
 /// The margins a page is set in, from the view it's shown in.
@@ -98,7 +131,7 @@ component Contents(items: [engine.TocItem], at: int) {
 }
 
 /// Type size and paper color.
-component Appearance {
+component Appearance(typeface: string) {
   use library: Library
 
   let papers = [
@@ -131,6 +164,12 @@ component Appearance {
       selected: papers.index(p => p[0] == library.theme) ?? 0
       on change(i) { library.theme = papers[i][0] }
     }
+    if !typeface.isEmpty() {
+      Text("字体：{typeface}") {
+        font: .footnote
+        color: .secondaryLabel
+      }
+    }
     Text("正文由引擎排成位图（ebook-engine），与桌面版 Quire 同一套排版与断行；字号与纸色改了就重排。") {
       font: .footnote
       color: .secondaryLabel
@@ -147,7 +186,9 @@ screen Reader(book: lib.Book) {
   state pages = 1
   state pagePath = ""
   state frame = Frame()
-  state failed = ""
+  state error = ""
+  state warning = ""
+  state fontName = ""
   state opened = false
   state shownTitle = book.title
 
@@ -201,16 +242,22 @@ screen Reader(book: lib.Book) {
     opened = true
     let file = try await bookFileOf(book)
     if !fs.exists(file) {
-      failed = "找不到《{book.title}》的文件"
+      error = "找不到《{book.title}》的文件"
       return
     }
     let id = engine.open(file)
     if id <= 0 {
-      failed = "打不开这本书：{engine.lastError()}"
+      error = "打不开这本书：{engine.lastError()}"
       return
     }
-    let _font = engine.registerFirstFont(id, fontCandidates())
     engineId = id
+    let font = fontFile()
+    fontName = lib.fileName(font)
+    if font.isEmpty() {
+      warning = "找不到可用的字体：正文画不出来"
+    } else if !engine.registerFont(id, path: font) {
+      warning = "字体打不开：{lib.fileName(font)}"
+    }
     let named = engine.title(id)
     if !named.isEmpty() { shownTitle = named }
     let count = engine.chapterCount(id)
@@ -266,7 +313,7 @@ screen Reader(book: lib.Book) {
     }
     Button("外观") {
       icon: "textformat"
-      on press { present(Appearance()) }
+      on press { present(Appearance(typeface: fontName)) }
     }
   }
 
@@ -277,13 +324,13 @@ screen Reader(book: lib.Book) {
     Stack {
       grow: 1
 
-      if !failed.isEmpty() {
+      if !error.isEmpty() {
         Column {
           grow: 1
           justify: .center
           align: .center
           padding: 32
-          Text(failed) {
+          Text(error) {
             color: palette.muted
             textAlign: .center
           }
@@ -296,6 +343,18 @@ screen Reader(book: lib.Book) {
           Text("排版中…") { color: palette.muted }
         }
       } else {
+        // A book with no font still pages (its text would be blank): say so
+        // over the page rather than showing nothing.
+        if !warning.isEmpty() {
+          Text(warning) {
+            font: .footnote
+            color: palette.ink
+            padding: [8, 12]
+            background: palette.rule
+            textAlign: .center
+          }
+        }
+
         // The page itself takes the tap: its left third goes back, its right
         // third forward, and its middle does nothing (that one opens chrome,
         // once there is chrome to open).

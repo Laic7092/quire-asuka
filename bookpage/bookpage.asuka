@@ -10,3 +10,11 @@ pub native component BookPage(path: string) {
   /// A tap: where it landed in the page, in points.
   event press(x: float, y: float)
 }
+
+/// Where this platform keeps a font, by family name: iOS's fonts are inside
+/// the system's own directories (and some in the dyld cache), so the
+/// family name is the only thing an app can ask for.
+pub native interface FontFiles {
+  /// The file the family's font is in; "" when the platform has no such file.
+  fn path(family: string) -> string
+}
