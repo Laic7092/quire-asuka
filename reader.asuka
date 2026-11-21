@@ -343,18 +343,6 @@ screen Reader(book: lib.Book) {
           Text("排版中…") { color: palette.muted }
         }
       } else {
-        // A book with no font still pages (its text would be blank): say so
-        // over the page rather than showing nothing.
-        if !warning.isEmpty() {
-          Text(warning) {
-            font: .footnote
-            color: palette.ink
-            padding: [8, 12]
-            background: palette.rule
-            textAlign: .center
-          }
-        }
-
         // The page itself takes the tap: its left third goes back, its right
         // third forward, and its middle does nothing (that one opens chrome,
         // once there is chrome to open).
@@ -368,6 +356,22 @@ screen Reader(book: lib.Book) {
               next()
             }
             let _where = y
+          }
+        }
+
+        // A book with no font still pages, with nothing on them: say why
+        // over the page, rather than showing a blank one.
+        if !warning.isEmpty() {
+          Column {
+            grow: 1
+            justify: .start
+            Text(warning) {
+              font: .footnote
+              color: palette.ink
+              padding: [8, 12]
+              background: palette.rule
+              textAlign: .center
+            }
           }
         }
       }
