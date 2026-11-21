@@ -13,6 +13,10 @@ pub struct Book {
   title: string
   author: string
   chapters: [Chapter]
+  /// The file the engine reads: the import, or one written from `raw`.
+  path: string = ""
+  /// The original text, for a book imported as text.
+  raw: string = ""
 
   pub fn empty() -> bool = chapters.isEmpty() || chapters.all(c => c.paragraphs.isEmpty())
 
@@ -58,4 +62,14 @@ pub fn paletteFor(theme: string) -> Palette {
 pub fn bodyFamily() -> string {
   if @platform == .iOS || @platform == .macOS { return "Songti SC" }
   return "serif"
+}
+
+/// A color as the engine takes it: 0xRRGGBBAA.
+pub fn rgbaOf(c: Color) -> u32 {
+  let hex = c.hex()
+  if !hex.hasPrefix("#") { return 0xffffffff }
+  let digits = hex.slice(1, hex.count())
+  let value = digits.toInt(radix: 16) ?? 0xffffffff
+  if digits.count() >= 8 { return u32(clamping: value) }
+  return (u32(clamping: value) << 8) | 0xff
 }

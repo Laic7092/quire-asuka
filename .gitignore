@@ -3,3 +3,6 @@
 # Keep your upload key out of the repository, and backed up.
 *.jks
 *.keystore
+
+# The engine's static libraries: .github/scripts/build-engine.sh makes them.
+/lib/

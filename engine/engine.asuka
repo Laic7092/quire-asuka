@@ -1,0 +1,157 @@
+// The book engine, called through its C ABI (ebook-engine's crates/ebook-abi,
+// the `eb_plain_*` scalar surface): it parses EPUB and plain text, lays a
+// chapter out into pages, and rasterizes a page to a file this app shows.
+//
+// A book is an integer handle (it can live in state, in a store). Nothing
+// here draws: a page is an `EQP1` file (u32 width, u32 height, RGBA8) and
+// BookPage (the native package) puts it on screen.
+
+import std/fs
+
+/// A page's box and chapter progress.
+extern struct PageInfo {
+  ok: Int32
+  width: Float32
+  height: Float32
+  /// 0..1, of this chapter; -1 unknown.
+  progress: Float32
+}
+
+/// Where a point in a page falls in the text.
+extern struct Loc {
+  /// -1: nothing there.
+  page: Int32
+  line: UInt32
+  byte: UInt32
+  /// 0..1, of the whole book; -1 unknown.
+  progress: Float32
+}
+
+extern fn eb_plain_open(data: bytes, name: CString?) -> Int32
+extern fn eb_plain_close(id: Int32) -> Int32
+extern fn eb_plain_last_error() -> CString
+extern fn eb_plain_title(id: Int32) -> CString
+extern fn eb_plain_spine_count(id: Int32) -> UInt32
+extern fn eb_plain_spine_href(id: Int32, index: UInt32) -> CString
+extern fn eb_plain_register_font(id: Int32, data: bytes) -> Int32
+extern fn eb_plain_layout(
+  id: Int32, spine: UInt32, width: Float32, height: Float32,
+  top: Float32, right: Float32, bottom: Float32, left: Float32,
+  fontScale: Float32, lineScale: Float32, letterPx: Float32, align: UInt32
+) -> Int32
+extern fn eb_plain_spine(id: Int32) -> Int32
+extern fn eb_plain_page_count(id: Int32) -> UInt32
+extern fn eb_plain_page_info(id: Int32, page: UInt32) -> PageInfo
+extern fn eb_plain_page_raw(
+  id: Int32, page: UInt32, scale: Float32, ink: UInt32, paper: UInt32, bold: bool, path: CString
+) -> Int32
+extern fn eb_plain_hit(id: Int32, page: UInt32, x: Float32, y: Float32) -> Loc
+extern fn eb_plain_progress(id: Int32, page: UInt32, line: UInt32, byte: UInt32) -> Float32
+extern fn eb_plain_toc_count(id: Int32) -> UInt32
+extern fn eb_plain_toc_title(id: Int32, index: UInt32) -> CString
+extern fn eb_plain_toc_spine(id: Int32, index: UInt32) -> Int32
+extern fn eb_plain_toc_depth(id: Int32, index: UInt32) -> UInt32
+
+/// What went wrong last, for the log.
+pub fn lastError() -> string = eb_plain_last_error()
+
+/// Opens a book: EPUB by its archive, plain text by anything else.
+/// -1 when it failed (see lastError).
+pub fn open(path: string) -> int {
+  if !fs.exists(path) { return -1 }
+  if let data = try? fs.read(path) {
+    return int(eb_plain_open(data, path))
+  }
+  return -1
+}
+
+/// Releases a handle.
+pub fn close(id: int) {
+  if id > 0 { let _closed = eb_plain_close(i32(clamping: id)) }
+}
+
+/// Registers a font file the app ships (or one the system has). Without a
+/// font the pages come out blank: the engine measures with the fonts given.
+pub fn registerFont(id: int, path: string) -> bool {
+  if id <= 0 || !fs.exists(path) { return false }
+  if let data = try? fs.read(path) {
+    if data.isEmpty() { return false }
+    return eb_plain_register_font(i32(clamping: id), data) >= 0
+  }
+  return false
+}
+
+/// The first font that exists, out of the ones a platform has.
+pub fn registerFirstFont(id: int, paths: [string]) -> bool {
+  for path in paths {
+    if registerFont(id, path: path) { return true }
+  }
+  return false
+}
+
+/// A page's margins, in points: the text's column, not the screen's edges.
+pub struct Margins {
+  top: float
+  right: float
+  bottom: float
+  left: float
+}
+
+/// Lays a chapter (`spine`, 0-based) out for a view of this size. Returns
+/// its page count, -1 when it failed.
+pub fn layout(id: int, spine: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float) -> int {
+  if id <= 0 { return -1 }
+  let rc = eb_plain_layout(
+    i32(clamping: id), u32(clamping: spine), width, height,
+    margins.top, margins.right, margins.bottom, margins.left,
+    fontScale, lineScale, 0, 0
+  )
+  if rc < 0 { return -1 }
+  return int(eb_plain_page_count(i32(clamping: id)))
+}
+
+/// One page's box and chapter progress.
+pub fn pageInfo(id: int, page: int) -> PageInfo = eb_plain_page_info(i32(clamping: id), u32(clamping: page))
+
+/// Rasterizes a page into `path`, at `scale` device pixels per point.
+pub fn renderPage(id: int, page: int, scale: float, ink: u32, paper: u32, bold: bool, path: string) -> bool {
+  return eb_plain_page_raw(i32(clamping: id), u32(clamping: page), scale, ink, paper, bold, path) == 0
+}
+
+/// Where this point in the page falls in the text.
+pub fn hit(id: int, page: int, x: float, y: float) -> Loc = eb_plain_hit(i32(clamping: id), u32(clamping: page), x, y)
+
+/// A directory entry of the table of contents.
+pub struct TocItem {
+  title: string
+  spine: int
+  depth: int
+}
+
+/// The table of contents.
+pub fn contents(id: int) -> [TocItem] {
+  var items: [TocItem] = []
+  if id <= 0 { return items }
+  let key = i32(clamping: id)
+  let count = eb_plain_toc_count(key)
+  for i in 0 ..< int(count) {
+    items.push(TocItem(
+      title: eb_plain_toc_title(key, u32(clamping: i)),
+      spine: int(eb_plain_toc_spine(key, u32(clamping: i))),
+      depth: int(eb_plain_toc_depth(key, u32(clamping: i)))
+    ))
+  }
+  return items
+}
+
+/// The book's title: its metadata, or what the engine made of the file.
+pub fn title(id: int) -> string = eb_plain_title(i32(clamping: id))
+
+/// How many chapters (spine items) it has.
+pub fn chapterCount(id: int) -> int = int(eb_plain_spine_count(i32(clamping: id)))
+
+/// A chapter's name, from its href: "ch01.xhtml" is "ch01".
+pub fn chapterName(id: int, index: int) -> string {
+  let href = eb_plain_spine_href(i32(clamping: id), u32(clamping: index))
+  return href
+}

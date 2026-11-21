@@ -1,0 +1,12 @@
+// BookPage: one page the Rust engine laid out, as an `EQP1` raw bitmap
+// file (12-byte header + RGBA8 pixels), drawn to fill its view.
+//
+// The engine (`ebook-engine`, crates/ebook-abi) writes the file; each
+// platform's code reads it straight into a texture. No pixels cross the
+// Asuka runtime.
+
+/// A page bitmap, drawn to fill its view.
+pub native component BookPage(path: string) {
+  /// A tap: where it landed in the page, in points.
+  event press(x: float, y: float)
+}

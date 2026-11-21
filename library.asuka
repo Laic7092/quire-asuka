@@ -15,16 +15,33 @@ pub store Library {
   effect { store.write("reader.theme", theme) }
   effect { store.write("reader.size", size) }
 
-  /// Reads a .txt the user picked (the document picker on iOS copies it into
-  /// the app's caches) and puts it on the shelf. EPUB waits for a parser.
+  /// Takes a .txt or .epub the user picked (the document picker on iOS hands
+  /// over a copy in the app's caches), keeps it in the app's directory, and
+  /// puts it on the shelf. The engine reads it when the reader opens it.
   pub async fn importFile(path: string) throws {
     let name = lib.fileName(path)
-    if !name.lower().hasSuffix(".txt") {
-      throw Error("只支持 .txt；EPUB 的解析还没搬过来")
+    let lower = name.lower()
+    let isText = lower.hasSuffix(".txt")
+    if !isText && !lower.hasSuffix(".epub") {
+      throw Error("只支持 .txt 和 .epub")
     }
-    let text = try await spawn { try fs.readText(path) }
-    var book = lib.openText(name, text)
-    if book.empty() { throw Error("{name} 里没有可读的文字") }
+    let dir = fs.join([fs.appDir(), "books"])
+    try await spawn { try fs.mkdirAll(dir) }
+    let target = fs.join([dir, name])
+    if path != target {
+      let data = try await spawn { try fs.read(path) }
+      try await spawn { try fs.write(target, data) }
+    }
+    // A text book also arrives as chapters, so the shelf can count its words
+    // and draw its cover before the engine has ever seen it.
+    var book = if isText {
+      let text = try await spawn { try fs.readText(target) }
+      lib.openText(name, text)
+    } else {
+      lib.Book(id: lib.idOf(name), title: lib.titleOf(name), author: "", chapters: [])
+    }
+    book.path = target
+    if isText && book.empty() { throw Error("{name} 里没有可读的文字") }
     books.removeWhere(b => b.id == book.id)
     books.push(book)
   }

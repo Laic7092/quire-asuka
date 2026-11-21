@@ -29,7 +29,7 @@ enum ParagraphMode {
 /// A text file opened: its title is its file name, its chapters split.
 pub fn openText(name: string, text: string) -> Book {
   let chapters = chaptersOf(text)
-  return Book(id: idOf(name), title: titleOf(name), author: "", chapters: chapters)
+  return Book(id: idOf(name), title: titleOf(name), author: "", chapters: chapters, raw: text)
 }
 
 /// The last segment of a path: "samples/背影.txt" is "背影.txt".

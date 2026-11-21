@@ -1,22 +1,27 @@
 # Quire on Asuka
 
 把 [Quire](../quire) 的阅读器用 Asuka 重写的一份实验分支：视图用各平台原生控件，
-目标是 **iPhone / iPad 上的 .ipa**。排版不走 layx（Go），改用平台自己的文本引擎；
-分页/字形位置那一层暂时没有对等物，这是这个分支有意的取舍（见下「和 Quire 的差距」）。
+目标是 **iPhone / iPad 上的 .ipa**。
+
+排版与分页不重写，交给 [ebook-engine](../ebook-engine)（Rust）：它解析 EPUB 与纯文本、
+按章分页、把一页光栅化成位图。Asuka 这边只调它的 C ABI（`eb_plain_*`），再把位图交给
+一个原生视图显示 —— 排版是同一份代码，桌面、iOS 与 Web 出的是同一套断行。
 
 ## 现在有什么
 
 | 文件 | 内容 |
 | --- | --- |
-| `lib/text.asuka` | 纯文本开书：章标题（第…章 / 卷… / Chapter N / 序 / 楔子 / 番外）、段落模式（空行分段 vs 一行一段）、硬换行合并、长段落在句子处切分、单章 20000 字上限 —— 逐条移植 Quire 的 `internal/book/txt.go` |
+| `engine/engine.asuka` | 引擎的 Asuka 绑定：`extern fn eb_plain_*`，书是一个整数句柄（store/state 里都能放） |
+| `bookpage/` | 原生组件 `BookPage(path:)`：iOS 上 `CGImage`（文件 mmap，不拷贝）+ `UIImageView`，Linux/GTK 上 `GdkMemoryTexture` + `GtkPicture`；点按发 `press(x, y)` |
+| `lib/text.asuka` | 纯文本开书（书架用的元数据：章标题、段数、字数）：第…章 / 卷… / Chapter N / 序 / 楔子 / 番外、空行分段 vs 一行一段、硬换行合并、长段落在句子处切分 —— 移植 Quire 的 `internal/book/txt.go` |
 | `lib/text_test.asuka` | 11 个解析测试 |
 | `lib/models.asuka` | `Chapter` / `Book` / `Reading` / 纸墨 `Palette` / 正文字体（iOS/macOS 用 Songti SC） |
-| `library.asuka` | 书单、阅读位置、字号、纸色；`std/store` 持久化（iOS = UserDefaults），`importFile` 读用户选的 .txt |
+| `library.asuka` | 书单、阅读位置、字号、纸色；`std/store` 持久化（iOS = UserDefaults），`importFile` 收 .txt 和 .epub（存进 app 目录） |
 | `shelf.asuka` | 书架：网格封面、按窗口宽度决定列数、导入按钮、`onOpenFiles`（Files/邮件里「用 Quire 打开」） |
-| `reader.asuka` | 阅读页：整本书连续滚动、目录 sheet、字号/纸色 sheet、上一章/下一章 |
+| `reader.asuka` | 阅读页：引擎排出的**逐页**位图、点按左右三分之一翻页、目录 sheet（引擎的 TOC）、字号/纸色 sheet（改了就重排）、位置写回 store |
 | `samples/` | 两本公有领域样书（朱自清散文选、鲁迅野草），编译时由 `std/embed` 嵌进去 |
 
-10 个测试全绿（`asuka test`）。原生预览用 asuka 自己的截图，不经过浏览器：
+9 个测试全绿（`asuka test`）。原生预览用 asuka 自己的截图，不经过浏览器：
 
 ```sh
 # 桌面窗口，png 出来就退出；ASUKA_SCRIPT 可以 tap:/type: 先走一遍
@@ -24,19 +29,28 @@ ASUKA_SNAPSHOT=shot.png ASUKA_SCRIPT="tap:散文選;tap:目录" \
   xvfb-run -a dbus-run-session asuka dev --platform linux
 ```
 
-## 连续滚动
+## 一页是怎么画的
 
-阅读页是**整本书一个连续滚动**（Quire 的 scroll 模式）：章标题和段落都是同一个 `List`
-的行，`on scroll` 按估算的行高换算章节、把进度写进 store；「上一章 / 下一章」和目录跳转
-把目标章滚到窗口顶部（`scrollToItem` 只会「滚到刚好看得见」，所以先 `scrollToEnd` 再
-`scrollToItem`，让它从下方滚上来、标题正好落在顶栏下）。
+```
+ebook-engine                          Asuka                   平台
+─────────────                         ─────                   ────
+eb_plain_open(书的字节)      ──>  句柄（int，进 state）
+eb_plain_layout(章, 视口, 字号) ──>  页数
+eb_plain_page_raw(页, DPR, 墨/纸, 路径)
+                              ──>  EQP1 文件 ──>  BookPage(path) ──> CGImage / GdkMemoryTexture
+eb_plain_hit(页, x, y)        <──  press(x, y)（原生手势）
+```
 
-已知的两个 asuka 0.2.12 限制（都绕开了，值得回报上游）：
+- 位图格式是 `EQP1` + u32 宽 + u32 高 + RGBA8（直通 alpha），由引擎按屏幕 DPR 直接写文件；
+  像素不经过 Asuka 运行时，也没有 PNG 编解码。
+- `BookPage` 的原生代码读文件（iOS 是 `mmap` + `CGDataProvider`，不拷），点按再回给 Asuka。
+- 一页的排版 + 光栅在 20–40ms 量级，翻页在 `task` 里同步做；改字号、改纸色、转屏都重排。
 
-- **底部工具栏按钮的 `disabled` 在它自己的 handler 里翻转会让 GTK 堆损坏**
-  （`malloc(): unaligned fastbin chunk detected`）。所以章节按钮不设 `disabled`，
-  越界时 `go()` 直接忽略。
-- `List` 没有「当前可见的第几行」，进度只能用估算的行高换算（中文一字一 em，误差可接受）。
+已知的 asuka 0.2.12 限制（值得回报上游）：
+
+- **`Canvas` 不能画位图**，所以位图只能走 `Image(路径)` 或原生组件；这里选了原生组件。
+- **透明 `View` 上的 `on press` 在 GTK 上收不到点击**（Stack 覆盖层），点按因此交给原生视图的手势。
+- 底部工具栏按钮的 `disabled` 在自己 handler 里翻转会让 GTK 堆损坏，所以按钮不设 `disabled`。
 
 ## 跑
 

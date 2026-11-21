@@ -1,0 +1,14 @@
+# Written by asuka (asuka add, asuka install): the versions of the app's
+# dependencies, and their hashes. Commit it; don't edit it.
+
+version = 1
+
+[root]
+bookpage = "file:bookpage"
+
+[[packages]]
+id = "file:bookpage"
+name = ""
+version = ""
+source = "file:bookpage"
+integrity = ""

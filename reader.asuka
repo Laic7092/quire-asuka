@@ -1,100 +1,66 @@
-// The reading page: the whole book in one continuous scroll (Quire's scroll
-// mode), chapter headings and paragraphs as rows of a List, paper and ink
-// from Quire's palette, the position kept in the shelf's store.
+// The reading page: the engine (ebook-engine) lays a chapter out into pages
+// and rasterizes each one to a file; BookPage (the native package) shows it.
+//
+// Every way into the text — the page turn, the table of contents, the size
+// and the paper — goes through the same task: lay the chapter out again,
+// rasterize the page, and remember where the reader is.
+
+import std/fs
+
+import bookpage
 
 import ./lib
+import ./engine
 
-/// A row of the continuous page: a chapter's heading, or one paragraph.
-enum RowKind {
-  heading
-  paragraph
+/// Points the engine lays out at, before the reader's own size multiplies it.
+let baseSize = 19.0
+
+/// The fonts to try, in order: the first one that exists is registered.
+/// iOS has Songti for Chinese, PingFang for sans; the desktops the fallbacks
+/// a distribution ships. A book's own embedded fonts come from the engine.
+fn fontCandidates() -> [string] {
+  if @platform == .iOS || @platform == .macOS {
+    return [
+      "/System/Library/Fonts/Supplemental/Songti.ttc",
+      "/System/Library/Fonts/PingFang.ttc",
+      "/System/Library/Fonts/Supplemental/STIXTwoText.ttf",
+    ]
+  }
+  return [
+    "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf",
+  ]
 }
 
-struct Line {
-  key: string
-  chapter: int
-  text: string
-  kind: RowKind
-}
-
-/// Every line of the book, in reading order.
-fn rowsOf(book: lib.Book) -> [Line] {
-  var out: [Line] = []
-  for (ci, c) in book.chapters.enumerated() {
-    out.push(Line(key: "{ci}-h", chapter: ci, text: c.title, kind: .heading))
-    for (pi, p) in c.paragraphs.enumerated() {
-      out.push(Line(key: "{ci}-{pi}", chapter: ci, text: p, kind: .paragraph))
+/// The file the engine reads: the import's, or one written from the text the
+/// shelf kept.
+async fn bookFileOf(book: lib.Book) throws -> string {
+  if !book.path.isEmpty() && fs.exists(book.path) { return book.path }
+  let dir = fs.join([fs.appDir(), "books"])
+  let path = fs.join([dir, "{book.id}.txt"])
+  if !fs.exists(path) && !book.raw.isEmpty() {
+    let raw = book.raw
+    try await spawn { try fs.mkdirAll(dir) }
+    try await spawn {
+      try fs.writeText(path, text: raw)
     }
   }
-  return out
+  return path
 }
 
-/// Where each chapter starts, in points, as the rows will lay out: a heading's
-/// height plus each paragraph's lines at the current width and size. Chinese
-/// text is one em a character, so this is close enough to follow the scroll.
-fn chapterOffsets(book: lib.Book, width: float, size: float) -> [float] {
-  let available = if width > 88 { width - 44 } else { 320.0 }
-  var perLine = 20
-  if size > 0 { perLine = int(available / size) }
-  if perLine < 1 { perLine = 1 }
-  let heading = 96.0
-  let lineHeight = size * 1.55
-  var out: [float] = []
-  var y = 0.0
-  for c in book.chapters {
-    out.push(y)
-    y += heading
-    for p in c.paragraphs {
-      let lines = float((p.count() + perLine - 1) / perLine)
-      y += lines * lineHeight + 15
-    }
-  }
-  return out
+/// The margins a page is set in, from the view it's shown in.
+fn marginsOf(width: float, height: float) -> engine.Margins {
+  let side = if width * 0.075 > 24 { width * 0.075 } else { 24.0 }
+  let top = if height * 0.055 > 28 { height * 0.055 } else { 28.0 }
+  return engine.Margins(top: top, right: side, bottom: top, left: side)
 }
 
-/// The chapter a scroll offset falls in.
-fn chapterAt(offsets: [float], y: float) -> int {
-  var found = 0
-  for (i, top) in offsets.enumerated() {
-    if y >= top - 8 { found = i }
-  }
-  return found
-}
+/// The page files: one a book, chapter, page and size, next to the app's data.
+fn pagesDir() -> string = fs.join([fs.appDir(), "pages"])
 
-/// One chapter's heading, then its paragraphs in the chosen face and size.
-component Heading(chapter: lib.Chapter, index: int, count: int, palette: lib.Palette) {
-  Column {
-    padding: [30, 22]
-    gap: 6
-    Text("第 {index + 1} 章") {
-      font: .footnote
-      color: palette.muted
-    }
-    Text(chapter.title) {
-      font: .title2
-      color: palette.ink
-    }
-    Text("共 {count} 章 · 约 {chapter.chars()} 字") {
-      font: .footnote
-      color: palette.muted
-    }
-  }
-}
-
-component Paragraph(text: string, palette: lib.Palette, size: float) {
-  // A container, not the Text alone: a list row measures a component's views,
-  // and a padded Text measured one line tall on GTK when it was the row root.
-  Column {
-    padding: [0, 22, 15, 22]
-    Text(text) {
-      font: Font(family: lib.bodyFamily(), size: size)
-      color: palette.ink
-    }
-  }
-}
-
-/// The table of contents, as a sheet.
-component Contents(book: lib.Book, at: int) {
+component Contents(items: [engine.TocItem], at: int) {
   event pick(index: int)
 
   Column {
@@ -106,7 +72,7 @@ component Contents(book: lib.Book, at: int) {
     }
     List {
       grow: 1
-      for (i, c) in book.chapters.enumerated() key i {
+      for (i, item) in items.enumerated() key i {
         Row {
           padding: [12, 20]
           gap: 10
@@ -115,13 +81,13 @@ component Contents(book: lib.Book, at: int) {
             emit pick(i)
             dismiss()
           }
-          Text(c.title) {
+          Text(item.title) {
             grow: 1
-            lines: 1
-            font: if i == at { .body.bold() } else { .body }
-            color: if i == at { .accent } else { .label }
+            lines: 2
+            font: if item.spine == at { .body.bold() } else { .body }
+            color: if item.spine == at { .accent } else { .label }
           }
-          Text("{c.paragraphs.count()} 段") {
+          Text("{item.spine + 1}") {
             font: .caption
             color: .secondaryLabel
           }
@@ -165,7 +131,7 @@ component Appearance {
       selected: papers.index(p => p[0] == library.theme) ?? 0
       on change(i) { library.theme = papers[i][0] }
     }
-    Text("正文用衬线（serif）：iOS 与 macOS 上是宋体（Songti SC），其余平台用系统衬线。") {
+    Text("正文由引擎排成位图（ebook-engine），与桌面版 Quire 同一套排版与断行；字号与纸色改了就重排。") {
       font: .footnote
       color: .secondaryLabel
     }
@@ -175,71 +141,126 @@ component Appearance {
 screen Reader(book: lib.Book) {
   use library: Library
 
-  let lines = rowsOf(book)
-  let count = book.chapters.count()
-  let saved = library.readingOf(book.id)
-  state chapter = if count == 0 { 0 } else if saved.chapter >= count { count - 1 } else if saved.chapter < 0 { 0 } else { saved.chapter }
-  // A chapter jump scrolls the list itself; those scroll events must not be
-  // read as the reader scrolling, or the jump's landing is saved as progress.
-  state settling = false
+  state engineId = -1
+  state spine = 0
+  state page = 0
+  state pages = 1
+  state pagePath = ""
+  state frame = Frame()
+  state failed = ""
+  state opened = false
+  state shownTitle = book.title
 
-  let width = environment().width
-  let offsets = chapterOffsets(book, width, library.size)
   let palette = lib.paletteFor(library.theme)
-  let list = Ref()
+  let env = environment()
+  let scale = if env.scale > 0 { env.scale } else { 2.0 }
+  let saved = library.readingOf(book.id)
 
-  title: book.title
+  title: if shownTitle.isEmpty() { book.title } else { shownTitle }
 
-  fn percentOf(index: int) -> float {
-    if count <= 1 { return 1.0 }
-    return float(index) / float(count - 1)
-  }
-
-  /// The chapter the reader is in: saved, and shown by the shelf.
-  fn note(index: int) {
-    if index < 0 || index >= count || index == chapter { return }
-    chapter = index
-    library.save(book.id, index, percentOf(index))
-  }
-
-  /// Scrolls a chapter's heading to the top of the window, and remembers it.
-  // scrollToItem only scrolls the least that shows an item, which lands a
-  // heading at the bottom; from the end of the list it scrolls up to the
-  // heading's top instead, which is where a chapter should start.
-  fn reveal(index: int) {
-    if let row = lines.index(r => r.kind == .heading && r.chapter == index) {
-      settling = true
-      list.scrollToEnd(animated: false)
-      list.scrollToItem(row, animated: false)
-    }
-  }
-
-  fn go(index: int) {
-    if index < 0 || index >= count { return }
-    note(index)
-    reveal(index)
-  }
-
-  // Once the jump has landed, the scroll events are the reader's again.
-  task(settling) {
-    if settling {
-      await sleep(400ms)
-      settling = false
-    }
-  }
-
-  // Opens where the book was left.
+  // Opens where the book was left, in the chapter (spine) it was left in.
   task {
-    if chapter > 0 {
-      await sleep(60ms)
-      reveal(chapter)
+    spine = if saved.chapter > 0 { saved.chapter } else { 0 }
+  }
+
+  // The engine holds the book's bytes: let it go as the reading page does.
+  cleanup {
+    if engineId > 0 {
+      engine.close(engineId)
+      engineId = -1
     }
+  }
+
+  /// Actually lays the chapter out and rasterizes the page.
+  fn show() {
+    if engineId <= 0 || frame.width <= 32 || frame.height <= 64 { return }
+    let chapterCount = engine.chapterCount(engineId)
+    if spine >= chapterCount { spine = if chapterCount > 0 { chapterCount - 1 } else { 0 } }
+    let pagesNow = engine.layout(
+      engineId, spine, frame.width, frame.height,
+      marginsOf(frame.width, frame.height),
+      library.size / baseSize, 1.6
+    )
+    if pagesNow <= 0 { return }
+    pages = pagesNow
+    if page >= pages { page = pages - 1 }
+    if page < 0 { page = 0 }
+    let path = fs.join([pagesDir(), "{book.id}-{spine}-{page}-{frame.width.int()}x{frame.height.int()}.eqp"])
+    let ok = engine.renderPage(engineId, page, scale, lib.rgbaOf(palette.ink), lib.rgbaOf(palette.paper), false, path)
+    if ok {
+      pagePath = path
+      let info = engine.pageInfo(engineId, page)
+      let chapters = if chapterCount > 0 { float(chapterCount) } else { 1.0 }
+      library.save(book.id, spine, (float(spine) + info.progress) / chapters)
+    }
+  }
+
+  /// Opens the engine once, and the font it measures with.
+  async fn openBook() throws {
+    if opened { return }
+    opened = true
+    let file = try await bookFileOf(book)
+    if !fs.exists(file) {
+      failed = "找不到《{book.title}》的文件"
+      return
+    }
+    let id = engine.open(file)
+    if id <= 0 {
+      failed = "打不开这本书：{engine.lastError()}"
+      return
+    }
+    let _font = engine.registerFirstFont(id, fontCandidates())
+    engineId = id
+    let named = engine.title(id)
+    if !named.isEmpty() { shownTitle = named }
+    let count = engine.chapterCount(id)
+    if count > 0 && spine >= count { spine = 0 }
+    try await spawn { try fs.mkdirAll(pagesDir()) }
+    show()
+  }
+
+  // One pass for every change: the chapter, the page, the view's size, the
+  // size of the type, the paper. The engine's layout is idempotent, so this
+  // is only as expensive as the page it produces.
+  task("{spine}:{page}:{frame.width}:{frame.height}:{library.size}:{library.theme}") {
+    if frame.width <= 32 { return }
+    try? await openBook()
+    show()
+  }
+
+  fn next() {
+    if page + 1 < pages {
+      page += 1
+    } else if spine + 1 < engine.chapterCount(engineId) {
+      spine += 1
+      page = 0
+    }
+  }
+
+  fn back() {
+    if page > 0 {
+      page -= 1
+    } else if spine > 0 {
+      spine -= 1
+      page = 0
+    }
+  }
+
+  fn jump(index: int) {
+    if index < 0 || index >= engine.chapterCount(engineId) { return }
+    spine = index
+    page = 0
   }
 
   toolbar {
     Button("目录") {
       icon: "list.bullet"
-      on press { present(Contents(book, chapter) { on pick(i) { go(i) } }) }
+      on press {
+        present(Contents(engine.contents(engineId), spine) { on pick(i) {
+          let items = engine.contents(engineId)
+          if i >= 0 && i < items.count() { jump(items[i].spine) }
+        } })
+      }
     }
     Button("外观") {
       icon: "textformat"
@@ -247,33 +268,62 @@ screen Reader(book: lib.Book) {
     }
   }
 
-  List {
-    ref: list
+  View {
     background: palette.paper
     grow: 1
-    on scroll(_, y) {
-      if !settling { note(chapterAt(offsets, y)) }
-    }
-    for r in lines key r.key {
-      if r.kind == .heading {
-        Heading(book.chapters[r.chapter], r.chapter, count, palette)
-      } else {
-        Paragraph(r.text, palette, library.size)
+    on layout(f) { frame = f }
+    Stack {
+    grow: 1
+
+    if !failed.isEmpty() {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        padding: 32
+        Text(failed) {
+          color: palette.muted
+          textAlign: .center
+        }
       }
+    } else if pagePath.isEmpty() {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        Text("排版中…") { color: palette.muted }
+      }
+    } else {
+      // The page itself takes the tap: its left third goes back, its right
+      // third forward, and its middle does nothing (that one opens chrome,
+      // once there is chrome to open).
+      bookpage.BookPage(path: pagePath) {
+        grow: 1
+        on press(x, y) {
+          let width = if frame.width > 0 { frame.width } else { 320.0 }
+          if x < width / 3 {
+            back()
+          } else if x > width * 2 / 3 {
+            next()
+          }
+          let _where = y
+        }
+      }
+    }
     }
   }
 
-  // No `disabled:` on these: in asuka 0.2.12 a bottom-toolbar button whose
-  // disabled changes as its own handler runs corrupts the heap on GTK. go()
-  // ignores a chapter past either end, so the buttons do nothing there.
   bottomToolbar {
-    Button("上一章") {
-      icon: "chevron.up"
-      on press { go(chapter - 1) }
+    Button("上一页") {
+      icon: "chevron.left"
+      on press { back() }
     }
-    Button("下一章") {
-      icon: "chevron.down"
-      on press { go(chapter + 1) }
+    Button("{page + 1} / {pages}") {
+      on press { page = 0 }
+    }
+    Button("下一页") {
+      icon: "chevron.right"
+      on press { next() }
     }
   }
 }

@@ -25,3 +25,24 @@ darkBackground = "#16161a"
 # profile = "Quire Distribution"  # else the best match in the keychain
 iphoneOnly = false
 nonExemptEncryption = "no"
+
+# The book engine (github.com/Laic7092/ebook-engine): Rust, a static
+# library per target. Format, layout and the page rasterizer are its;
+# this app only calls its C ABI and shows the pages.
+[dependencies]
+bookpage = "file:bookpage"
+
+[c.prebuilt]
+linux-x64 = "lib/linux-x64/libebook_abi.a"
+macos-arm64 = "lib/macos-arm64/libebook_abi.a"
+macos-x64 = "lib/macos-x64/libebook_abi.a"
+ios-arm64 = "lib/ios-arm64/libebook_abi.a"
+ios-simulator-arm64 = "lib/ios-simulator-arm64/libebook_abi.a"
+ios-simulator-x64 = "lib/ios-simulator-x64/libebook_abi.a"
+
+# Rust's std needs these on the desktops; Apple's SDK brings its own.
+[c.linux]
+libraries = ["pthread", "dl", "m"]
+
+[c.android]
+libraries = ["dl", "log", "m"]

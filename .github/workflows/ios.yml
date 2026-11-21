@@ -29,6 +29,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The book engine is its own Rust repository: format, layout, the page
+      # rasterizer. A private one needs a token that can read it, in
+      # secrets.ENGINE_TOKEN; a public one needs nothing.
+      - uses: actions/checkout@v4
+        with:
+          repository: Laic7092/ebook-engine
+          path: engine
+          token: ${{ secrets.ENGINE_TOKEN || github.token }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build the engine for the Mac (the tests run on it)
+        run: bash .github/scripts/build-engine.sh macos-arm64 engine
+
       - name: Xcode
         run: |
           # macos-latest carries several Xcodes; asuka needs 26+, and the one
@@ -60,6 +74,11 @@ jobs:
           asuka version
           asuka check
           asuka test
+
+      - name: Build the engine for iOS
+        run: |
+          bash .github/scripts/build-engine.sh ios-arm64 engine
+          bash .github/scripts/build-engine.sh ios-simulator-arm64 engine
 
       - name: Build the unsigned IPA
         run: bash .github/scripts/build-unsigned-ipa.sh
