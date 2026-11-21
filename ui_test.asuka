@@ -24,29 +24,22 @@ test "a book opens as a page the engine laid out" {
   let app = mount(Harness(), provide: Library())
   app.tap("散文選")
   await app.idle()
-  // The page is the engine's bitmap, in the native BookPage view, with the
-  // page turn's controls around it.
+  // The page is the engine's bitmap, in the native BookPage view; the page
+  // turn is a tap on its left or right third, so there are no buttons for it.
   app.expect("BookPage")
-  app.expect("上一页")
-  app.expect("下一页")
   app.expect("目录")
+  app.expect("外观")
 }
 
-test "the page turn keeps a place in the book" {
+test "opening a book remembers where the reader is" {
   let lib = Library()
   let app = mount(Harness(), provide: lib)
   app.tap("散文選")
   await app.idle()
   // Whatever the page count, the reader has a position once a page shows.
-  let before = lib.readingOf("朱自清·散文選")
-  expect(before.chapter == 0)
-  app.tap("下一页")
-  await app.idle()
-  let after = lib.readingOf("朱自清·散文選")
-  expect(after.percent >= before.percent)
-  app.tap("上一页")
-  await app.idle()
-  expect(lib.readingOf("朱自清·散文選").chapter == 0)
+  let reading = lib.readingOf("朱自清·散文選")
+  expect(reading.chapter == 0)
+  expect(reading.percent >= 0)
 }
 
 test "the table of contents jumps to a chapter" {
@@ -61,6 +54,68 @@ test "the table of contents jumps to a chapter" {
   app.tap("第3章 春")
   await app.idle()
   expect(lib.readingOf("朱自清·散文選").chapter == 2)
+}
+
+/// The pages the reader has written for a book, newest last: the file names
+/// say how each was laid out.
+fn pagesMatching(tag: string) -> [string] {
+  let dir = "{fs.appDir()}/pages"
+  let found = try? fs.walk(dir)
+  return (found ?? []).filter(e => !e.isDir && e.name.hasSuffix("-{tag}.eqp")).map(e => e.path)
+}
+
+/// A page file's first pixel: "EQP1", width, height, then RGBA.
+fn firstPixel(path: string) -> [int] {
+  let data = try? fs.read(path)
+  var rgba: [int] = []
+  for i in 12..<16 {
+    rgba.push(data?.get(i) ?? -1)
+  }
+  return rgba
+}
+
+test "the type and the paper are laid out again, into a new page file" {
+  let lib = Library()
+  let app = mount(Harness(), provide: lib)
+  app.tap("散文選")
+  await app.idle()
+  // The default: 19 points, 160% line, 100% margins, no letter spacing.
+  let before = pagesMatching("190-16-10-0-paper")
+  expect(!before.isEmpty())
+
+  // A different size is a different page: it can't be the file the native
+  // view already shows, or the change would wait for a page turn.
+  lib.size = 24
+  await app.idle()
+  let after = pagesMatching("240-16-10-0-paper")
+  expect(!after.isEmpty())
+  expect(before[0] != after[0])
+}
+
+test "a page is drawn in the paper and the ink of its theme" {
+  let lib = Library()
+  let app = mount(Harness(), provide: lib)
+  app.tap("散文選")
+  await app.idle()
+  let paper = pagesMatching("190-16-10-0-paper")
+  expect(!paper.isEmpty())
+  // 纸白: #fbfaf7, the background the engine fills the page with.
+  let white = firstPixel(paper[paper.count() - 1])
+  expect(white.count() == 4)
+  expect(white[0] == 0xfb)
+  expect(white[1] == 0xfa)
+  expect(white[2] == 0xf7)
+
+  lib.theme = "night"
+  await app.idle()
+  let night = pagesMatching("190-16-10-0-night")
+  expect(!night.isEmpty())
+  // 夜间: #16161a behind text drawn in #d8d6cf — not the light page with the
+  // surroundings turned dark.
+  let first = firstPixel(night[night.count() - 1])
+  expect(first[0] == 0x16)
+  expect(first[1] == 0x16)
+  expect(first[2] == 0x1a)
 }
 
 test "a position is kept, one row a book" {
@@ -81,15 +136,19 @@ test "an unread book says so" {
 }
 
 test "the appearance sheet changes the type and the paper" {
-  let app = mount(Harness(), provide: Library())
+  let lib = Library()
+  let app = mount(Harness(), provide: lib)
   app.tap("散文選")
   await app.idle()
   app.tap("外观")
   await app.idle()
   app.expect("字号")
   app.expect("纸色")
+  app.expect("行距")
+  app.expect("边距")
+  app.expect("字距")
   app.tap("夜间")
-  app.expect("正文由引擎排成位图（ebook-engine），与桌面版 Quire 同一套排版与断行；字号与纸色改了就重排。")
+  expect(lib.theme == "night")
 }
 
 test "a .txt picked from the document picker lands on the shelf" {
@@ -105,7 +164,7 @@ test "a .txt picked from the document picker lands on the shelf" {
   await app.idle()
   // The engine opened the file the shelf kept, and laid it out.
   app.expect("BookPage")
-  app.expect("下一页")
+  app.expect("目录")
 }
 
 test "a file that is neither text nor an EPUB is refused" {

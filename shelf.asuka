@@ -63,8 +63,9 @@ component BookCell(book: lib.Book, reading: lib.Reading) {
 screen Shelf {
   use library: Library
 
+  // No large title: the bar holds the title and the import button in one
+  // row, instead of the button above a title on a line of its own.
   title: "书架"
-  largeTitle: true
 
   // Runs the import, and says so when it can't.
   async fn bring(paths: [string]) {

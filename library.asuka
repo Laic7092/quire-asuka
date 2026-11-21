@@ -10,10 +10,19 @@ pub store Library {
   pub state readings: [lib.Reading] = store.read("readings", [])
   pub state theme: string = store.read("reader.theme", "paper")
   pub state size: float = store.read("reader.size", 19.0)
+  /// 行距，一行的字号的倍数。
+  pub state line: float = store.read("reader.line", 1.6)
+  /// 页边留白，按默认留白的倍数。
+  pub state margins: float = store.read("reader.margins", 1.0)
+  /// 字距，一个字的额外宽度（点）。
+  pub state letter: float = store.read("reader.letter", 0.0)
 
   effect { store.write("readings", readings) }
   effect { store.write("reader.theme", theme) }
   effect { store.write("reader.size", size) }
+  effect { store.write("reader.line", line) }
+  effect { store.write("reader.margins", margins) }
+  effect { store.write("reader.letter", letter) }
 
   /// Takes a .txt or .epub the user picked (the document picker on iOS hands
   /// over a copy in the app's caches), keeps it in the app's directory, and

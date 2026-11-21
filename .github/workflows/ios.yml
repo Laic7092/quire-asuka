@@ -63,7 +63,11 @@ jobs:
         run: |
           asuka version
           asuka check
+          # The app's tests, and the lib package's (parser and page turn):
+          # `asuka test` runs the tests of the package in the directory it's
+          # given, and lib/ is one of its own.
           asuka test
+          asuka test lib
 
   ipa:
     name: Unsigned IPA
