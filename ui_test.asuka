@@ -5,6 +5,8 @@
 
 import platform/dialog
 import std/fs
+
+import ./engine
 import ./lib
 
 /// The app as it runs: a stack with the shelf at its root.
@@ -192,11 +194,14 @@ test "a position is kept, one row a book" {
 test "an unread book says so" {
   let lib = Library()
   expect(lib.readingOf("没读过").label() == "未开始")
-  // The two samples are the app's own; anything else on the shelf was
-  // brought in and is kept as a file, not as its text.
+  // Every book on the shelf is a row with a file the engine reads, the
+  // samples' as much as anything brought in: the text isn't kept.
+  let app = mount(Harness(), provide: lib)
+  await app.idle()
   expect(lib.books().count() >= 2)
-  expect(!lib.books()[0].raw.isEmpty())
-  expect(!lib.books()[1].raw.isEmpty())
+  expect(lib.books().all(b => !b.path.isEmpty()))
+  expect(lib.books().all(b => b.raw.isEmpty()))
+  expect(lib.books().all(b => b.chapters.isEmpty()))
 }
 
 test "the appearance sheet changes the type and the paper" {
@@ -280,4 +285,91 @@ test "long press an imported book and delete it" {
   await app.idle()
   app.expectNo("quire-longpress-test")
   expect(library.shelf.count(s => s.id == lib.idOf("quire-longpress-test.txt")) == 0)
+}
+
+test "a sample book can be taken off the shelf" {
+  let library = Library()
+  let app = mount(Harness(), provide: library)
+  await app.idle()
+  app.expect("野草")
+
+  app.longPress("野草")
+  await app.idle()
+  app.expect("删除")
+  app.tap("删除")
+  await app.idle()
+  app.expectNo("野草")
+  // A row like any other's: it's gone from the shelf, not hidden from a list
+  // the app carries. The app still has the text (samples/ is compiled in).
+  expect(library.shelf.find(s => s.title == "野草") == none)
+  expect(library.seeded)
+  expect(samples().find(b => b.title == "野草") != none)
+
+  // Seeding is once: a launch doesn't bring it back. Put it back for the next
+  // run (the store writes it down).
+  library.seeded = false
+  await library.seedSamples()
+  await app.idle()
+  app.expect("野草")
+}
+
+test "a bookmark is a place, not a count" {
+  let lib = Library()
+  // The store keeps its rows between runs: start from none.
+  for mark in lib.bookmarksOf("書") {
+    lib.removeBookmark(mark.id)
+  }
+  lib.addBookmark("書", chapter: 2, percent: 0.4)
+  // The same place, counted a shade differently: still one bookmark.
+  lib.addBookmark("書", chapter: 2, percent: 0.4004)
+  expect(lib.bookmarksOf("書").count() == 1)
+  lib.addBookmark("書", chapter: 3, percent: 0.5)
+  expect(lib.bookmarksOf("書").count() == 2)
+  let mark = lib.bookmarkAt("書", chapter: 3, percent: 0.5)
+  expect(mark != none)
+  expect(mark?.percent == 0.5)
+  lib.removeBookmark(mark?.id ?? "")
+  expect(lib.bookmarksOf("書").count() == 1)
+  // A book off the shelf takes its bookmarks with it.
+  lib.forget("書")
+  expect(lib.bookmarksOf("書").isEmpty())
+}
+
+test "the contents sheet lists bookmarks, and drops one" {
+  let library = Library()
+  for mark in library.bookmarksOf("散文選") {
+    library.removeBookmark(mark.id)
+  }
+  library.addBookmark("散文選", chapter: 1, percent: 0.3)
+  let items = [
+    engine.TocItem(title: "第一章", spine: 0, depth: 0),
+    engine.TocItem(title: "第二章", spine: 1, depth: 0),
+  ]
+  var dropped = ""
+  let app = mount(Contents(items, 1, "散文選") {
+    on dropBookmark(id) { dropped = id }
+  }, provide: library)
+  await app.idle()
+  // 书签 first, then the chapters; the row says where in the book it is.
+  app.expect("书签")
+  app.expect("第二章 · 30%")
+  app.longPress("第二章 · 30%")
+  await app.idle()
+  app.expect("删除")
+  app.tap("删除")
+  expect(!dropped.isEmpty())
+  library.removeBookmark(dropped)
+}
+
+test "the bookmark button's action keeps a place, and takes it back" {
+  let lib = Library()
+  for mark in lib.bookmarksOf("書") {
+    lib.removeBookmark(mark.id)
+  }
+  expect(lib.toggleBookmark("書", chapter: 1, percent: 0.25))
+  expect(lib.bookmarksOf("書").count() == 1)
+  expect(lib.bookmarksOf("書")[0].percent == 0.25)
+  // Pressing again on the same place takes it back rather than adding one.
+  expect(!lib.toggleBookmark("書", chapter: 1, percent: 0.2503))
+  expect(lib.bookmarksOf("書").isEmpty())
 }

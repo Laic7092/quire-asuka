@@ -7,8 +7,8 @@ import std/fs
 import ./engine
 import ./lib
 
-/// Cover colors from Quire's icon sheet: ink, seal, cloth, dusk.
-let spines = [#2b2b2f, #8c3a2e, #3d5143, #4a3f63, #7a5b33, #2c5560]
+/// Cover colors from Quire's icon sheet: ink, cloth, dusk.
+let spines = [#2b2b2f, #3d5143, #4a3f63, #7a5b33, #2c5560]
 
 /// A title's cover color, the same every launch.
 fn spine(title: string) -> Color {
@@ -89,20 +89,16 @@ component BookTile(book: lib.Book, reading: lib.Reading) {
   }
 }
 
-/// A book on the shelf: long press an imported one for its actions. A sample
-/// came with the app and can't be taken off, so it has no menu.
+/// A book on the shelf: long press one for its actions, a sample's as much as
+/// an imported one's.
 component BookCell(book: lib.Book, reading: lib.Reading) {
   event open
   event delete
 
-  if book.path.isEmpty() {
+  Menu {
+    longPress: true
+    actions: [.button(title: "删除", role: .destructive, run: () => { emit delete })]
     BookTile(book, reading) { on open { emit open } }
-  } else {
-    Menu {
-      longPress: true
-      actions: [.button(title: "删除", role: .destructive, run: () => { emit delete })]
-      BookTile(book, reading) { on open { emit open } }
-    }
   }
 }
 
@@ -116,6 +112,9 @@ screen Shelf {
 
   title: "书架"
   largeTitle: true
+
+  // The books that came with the app are put on the shelf once, as books.
+  task { await library.seedSamples() }
 
   // Import is the shelf's main action: iOS puts it at the end of the bar as
   // a prominent +, Android floats it.

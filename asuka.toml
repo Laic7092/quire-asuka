@@ -6,7 +6,6 @@ id = "dev.laix.quire"
 version = "0.1"
 build = 1
 icon = "icon.png"
-accent = "#8c3a2e"
 orientations = ["portrait", "landscape"]
 
 # What the app opens: a .txt handed over by Files, Mail, or another app.

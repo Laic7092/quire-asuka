@@ -60,6 +60,15 @@ pub struct Reading {
   }
 }
 
+/// A bookmark: a place the reader kept in a book, as the whole book's
+/// fraction, with the chapter it was made in.
+pub struct Bookmark {
+  id: string
+  book: string
+  chapter: int
+  percent: float
+}
+
 /// The colors a page is drawn in: Quire's paper and ink.
 pub struct Palette {
   paper: Color

@@ -132,49 +132,131 @@ fn slicePath(book: string, spine: int, index: int, top: float, height: float, wi
   ])
 }
 
-/// One screenful of a chapter in scroll mode: the engine lays the chapter out
-/// again (it keeps only one) and rasterizes exactly this window. A List row is
-/// recycled, so the task is keyed on the row: the same view shows a different
-/// slice when it comes back, and a cached file skips the engine.
-component ScrollTile(engineId: int, book: string, row: int, spine: int, y: float, at: float, tileHeight: float, tileWidth: float, viewHeight: float, insetLeft: float, insetRight: float, fontScale: float, lineScale: float, letter: float, word: float, scale: float, ink: u32, paper: u32, tag: string) {
+/// The chapter the engine has laid out for scrolling, and with what: it keeps
+/// one chapter at a time, so the key says whether laying it out again would
+/// only make the same lines over.
+struct ScrollLayout {
+  id: int
+  spine: int
+  width: float
+  view: float
+  left: float
+  right: float
+  fontScale: float
+  lineScale: float
+  letter: float
+  word: float
+}
+
+/// The chapter the engine holds, if a scroll tile laid it out, and how tall it
+/// came out.
+var laidOut: ScrollLayout? = none
+var laidOutContent = 0.0
+
+/// Lays a chapter out for scrolling, unless that's what the engine already
+/// has: a fling meets several tiles of one chapter, and the chapter is the
+/// expensive part, not the slice.
+fn layOutScroll(engineId: int, spine: int, width: float, viewHeight: float, margins: engine.Margins, fontScale: float, lineScale: float, letter: float, word: float) -> float {
+  let key = ScrollLayout(
+    id: engineId, spine: spine, width: width, view: viewHeight,
+    left: margins.left, right: margins.right,
+    fontScale: fontScale, lineScale: lineScale, letter: letter, word: word,
+  )
+  if let last = laidOut {
+    if last == key { return laidOutContent }
+  }
+  let content = engine.layoutScroll(engineId, spine, width, viewHeight, margins, fontScale, lineScale, letter, word)
+  if content < 0 { return -1 }
+  laidOut = key
+  laidOutContent = content
+  return content
+}
+
+/// One screenful of a chapter in scroll mode. The reader makes the bitmap one
+/// tile at a time and hands it here: a List row is recycled as it goes off
+/// screen, so a tile says when it arrives and when it leaves, and draws what
+/// it's given. `signature` is everything the tile looks like (where it is,
+/// how big, in what type and paper): a new one is a new tile.
+component ScrollTile(signature: string, spine: int, at: float, tileWidth: float, tileHeight: float, path: string, paper: Color) {
   event shown(chapter: int, at: float)
   event hidden(at: float)
-  state path = ""
 
-  task("{row}:{spine}:{y}:{tileHeight}:{tileWidth}:{viewHeight}:{insetLeft}:{insetRight}:{fontScale}:{lineScale}:{letter}:{word}:{scale}:{tag}:{ink}:{paper}") {
-    let id = engineId
-    let file = slicePath(book: book, spine: spine, index: row, top: y, height: tileHeight, width: tileWidth, viewHeight: viewHeight, insetLeft: insetLeft, insetRight: insetRight, scale: scale, tag: tag)
-    path = ""
-    if !fs.exists(file) {
-      let height = engine.layoutScroll(
-        id, spine, tileWidth, viewHeight,
-        engine.Margins(top: 0, right: insetRight, bottom: 0, left: insetLeft),
-        fontScale, lineScale, letter, word,
-      )
-      if height < 0 { return }
-      if !engine.renderSlice(id, 0, y, tileHeight, scale, ink, paper, false, file) { return }
-    }
-    path = file
-    emit shown(spine, at)
-  }
+  task(signature) { emit shown(spine, at) }
 
   // The List recycles this row as it goes off screen: the parent can then
-  // stop counting it among the visible tiles.
+  // stop counting it among the visible tiles, and want its bitmap no more.
   cleanup { emit hidden(at) }
 
   View {
     width: tileWidth
     height: tileHeight
+    background: paper
     bookpage.BookPage(path: path) { grow: 1 }
   }
 }
 
-component Contents(items: [engine.TocItem], at: int) {
+/// A bookmark's row: its chapter's title from the table of contents (a chapter
+/// can be missing from it), and how far into the book it is.
+fn markTitle(mark: lib.Bookmark, items: [engine.TocItem]) -> string {
+  let item = items.find(i => i.spine == mark.chapter)
+  let name = item?.title ?? "第 {mark.chapter + 1} 章"
+  return "{name} · {(mark.percent * 100).int()}%"
+}
+
+/// What a row of the contents sheet is: a section's name, a place the reader
+/// kept, or a chapter.
+enum ContentsRowKind {
+  header
+  bookmark
+  chapter
+}
+
+/// One row of the contents sheet, all three kinds: a List's rows come from a
+/// `for`, so the sections are rows like any other.
+struct ContentsRow {
+  kind: ContentsRowKind
+  title: string
+  chapter: int
+  percent: float
+  index: int
+  id: string
+}
+
+/// The contents sheet's rows: the bookmarks under a 书签 heading when there are
+/// any, then the table of contents under its own.
+fn contentsRows(marks: [lib.Bookmark], items: [engine.TocItem]) -> [ContentsRow] {
+  var rows: [ContentsRow] = []
+  if !marks.isEmpty() {
+    rows.push(ContentsRow(kind: .header, title: "书签", chapter: 0, percent: 0, index: 0, id: "h.bookmarks"))
+    for mark in marks {
+      rows.push(ContentsRow(
+        kind: .bookmark, title: markTitle(mark, items),
+        chapter: mark.chapter, percent: mark.percent, index: 0, id: mark.id,
+      ))
+    }
+    rows.push(ContentsRow(kind: .header, title: "目录", chapter: 0, percent: 0, index: 0, id: "h.toc"))
+  }
+  for (i, item) in items.enumerated() {
+    rows.push(ContentsRow(
+      kind: .chapter, title: item.title, chapter: item.spine, percent: 0, index: i,
+      id: "c.{i}",
+    ))
+  }
+  return rows
+}
+
+component Contents(items: [engine.TocItem], at: int, book: string) {
   event pick(index: int)
+  event goBookmark(chapter: int, percent: float)
+  event dropBookmark(id: string)
+  use library: Library
+
+  let rows = contentsRows(library.bookmarksOf(book), items)
   let list = Ref()
-  // The TOC's row for the chapter being read: a spine may be missing from
-  // the TOC, and nested entries mean the row isn't the spine.
-  let here = items.index(item => item.spine == at) ?? 0
+
+  // The row for the chapter being read: a spine may be missing from the TOC,
+  // and nested entries mean the row isn't the spine.
+  let here = rows.index(r => r.kind == .chapter && r.chapter == at) ?? 0
 
   // Open where the reader is, not at the first chapter.
   task {
@@ -202,24 +284,51 @@ component Contents(items: [engine.TocItem], at: int) {
     List {
       ref: list
       grow: 1
-      for (i, item) in items.enumerated() key i {
-        Row {
-          padding: [12, 20]
-          gap: 10
-          align: .center
-          on press {
-            emit pick(i)
-            dismiss()
+      for row in rows key row.id {
+        match row.kind {
+          .header => Row {
+            padding: [12, 20]
+            Text(row.title) {
+              font: .footnote
+              color: .secondaryLabel
+            }
           }
-          Text(item.title) {
-            grow: 1
-            lines: 2
-            font: if item.spine == at { .body.bold() } else { .body }
-            color: if item.spine == at { .accent } else { .label }
+          .bookmark => Menu {
+            longPress: true
+            actions: [.button(title: "删除", role: .destructive, run: () => { emit dropBookmark(row.id) })]
+            Row {
+              padding: [12, 20]
+              gap: 10
+              align: .center
+              on press {
+                emit goBookmark(chapter: row.chapter, percent: row.percent)
+                dismiss()
+              }
+              Text(row.title) {
+                grow: 1
+                lines: 1
+                color: .label
+              }
+            }
           }
-          Text("{item.spine + 1}") {
-            font: .caption
-            color: .secondaryLabel
+          .chapter => Row {
+            padding: [12, 20]
+            gap: 10
+            align: .center
+            on press {
+              emit pick(row.index)
+              dismiss()
+            }
+            Text(row.title) {
+              grow: 1
+              lines: 2
+              font: if row.chapter == at { .body.bold() } else { .body }
+              color: if row.chapter == at { .accent } else { .label }
+            }
+            Text("{row.chapter + 1}") {
+              font: .caption
+              color: .secondaryLabel
+            }
           }
         }
       }
@@ -406,6 +515,15 @@ component Reader(book: lib.Book) {
   state scrollHeight = 0.0
   state scrollTile = 0.0
   state scrollDone = false
+  /// The tiles the reader has asked for, in the order it met them, and the
+  /// files made so far, by row. A tile is made one at a time: a fling meets a
+  /// dozen at once, and laying them all out and drawing them in one go is what
+  /// the finger feels as a stall.
+  state wanted: [int] = []
+  state tileFiles: [int: string] = [:]
+  /// Bumped when the queue goes from idle to waiting, so the tile at the front
+  /// is made while the list draws what it has.
+  state queue = 0
   /// The content y at the top of what shows.
   state topY = -1.0
   /// The tiles the List currently has on screen.
@@ -417,6 +535,9 @@ component Reader(book: lib.Book) {
   /// A page-mode place to turn into a page once the chapter is laid out.
   state pendingPageFraction = -1.0
   state lastMode = ""
+  /// Where the reader is, as the whole book's fraction: what a bookmark keeps
+  /// (a page number isn't, with the type's size being the reader's).
+  state herePercent = 0.0
 
   let palette = lib.paletteFor(library.theme)
   let env = environment()
@@ -426,6 +547,9 @@ component Reader(book: lib.Book) {
   let scrollList = Ref()
 
   let heading = if shownTitle.isEmpty() { book.title } else { shownTitle }
+  /// The bookmark at the place the reader is, if there is one: the button
+  /// fills, and pressing it again takes it back.
+  let marked = library.bookmarkAt(book.id, chapter: spine, percent: herePercent)
 
   // Opens where the book was left, in the chapter (spine) it was left in.
   task {
@@ -438,6 +562,7 @@ component Reader(book: lib.Book) {
       engine.close(engineId)
       engineId = -1
     }
+    laidOut = none
   }
 
   /// Actually lays the chapter out and rasterizes the page.
@@ -450,6 +575,9 @@ component Reader(book: lib.Book) {
       showScroll()
       return
     }
+    // Page mode lays the chapter out as pages, so what a scroll tile left in
+    // the engine isn't there anymore.
+    laidOut = none
     let pagesNow = engine.layout(
       engineId, spine, frame.width, frame.height,
       pageMargins,
@@ -470,7 +598,9 @@ component Reader(book: lib.Book) {
       pagePath = path
       let info = engine.pageInfo(engineId, page)
       let chapters = if chapterCount > 0 { float(chapterCount) } else { 1.0 }
-      library.save(book.id, spine, (float(spine) + info.progress) / chapters)
+      let at = (float(spine) + info.progress) / chapters
+      herePercent = at
+      library.save(book.id, spine, at)
     }
   }
 
@@ -513,6 +643,10 @@ component Reader(book: lib.Book) {
   /// so scrolling never stops at a chapter boundary.
   fn showScroll() {
     scrollDone = false
+    // The rows are new, and so are their bitmaps: a row is a slice of this
+    // layout, not of the last one.
+    wanted = []
+    tileFiles = [:]
     // A new layout while the reader is already in place: the old y no longer
     // names the same line, so let the first visible tile say where it is.
     if jumped {
@@ -527,9 +661,8 @@ component Reader(book: lib.Book) {
     ]
     var total = 0.0
     for c in 0..<count {
-      let height = engine.layoutScroll(
-        engineId, c, frame.width, frame.height,
-        engine.Margins(top: 0, right: pageMargins.right, bottom: 0, left: pageMargins.left),
+      let height = layOutScroll(
+        engineId, c, frame.width, frame.height, pageMargins,
         fontScale, library.line, library.letter, library.word,
       )
       if height <= 0 { continue }
@@ -558,18 +691,70 @@ component Reader(book: lib.Book) {
     return if height < 256 { 256.0 } else { height }
   }
 
-  /// A tile came on screen. While a jump is pending it's one of the rows
-  /// built before the list moves, so it's counted but not where the reader is.
-  fn appear(chapter: int, at: float) {
+  /// A tile came on screen: it's one more the reader may be at, and one the
+  /// queue has to make. While a jump is pending it's one of the rows built
+  /// before the list moves, so it's counted but not where the reader is.
+  fn appear(row: int, chapter: int, at: float) {
     if at < 0 { return }
     if visible.find(t => t.at == at) == none { visible.push(VisibleTile(chapter: chapter, at: at)) }
+    if tileFiles[row] == none && !wanted.contains(row) {
+      let idle = wanted.isEmpty()
+      wanted.push(row)
+      if idle { queue += 1 }
+    }
     if jumped { settle() }
   }
 
-  /// A tile went off screen: it's no longer a candidate for the top.
-  fn vanish(at: float) {
+  /// A tile went off screen: it's no longer a candidate for the top, and a
+  /// bitmap it hasn't been given yet isn't needed.
+  fn vanish(row: int, at: float) {
     visible = visible.filter(t => t.at != at)
+    if wanted.contains(row) { wanted = wanted.filter(i => i != row) }
     if jumped { settle() }
+  }
+
+  /// One tile's bitmap: the chapter laid out if the engine isn't there already
+  /// (`layOutScroll`), then the window rasterized. Synchronous, so a tile is
+  /// made whole; the queue's loop is what gives way between them. True when it
+  /// had to draw: a file already there costs nothing, and needs no frame.
+  fn renderTile(row: int) -> bool {
+    if library.mode != "scroll" { return false }
+    if engineId <= 0 || frame.width <= 32 || !scrollDone { return false }
+    if row < 0 || row >= scrollRows.count() { return false }
+    let r = scrollRows[row]
+    if r.spine < 0 { return false }
+    let file = slicePath(
+      book: book.id, spine: r.spine, index: row, top: r.y, height: r.height,
+      width: frame.width, viewHeight: frame.height,
+      insetLeft: pageMargins.left, insetRight: pageMargins.right,
+      scale: scale, tag: layoutTag(),
+    )
+    if fs.exists(file) {
+      tileFiles[row] = file
+      return false
+    }
+    let height = layOutScroll(
+      engineId, r.spine, frame.width, frame.height, pageMargins,
+      library.size / baseSize, library.line, library.letter, library.word,
+    )
+    if height < 0 { return false }
+    if !engine.renderSlice(engineId, 0, r.y, r.height, scale, lib.rgbaOf(palette.ink), lib.rgbaOf(palette.paper), false, file) { return false }
+    tileFiles[row] = file
+    return true
+  }
+
+  // The tiles the list asked for, made one at a time with a frame between the
+  // ones that had to be drawn: a fling asks for a dozen at once, and laying
+  // them all out and drawing them in one go is what the finger feels.
+  task(queue) {
+    if queue <= 0 { return }
+    while !wanted.isEmpty() {
+      if !scrollDone || library.mode != "scroll" { return }
+      let row = wanted[0]
+      let drew = renderTile(row)
+      wanted = wanted.filter(i => i != row)
+      if drew { await sleep(8ms) }
+    }
   }
 
   /// The top visible tile is the reader's place: save it as whole-book
@@ -580,14 +765,25 @@ component Reader(book: lib.Book) {
     for tile in visible {
       if tile.at < best.at { best = tile }
     }
-    if topY >= 0 && best.at == topY { return }
-    topY = best.at
-    let chapters = engine.chapterCount(engineId)
-    if chapters <= 0 || scrollHeight <= 0 { return }
+    if scrollHeight <= 0 { return }
     var fraction = best.at / scrollHeight
     if fraction < 0 { fraction = 0 }
     if fraction > 1 { fraction = 1 }
+    herePercent = fraction
+    if topY >= 0 && best.at == topY { return }
+    topY = best.at
+    let chapters = engine.chapterCount(engineId)
+    if chapters <= 0 { return }
     library.save(book.id, best.chapter, fraction)
+  }
+
+  /// Keeps the reader's place, or takes the bookmark there back.
+  fn toggleBookmark() {
+    if library.toggleBookmark(book.id, chapter: spine, percent: herePercent) {
+      snackbar("已加书签")
+    } else {
+      snackbar("已删除书签")
+    }
   }
 
   fn scrollPercent() -> int {
@@ -625,6 +821,7 @@ component Reader(book: lib.Book) {
       return
     }
     engineId = id
+    laidOut = none
     // The app's own face first: it's what the pages are designed around, and
     // the platform's fonts aren't readable as files everywhere (iOS keeps
     // several in the dyld cache).
@@ -729,6 +926,36 @@ component Reader(book: lib.Book) {
     if library.mode == "scroll" && same { showScroll() }
   }
 
+  /// A bookmark's place: the whole book's fraction, which both modes take.
+  /// A table of contents row is a chapter's start; this is anywhere in it.
+  fn goTo(chapter: int, percent: float) {
+    let count = engine.chapterCount(engineId)
+    if count <= 0 || chapter < 0 || chapter >= count { return }
+    var at = percent
+    if at < 0 { at = 0 }
+    if at > 1 { at = 1 }
+    let same = chapter == spine
+    spine = chapter
+    page = 0
+    startFraction = at
+    topY = -1
+    visible = []
+    jumped = false
+    scrollDone = false
+    if library.mode == "scroll" {
+      // The column's rows are there already: only the place changes, and
+      // nothing in the task's key does, so put it there now.
+      if same { showScroll() }
+      return
+    }
+    // Page mode: the fraction, less the chapter it falls in, is the page.
+    var within = at * float(count) - float(chapter)
+    if within < 0 { within = 0 }
+    if within > 0.999 { within = 0.999 }
+    pendingPageFraction = within
+    if same { show() }
+  }
+
   View {
     background: palette.paper
     grow: 1
@@ -761,16 +988,23 @@ component Reader(book: lib.Book) {
         // The whole book is one column: a row a screenful, made only while
         // it shows. The first and last rows are the room above and below it.
         // Chapters meet at their content height, so scrolling runs through.
+        // Every row is the page's paper: the list's own background is the
+        // platform's, and it would show as a white band above the first line.
         List {
           ref: scrollList
           grow: 1
+          background: palette.paper
           for (i, row) in scrollRows.enumerated() key i {
             if row.spine == -1 {
-              View { height: row.height }
+              View {
+                height: row.height
+                background: palette.paper
+              }
             } else if row.spine == -2 {
               Column {
                 padding: [24, 24]
                 gap: 16
+                background: palette.paper
                 Text("全书完") {
                   font: .footnote
                   color: palette.muted
@@ -779,16 +1013,13 @@ component Reader(book: lib.Book) {
               }
             } else {
               ScrollTile(
-                engineId: engineId, book: book.id, row: i, spine: row.spine,
-                y: row.y, at: row.top, tileHeight: row.height, tileWidth: frame.width,
-                viewHeight: frame.height, insetLeft: pageMargins.left, insetRight: pageMargins.right,
-                fontScale: library.size / baseSize, lineScale: library.line,
-                letter: library.letter, word: library.word, scale: scale,
-                ink: lib.rgbaOf(palette.ink), paper: lib.rgbaOf(palette.paper),
-                tag: layoutTag(),
+                signature: "{i}:{row.top.int()}:{row.height.int()}:{frame.width.int()}x{frame.height.int()}:{layoutTag()}",
+                spine: row.spine, at: row.top,
+                tileWidth: frame.width, tileHeight: row.height,
+                path: tileFiles[i] ?? "", paper: palette.paper,
               ) {
-                on shown(chapter, at) { appear(chapter: chapter, at: at) }
-                on hidden(at) { vanish(at: at) }
+                on shown(chapter, at) { appear(row: i, chapter: chapter, at: at) }
+                on hidden(at) { vanish(row: i, at: at) }
               }
             }
           }
@@ -842,14 +1073,22 @@ component Reader(book: lib.Book) {
           on press { present(Appearance(typeface: fontName)) }
         }
         Button("") {
+          icon: if marked != none { "bookmark.fill" } else { "bookmark" }
+          variant: .glassProminent
+          tooltip: "书签"
+          on press { toggleBookmark() }
+        }
+        Button("") {
           icon: "list.bullet"
           variant: .glassProminent
           on press {
-            present(Contents(engine.contents(engineId), spine) {
+            present(Contents(engine.contents(engineId), spine, book.id) {
               on pick(i) {
                 let items = engine.contents(engineId)
                 if i >= 0 && i < items.count() { jump(items[i].spine) }
               }
+              on goBookmark(chapter, percent) { goTo(chapter, percent) }
+              on dropBookmark(id) { library.removeBookmark(id) }
             })
           }
         }

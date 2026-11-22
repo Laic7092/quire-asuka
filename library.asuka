@@ -12,11 +12,15 @@ import ./lib
 pub fn coverPath(id: string) -> string = fs.join([fs.appDir(), "covers", "{id}.img"])
 
 pub store Library {
-  /// The books brought in, as the files they're read from: what survives a
-  /// launch. The samples come from the app itself (samples/ is compiled in),
-  /// so they're never kept, and they're always on the shelf.
+  /// The books on the shelf, as the files they're read from: what survives a
+  /// launch. A sample brought with the app is seeded into it (once), so it's a
+  /// row like any imported book's: taking it off needs no remembering.
   pub state shelf: [lib.Shelf] = store.read("shelf", [])
+  /// Whether the samples have been put on the shelf (the first launch did it).
+  pub state seeded: bool = store.read("shelf.seeded", false)
   pub state readings: [lib.Reading] = store.read("readings", [])
+  /// 书签：一本书里的位置，全书进度加分章，不是页码（换字号也还准）。
+  pub state bookmarks: [lib.Bookmark] = store.read("bookmarks", [])
   pub state theme: string = store.read("reader.theme", "paper")
   pub state size: float = store.read("reader.size", 19.0)
   /// 行距，一行的字号的倍数。
@@ -33,6 +37,8 @@ pub store Library {
   pub state mode: string = store.read("reader.mode", "page")
 
   effect { store.write("readings", readings) }
+  effect { store.write("bookmarks", bookmarks) }
+  effect { store.write("shelf.seeded", seeded) }
   effect { store.write("reader.theme", theme) }
   effect { store.write("reader.size", size) }
   effect { store.write("reader.line", line) }
@@ -41,19 +47,45 @@ pub store Library {
   effect { store.write("reader.word", word) }
   effect { store.write("reader.mode", mode) }
 
-  /// Every book on the shelf: the samples first, then what was brought in.
+  /// Every book on the shelf: a row each, the samples' included.
   pub fn books() -> [lib.Book] {
-    var out = samples()
+    var out: [lib.Book] = []
     for kept in shelf {
       out.push(kept.book())
     }
     return out
   }
 
-  /// Takes a book off the shelf. The file stays: importing it again is free.
+  /// Puts the books that came with the app on the shelf, once: their text is
+  /// written next to the imported ones, and from then on they're rows like
+  /// any other (read, kept, and taken off the same way).
+  pub async fn seedSamples() {
+    if seeded { return }
+    let dir = fs.join([fs.appDir(), "books"])
+    try? await spawn { try fs.mkdirAll(dir) }
+    for sample in samples() {
+      let target = fs.join([dir, "{sample.id}.txt"])
+      let raw = sample.raw
+      if !raw.isEmpty() && !fs.exists(target) {
+        try? await spawn { try fs.writeText(target, text: raw) }
+      }
+      var book = sample
+      book.path = target
+      shelf.removeWhere(s => s.id == book.id)
+      shelf.push(lib.shelfOf(book))
+    }
+    // Last: a launch that dies in the middle seeds again next time, and a row
+    // already there is replaced, not doubled.
+    seeded = true
+    keep()
+  }
+
+  /// Takes a book off the shelf: its row, where it was left, and its
+  /// bookmarks. The file stays, so importing it again is free.
   pub fn forget(id: string) {
     shelf.removeWhere(s => s.id == id)
     readings.removeWhere(r => r.id == id)
+    bookmarks = bookmarks.filter(b => b.book != id)
     keep()
   }
 
@@ -109,6 +141,47 @@ pub store Library {
     forget(book.id)
     shelf.push(lib.shelfOf(book))
     keep()
+  }
+
+  /// A book's bookmarks, in the order they were made.
+  pub fn bookmarksOf(book: string) -> [lib.Bookmark] = bookmarks.filter(b => b.book == book)
+
+  /// The bookmark at a place: the same chapter, within a fifth of a percent of
+  /// the same fraction (the two modes count a place slightly differently).
+  pub fn bookmarkAt(book: string, chapter: int, percent: float) -> lib.Bookmark? {
+    for mark in bookmarks {
+      if mark.book != book || mark.chapter != chapter { continue }
+      if (mark.percent - percent).abs() < 0.002 { return mark }
+    }
+    return none
+  }
+
+  /// Keeps a place. The one already there (if any) stays: a bookmark is a
+  /// place, not a count.
+  pub fn addBookmark(book: string, chapter: int, percent: float) {
+    if bookmarkAt(book, chapter, percent) != none { return }
+    var at = percent
+    if at < 0 { at = 0 }
+    if at > 1 { at = 1 }
+    bookmarks.push(lib.Bookmark(
+      id: "{book}:{chapter}:{(at * 10000).int()}",
+      book: book, chapter: chapter, percent: at,
+    ))
+  }
+
+  pub fn removeBookmark(id: string) {
+    bookmarks = bookmarks.filter(b => b.id != id)
+  }
+
+  /// The bookmark button's one action: keep the place, or take back the one it
+  /// finds there. True when it kept one.
+  pub fn toggleBookmark(book: string, chapter: int, percent: float) -> bool {
+    if let mark = bookmarkAt(book, chapter: chapter, percent: percent) {
+      removeBookmark(mark.id)
+      return false
+    }
+    addBookmark(book, chapter: chapter, percent: percent)
+    return true
   }
 
   pub fn readingOf(id: string) -> lib.Reading {
