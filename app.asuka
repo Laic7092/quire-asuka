@@ -17,6 +17,10 @@ component Quire {
   state tab = 1
 
   let paper = lib.paletteFor(library.theme).paper
+  // Rows written by an older build keep their files' whole paths, container
+  // and all; iOS may have given that container another name since. Rewrite
+  // them once, now, so a launch's books are found wherever they are.
+  task { library.migratePaths() }
 
   View {
     grow: 1
@@ -28,7 +32,14 @@ component Quire {
 
       Tab("首页") {
         icon: "house"
-        Stack { Home() }
+        Stack {
+          Home() {
+            on open(book) {
+              reading = book
+              readingOpen = true
+            }
+          }
+        }
       }
       Tab("书架") {
         icon: "books.vertical"

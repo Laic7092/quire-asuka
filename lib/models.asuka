@@ -31,14 +31,17 @@ pub struct Book {
 
 /// A book as the shelf keeps it between launches: the file it's read from,
 /// and what the shelf shows. Its text isn't kept — the file has that, and the
-/// engine reads the file — so a .txt of ten megabytes costs a row.
+/// engine reads the file — so a .txt of ten megabytes costs a row. The path
+/// and the cover are kept relative to the app's own directory (`books/x.txt`,
+/// `covers/x.img`): an iOS update may give that directory another name, and a
+/// row is meant to outlive it.
 pub struct Shelf {
   id: string
   title: string
   author: string
-  /// The file in the app's directory; "" for a book that came with the app.
+  /// The file under the app's directory; "" for a book that came with the app.
   path: string
-  /// The cover image in the app's directory; "" when there is none.
+  /// The cover image under the app's directory; "" when there is none.
   cover: string = ""
 
   pub fn book() -> Book = Book(id: id, title: title, author: author, chapters: [], path: path, cover: cover)
@@ -52,6 +55,9 @@ pub struct Reading {
   id: string
   chapter: int = 0
   percent: float = 0
+  /// When the place was last kept, in unix seconds: 0 for a row written
+  /// before the home page kept the time. It's what "recent" sorts by.
+  updated: int = 0
 
   pub fn label() -> string {
     if chapter <= 0 && percent <= 0 { return "未开始" }

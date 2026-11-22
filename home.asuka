@@ -1,17 +1,510 @@
-// The home page: a placeholder for now. It is a page of the app's Tabs, so
-// it gets its own navigation stack and can grow into a real home later.
+// The home page: what is still being read, the year's goal, what was read
+// before, and the books this year has had. The avatar at the top is the way
+// into the reader's own settings; its entries are placeholders for now.
 
-screen Home {
-  title: "首页"
+import std/time
 
+import ./lib
+
+/// The year it is now, and a place's year: a reading row keeps the moment it
+/// was last saved as unix seconds, so "this year" is a comparison of clocks.
+fn thisYear() -> int = time.now().year()
+
+fn yearOf(seconds: int) -> int {
+  if seconds <= 0 { return 0 }
+  return time.unix(seconds: seconds).year()
+}
+
+/// A saved place as a day: "6月1日" for a row that has one.
+fn whenOf(seconds: int) -> string {
+  if seconds <= 0 { return "" }
+  return time.unix(seconds: seconds).format("M月d日")
+}
+
+fn greeting() -> string {
+  let hour = time.now().hour()
+  if hour < 5 { return "夜深了" }
+  if hour < 12 { return "早上好" }
+  if hour < 18 { return "下午好" }
+  return "晚上好"
+}
+
+fn percentText(p: float) -> string = "{(p * 100).int()}%"
+
+/// A title's book, from the shelf's rows the home page already has.
+fn bookOf(books: [lib.Book], id: string) -> lib.Book? {
+  for b in books {
+    if b.id == id { return b }
+  }
+  return none
+}
+
+fn isReading(r: lib.Reading) -> bool = r.percent > 0.001 && r.percent < 0.999
+
+fn isDone(r: lib.Reading) -> bool = r.percent >= 0.999
+
+/// How far a book is read, as the thin bar the page's rows carry.
+component ReadingBar(value: float) {
+  prop color: Color = .accent
+
+  View {
+    height: 4
+    radius: 2
+    background: .separator
+    View {
+      width: 100% * value
+      height: 4
+      radius: 2
+      background: color
+    }
+  }
+}
+
+component SectionHead(title: string) {
+  prop note = ""
+  prop icon = ""
+
+  Row {
+    gap: 8
+    align: .center
+    if !icon.isEmpty() {
+      Symbol(icon) {
+        font: .footnote
+        color: .secondaryLabel
+      }
+    }
+    Text(title) {
+      font: .title3.bold()
+      grow: 1
+    }
+    if !note.isEmpty() {
+      Text(note) {
+        font: .footnote
+        color: .secondaryLabel
+      }
+    }
+  }
+}
+
+component EmptyNote(text: string) {
+  prop icon = "book"
+
+  Row {
+    gap: 10
+    align: .center
+    padding: [14, 16]
+    radius: 14
+    background: .secondaryBackground
+    Symbol(icon) {
+      font: .subheadline
+      color: .tertiaryLabel
+    }
+    Text(text) {
+      font: .footnote
+      color: .secondaryLabel
+      grow: 1
+    }
+  }
+}
+
+/// The avatar: a circle that opens the reader's own page.
+component Avatar {
+  event tap
+
+  View {
+    width: 44
+    height: 44
+    radius: 999
+    align: .center
+    justify: .center
+    background: .accent
+    on press { emit tap }
+    Symbol("person.fill") {
+      font: .headline
+      color: .onAccent
+    }
+  }
+}
+
+component Stat(value: string, label: string) {
   Column {
     grow: 1
-    justify: .center
+    gap: 1
     align: .center
-    gap: 8
-    Text("首页") {
-      font: .title2
+    Text(value) {
+      font: .title3.bold()
+    }
+    Text(label) {
+      font: .caption2
       color: .secondaryLabel
+    }
+  }
+}
+
+/// The three numbers the page has: what is open, what is done, what is kept.
+component StatsStrip(reading: int, done: int, marks: int) {
+  Row {
+    padding: [16, 12]
+    radius: 16
+    background: .secondaryBackground
+    align: .center
+    Stat("{reading}", "在读")
+    View {
+      width: 1
+      height: 26
+      background: .separator
+    }
+    Stat("{done}", "已读完")
+    View {
+      width: 1
+      height: 26
+      background: .separator
+    }
+    Stat("{marks}", "书签")
+  }
+}
+
+/// A book still open: where it was left, and the way back into it.
+component ContinueRow(book: lib.Book, reading: lib.Reading) {
+  event open
+
+  Row {
+    gap: 14
+    align: .center
+    padding: 12
+    radius: 16
+    background: .secondaryBackground
+    on press { emit open }
+    Cover(book) { width: 52 }
+    Column {
+      grow: 1
+      gap: 6
+      Text(book.title) {
+        font: .headline
+        lines: 1
+      }
+      Text(if book.author.isEmpty() { reading.label() } else { book.author }) {
+        font: .caption
+        color: .secondaryLabel
+        lines: 1
+      }
+      ReadingBar(reading.percent)
+      Text(reading.label()) {
+        font: .caption2
+        color: .secondaryLabel
+      }
+    }
+    Symbol("chevron.right") {
+      font: .caption
+      color: .tertiaryLabel
+    }
+  }
+}
+
+/// A book in one of the page's sideways strips.
+component MiniBook(book: lib.Book, reading: lib.Reading) {
+  event open
+
+  Column {
+    width: 104
+    gap: 6
+    align: .center
+    on press { emit open }
+    Cover(book) { width: 104 }
+    Text(book.title) {
+      font: .subheadline
+      lines: 1
+      textAlign: .center
+    }
+    Text(if isDone(reading) { whenOf(reading.updated) } else { reading.label() }) {
+      font: .caption2
+      color: .secondaryLabel
+      lines: 1
+      textAlign: .center
+    }
+  }
+}
+
+/// 阅读目标: a ring for the year, and a stepper to change the number.
+component GoalCard(done: int, goal: int, filled: float) {
+  event goalChange(goal: int)
+
+  Row {
+    gap: 16
+    align: .center
+    padding: 16
+    radius: 18
+    background: .secondaryBackground
+    ProgressRing {
+      value: filled
+      width: 62
+      color: if goal > 0 && done >= goal { .green } else { .accent }
+    }
+    Column {
+      grow: 1
+      gap: 4
+      Text(if goal > 0 && done >= goal { "今年的目标读完了" } else { "今年读完了 {done} 本" }) {
+        font: .headline
+      }
+      Text(if goal > 0 {
+        "目标 {goal} 本 · 还差 {max(0, goal - done)} 本"
+      } else {
+        "还没有定下目标"
+      }) {
+        font: .caption
+        color: .secondaryLabel
+      }
+    }
+    Stepper {
+      value: float(goal)
+      min: 1
+      max: 200
+      on change(v) { emit goalChange(int(v)) }
+    }
+  }
+}
+
+/// 今年读过的书: one row a book, newest first.
+component YearRow(book: lib.Book, reading: lib.Reading) {
+  event open
+
+  Row {
+    gap: 12
+    align: .center
+    padding: [10, 12]
+    radius: 14
+    background: .secondaryBackground
+    on press { emit open }
+    Cover(book) { width: 34 }
+    Column {
+      grow: 1
+      gap: 3
+      Text(book.title) {
+        font: .body
+        lines: 1
+      }
+      Text(if book.author.isEmpty() { whenOf(reading.updated) } else { "{book.author} · {whenOf(reading.updated)}" }) {
+        font: .caption2
+        color: .secondaryLabel
+        lines: 1
+      }
+    }
+    Text(if isDone(reading) { "已读完" } else { percentText(reading.percent) }) {
+      font: .caption
+      color: if isDone(reading) { .green } else { .secondaryLabel }
+    }
+  }
+}
+
+/// 我：the avatar's page. Every entry is a placeholder for now: the screens
+/// behind them come later.
+component Profile {
+  let entries = [
+    ProfileEntry(icon: "chart.bar.doc.horizontal", title: "阅读记录统计", note: "读完的书、读过的日子"),
+    ProfileEntry(icon: "externaldrive.badge.icloud", title: "WebDAV 配置", note: "同步书架与进度"),
+    ProfileEntry(icon: "target", title: "阅读目标", note: "今年读几本"),
+    ProfileEntry(icon: "bell.badge", title: "阅读提醒", note: "每天读一点"),
+    ProfileEntry(icon: "paintbrush", title: "外观与排版", note: "纸色、字号、行距"),
+    ProfileEntry(icon: "info.circle", title: "关于 Quire", note: "版本 0.1"),
+  ]
+
+  Column {
+    gap: 18
+    padding: [20, 20, 24, 20]
+
+    Row {
+      gap: 14
+      align: .center
+      View {
+        width: 60
+        height: 60
+        radius: 999
+        align: .center
+        justify: .center
+        background: .accent
+        Symbol("person.fill") {
+          font: .title2
+          color: .onAccent
+        }
+      }
+      Column {
+        grow: 1
+        gap: 3
+        Text("Quire 读者") {
+          font: .title3.bold()
+        }
+        Text("本机 · 未登录") {
+          font: .footnote
+          color: .secondaryLabel
+        }
+      }
+      Button("") {
+        icon: "xmark"
+        variant: .glass
+        on press { dismiss() }
+      }
+    }
+
+    Column {
+      gap: 0
+      for entry in entries key entry.title {
+        Row {
+          gap: 12
+          align: .center
+          padding: [13, 4]
+          on press { snackbar("「{entry.title}」即将推出") }
+          Symbol(entry.icon) {
+            font: .body
+            color: .accent
+            width: 26
+          }
+          Column {
+            grow: 1
+            gap: 2
+            Text(entry.title) {
+              font: .body
+            }
+            Text(entry.note) {
+              font: .caption2
+              color: .secondaryLabel
+            }
+          }
+          Symbol("chevron.right") {
+            font: .caption2
+            color: .tertiaryLabel
+          }
+        }
+      }
+    }
+  }
+}
+
+struct ProfileEntry {
+  icon: string
+  title: string
+  note: string
+}
+
+screen Home {
+  use library: Library
+
+  /// A book was chosen: the app opens the reader over everything.
+  event open(book: lib.Book)
+
+  title: "首页"
+  largeTitle: true
+
+  let books = library.books()
+  let rows = library.readings
+  let reading = rows.filter(isReading).sorted(key: r => r.updated, descending: true)
+  let done = rows.filter(isDone).sorted(key: r => r.updated, descending: true)
+  let thisYearRows = rows.filter(r => yearOf(r.updated) == thisYear()).sorted(key: r => r.updated, descending: true)
+  let doneThisYear = done.count(where: r => yearOf(r.updated) == thisYear())
+  let filled = if library.goal > 0 {
+    min(1.0, float(doneThisYear) / float(library.goal))
+  } else {
+    0.0
+  }
+
+  Scroll {
+    grow: 1
+    Column {
+      gap: 26
+      padding: [8, 20, 44, 20]
+
+      Row {
+        gap: 12
+        align: .center
+        Column {
+          grow: 1
+          gap: 3
+          Text(greeting()) {
+            font: .title2.bold()
+          }
+          Text(time.now().format("yyyy年M月d日 EEEE")) {
+            font: .footnote
+            color: .secondaryLabel
+          }
+        }
+        Avatar() { on tap { present(Profile()) } }
+      }
+
+      StatsStrip(reading: reading.count(), done: done.count(), marks: library.bookmarks.count())
+
+      Column {
+        gap: 12
+        SectionHead("继续阅读") {
+          icon: "book"
+          note: if reading.isEmpty() { "" } else { "{reading.count()} 本" }
+        }
+        if reading.isEmpty() {
+          EmptyNote("还没有翻开的书。去书架挑一本，从第一页开始。") { icon: "book.closed" }
+        } else {
+          for r in reading key r.id {
+            if let b = bookOf(books, r.id) {
+              ContinueRow(b, r) { on open { emit open(b) } }
+            }
+          }
+        }
+      }
+
+      Column {
+        gap: 12
+        SectionHead("之前读过") {
+          icon: "checkmark.circle"
+          note: if done.isEmpty() { "" } else { "{done.count()} 本" }
+        }
+        if done.isEmpty() {
+          EmptyNote("读完的书会留在这里，想再翻一遍时好找。") { icon: "bookmark" }
+        } else {
+          Scroll {
+            horizontal: true
+            Row {
+              gap: 16
+              for r in done key r.id {
+                if let b = bookOf(books, r.id) {
+                  MiniBook(b, r) { on open { emit open(b) } }
+                }
+              }
+            }
+          }
+        }
+      }
+
+      Column {
+        gap: 12
+        SectionHead("阅读目标") { icon: "target" }
+        GoalCard(doneThisYear, library.goal, filled) {
+          on goalChange(goal) {
+            library.goal = goal
+          }
+        }
+        Text("读一页也算。目标随时可以改。") {
+          font: .caption2
+          color: .tertiaryLabel
+          padding: [0, 4]
+        }
+      }
+
+      Column {
+        gap: 12
+        SectionHead("今年读过的书") {
+          icon: "calendar"
+          note: if thisYearRows.isEmpty() { "" } else { "{thisYearRows.count()} 本" }
+        }
+        if thisYearRows.isEmpty() {
+          EmptyNote("今年还没有读完的书。翻开一本，这里就会记下。") { icon: "sparkles" }
+        } else {
+          Column {
+            gap: 8
+            for r in thisYearRows key r.id {
+              if let b = bookOf(books, r.id) {
+                YearRow(b, r) { on open { emit open(b) } }
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

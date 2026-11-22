@@ -295,9 +295,65 @@ test "a .txt brought in becomes a book on the shelf" {
   let lib = Library()
   let app = mount(Harness(), provide: lib)
   // What the import button does with a file the picker handed over.
-  try await lib.importFile(path)
+  let added = try await lib.importFile(path)
+  expect(added)
   await app.idle()
   app.expect("quire-import-test")
+  // The row keeps the file's name under the app's directory, not the whole
+  // path: iOS may give that directory another name after an update.
+  let row = lib.shelf.find(s => s.id == "quire-import-test.txt")
+  expect(row?.path == "books/quire-import-test.txt")
+  let opened = lib.books().find(b => b.id == "quire-import-test.txt")
+  expect(fs.exists(opened?.path ?? ""))
+}
+
+test "a kept path is found after the app's directory is renamed" {
+  let dir = fs.join([fs.appDir(), "books"])
+  let file = fs.join([dir, "挪了位置.txt"])
+  try await spawn { try fs.mkdirAll(dir) }
+  try await spawn { try fs.writeText(file, text: "第1章 一\n\n一段。\n") }
+  // What the shelf keeps: the part after the app's own directory.
+  expect(keptName(file) == "books/挪了位置.txt")
+  expect(fileOf("books/挪了位置.txt") == file)
+  // A row written by an older build holds the old container's whole path;
+  // the file is still found under the app's directory of this launch.
+  let old = "/private/var/mobile/Containers/Data/Application/OLD-UUID/Library/Application Support/books/挪了位置.txt"
+  expect(keptName(old) == "books/挪了位置.txt")
+  expect(fileOf(old) == file)
+  try await spawn { try fs.remove(file) }
+}
+
+test "the same book is only on the shelf once" {
+  let source = "{fs.tempDir()}/quire-once.txt"
+  try await spawn { try fs.writeText(source, text: "第1章 一\n\n同一本书。\n") }
+  let library = Library()
+  library.forget("quire-once.txt")
+  library.forget("quire-once-other.txt")
+  let added = try await library.importFile(source)
+  expect(added)
+  expect(library.shelf.count(where: s => s.id == "quire-once.txt") == 1)
+  // Where it was left is the book's, not the import's.
+  library.save("quire-once.txt", chapter: 2, percent: 0.6)
+  // The same file again: the row stays one, and so does the place.
+  let again = try await library.importFile(source)
+  expect(!again)
+  expect(library.shelf.count(where: s => s.id == "quire-once.txt") == 1)
+  expect(library.readingOf("quire-once.txt").chapter == 2)
+  // A copy under another name is the same bytes: still one book, and the
+  // copy isn't left in the app's directory under a name nothing uses.
+  let copy = "{fs.tempDir()}/quire-once-copy.txt"
+  try await spawn { try fs.writeText(copy, text: "第1章 一\n\n同一本书。\n") }
+  let copied = try await library.importFile(copy)
+  expect(!copied)
+  expect(library.shelf.count(where: s => s.id == "quire-once-copy.txt") == 0)
+  expect(!fs.exists(fs.join([fs.appDir(), "books/quire-once-copy.txt"])))
+  // Different bytes are a book of their own, whatever the name says.
+  let other = "{fs.tempDir()}/quire-once-other.txt"
+  try await spawn { try fs.writeText(other, text: "第1章 二\n\n另一本。\n") }
+  let addedOther = try await library.importFile(other)
+  expect(addedOther)
+  library.forget("quire-once.txt")
+  library.forget("quire-once-other.txt")
 }
 
 test "the shelf keeps a row, not a book's text" {
@@ -442,4 +498,26 @@ test "the bookmark button's action keeps a place, and takes it back" {
   // Pressing again on the same place takes it back rather than adding one.
   expect(!lib.toggleBookmark("書", chapter: 1, percent: 0.2503))
   expect(lib.bookmarksOf("書").isEmpty())
+}
+
+test "the home page has the year's sections" {
+  let lib = Library()
+  let app = mount(Harness(), provide: lib)
+  await app.idle()
+  app.tap("首页")
+  await app.idle()
+  app.expect("继续阅读")
+  app.expect("之前读过")
+  app.expect("阅读目标")
+  app.expect("今年读过的书")
+  // The goal is the app's, and the page writes it down as it's stepped.
+  lib.goal = 24
+  await app.idle()
+  app.expect("目标 24 本 · 还差 24 本")
+}
+
+test "a place is kept with the time it was kept" {
+  let library = Library()
+  library.save("書", chapter: 0, percent: 0.5)
+  expect(library.readingOf("書").updated > 0)
 }

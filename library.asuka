@@ -1,8 +1,10 @@
 // The shelf: books, and where each was left. Kept across launches in each
 // platform's own preferences (std/store), the way Quire keeps state.json.
 
+import std/crypto
 import std/fs
 import std/store
+import std/time
 import ./engine
 import ./lib
 
@@ -10,6 +12,51 @@ import ./lib
 /// here, and the shelf shows it. `.img` because the bytes keep their own
 /// format (PNG or JPEG) and every platform's image loader sniffs it.
 pub fn coverPath(id: string) -> string = fs.join([fs.appDir(), "covers", "{id}.img"])
+
+/// How a row keeps its cover: relative to the app's own directory, not the
+/// container that directory is in this launch.
+pub fn coverName(id: string) -> string = "covers/{id}.img"
+
+/// A file's name as a row keeps it: relative to the app's own directory. iOS
+/// doesn't promise a container its name across updates (its UUID can change),
+/// so a row that kept the whole path would point into a directory that's gone
+/// on the next launch. Rows written before this kept absolute paths; those
+/// are cut back to the part under books/ or covers/.
+fn keptName(path: string) -> string {
+  if path.isEmpty() { return "" }
+  let root = fs.appDir()
+  if !root.isEmpty() && path.hasPrefix(root) {
+    let rest = path.slice(root.count(), path.count())
+    // Only the directory itself, or what's under it: "…/Quire2" isn't inside
+    // "…/Quire".
+    if rest.isEmpty() { return "" }
+    if rest.hasPrefix("/") || rest.hasPrefix("\\") {
+      return rest.slice(1, rest.count())
+    }
+  }
+  for dir in ["books/", "covers/"] {
+    if let at = path.find(dir) {
+      return path.byteSlice(at, path.byteCount())
+    }
+  }
+  if path.hasPrefix("/") {
+    return path.split("/").last() ?? path
+  }
+  return path
+}
+
+/// The file a kept name is in this launch: under the app's directory.
+pub fn fileOf(kept: string) -> string {
+  if kept.isEmpty() { return "" }
+  if kept.hasPrefix("/") {
+    // A row from an older build (or one not migrated yet). If the file is
+    // still where the row says, leave it; else find it under the app's own
+    // directory, wherever iOS has put that this time.
+    if fs.exists(kept) { return kept }
+    return fs.join([fs.appDir(), keptName(kept)])
+  }
+  return fs.join([fs.appDir(), kept])
+}
 
 pub store Library {
   /// The books on the shelf, as the files they're read from: what survives a
@@ -35,6 +82,8 @@ pub store Library {
   pub state word: float = store.read("reader.word", 0.0)
   /// 翻页方式："page"（分页）或 "scroll"（连续滚动）。
   pub state mode: string = store.read("reader.mode", "page")
+  /// 今年的阅读目标，读完几本。首页的目标环读它。
+  pub state goal: int = store.read("goal.books", 12)
 
   effect { store.write("readings", readings) }
   effect { store.write("bookmarks", bookmarks) }
@@ -46,14 +95,39 @@ pub store Library {
   effect { store.write("reader.letter", letter) }
   effect { store.write("reader.word", word) }
   effect { store.write("reader.mode", mode) }
+  effect { store.write("goal.books", goal) }
 
-  /// Every book on the shelf: a row each, the samples' included.
+  /// Every book on the shelf: a row each, the samples' included. A row keeps
+  /// where its file is relative to the app's directory; this is where that
+  /// is this launch.
   pub fn books() -> [lib.Book] {
     var out: [lib.Book] = []
     for kept in shelf {
-      out.push(kept.book())
+      var book = kept.book()
+      book.path = fileOf(book.path)
+      book.cover = fileOf(book.cover)
+      out.push(book)
     }
     return out
+  }
+
+  /// Rewrites rows written before paths were kept relative: an absolute path
+  /// into a container iOS has since renamed works once and then not again.
+  /// Runs once at launch; a row already relative is left as it is.
+  pub fn migratePaths() {
+    var next: [lib.Shelf] = []
+    var changed = false
+    for kept in shelf {
+      var row = kept
+      row.path = keptName(row.path)
+      row.cover = keptName(row.cover)
+      if row.path != kept.path || row.cover != kept.cover { changed = true }
+      next.push(row)
+    }
+    if changed {
+      shelf = next
+      keep()
+    }
   }
 
   /// Puts the books that came with the app on the shelf, once: their text is
@@ -64,13 +138,15 @@ pub store Library {
     let dir = fs.join([fs.appDir(), "books"])
     try? await spawn { try fs.mkdirAll(dir) }
     for sample in samples() {
-      let target = fs.join([dir, "{sample.id}.txt"])
+      let name = "{sample.id}.txt"
+      let target = fs.join([dir, name])
       let raw = sample.raw
       if !raw.isEmpty() && !fs.exists(target) {
         try? await spawn { try fs.writeText(target, text: raw) }
       }
       var book = sample
-      book.path = target
+      // Kept relative: the directory's name is the system's, not the row's.
+      book.path = "books/{name}"
       shelf.removeWhere(s => s.id == book.id)
       shelf.push(lib.shelfOf(book))
     }
@@ -99,7 +175,10 @@ pub store Library {
   /// Takes a .txt or .epub the user picked (the document picker on iOS hands
   /// over a copy in the app's caches), keeps it in the app's directory, and
   /// puts it on the shelf. The engine reads it when the reader opens it.
-  pub async fn importFile(path: string) throws {
+  ///
+  /// A book already there isn't added twice: the same bytes are one book,
+  /// whatever the file is called. True when the shelf got a new row.
+  pub async fn importFile(path: string) throws -> bool {
     let name = lib.fileName(path)
     let lower = name.lower()
     let isText = lower.hasSuffix(".txt")
@@ -109,8 +188,13 @@ pub store Library {
     let dir = fs.join([fs.appDir(), "books"])
     try await spawn { try fs.mkdirAll(dir) }
     let target = fs.join([dir, name])
+    let data = try await spawn { try fs.read(path) }
+    // The same bytes, under the same name or another one, are one book: keep
+    // the row it already has (and where it was left) instead of adding one.
+    if let kept = try await rowWithSameBytes(data) {
+      return false
+    }
     if path != target {
-      let data = try await spawn { try fs.read(path) }
       try await spawn { try fs.write(target, data) }
     }
     // A text book also arrives as chapters, so the shelf can count its words
@@ -121,7 +205,7 @@ pub store Library {
     } else {
       lib.Book(id: lib.idOf(name), title: lib.titleOf(name), author: "", chapters: [])
     }
-    book.path = target
+    book.path = "books/{name}"
     if isText && book.empty() { throw Error("{name} 里没有可读的文字") }
     if !isText {
       // The engine already knows how to find the cover (EPUB3's
@@ -132,15 +216,35 @@ pub store Library {
         if !named.isEmpty() { book.title = named }
         let cover = coverPath(book.id)
         try await spawn { try fs.mkdirAll(fs.join([fs.appDir(), "covers"])) }
-        if engine.writeCover(id, path: cover) { book.cover = cover }
+        if engine.writeCover(id, path: cover) { book.cover = coverName(book.id) }
         engine.close(id)
       }
     }
     // What's kept is the row, not the text: the file in the app's directory
-    // is the book, and the engine reads that.
-    forget(book.id)
+    // is the book, and the engine reads that. The row for the same file is
+    // replaced, not doubled — and the reading isn't: where a book was left is
+    // about the book, not the bytes it came in as.
+    shelf.removeWhere(s => s.id == book.id)
     shelf.push(lib.shelfOf(book))
     keep()
+    return true
+  }
+
+  /// A row whose file holds the same bytes as `data`, if the shelf has one:
+  /// an import of a book that's already there. Its size is asked first, so
+  /// only a file of the same size is read and hashed.
+  async fn rowWithSameBytes(data: bytes) -> lib.Shelf? {
+    let size = data.count()
+    let stamp = crypto.sha256(data).hex()
+    for row in shelf {
+      let file = fileOf(row.path)
+      if file.isEmpty() || !fs.exists(file) { continue }
+      let info = try? await spawn { try fs.stat(file) }
+      if let info = info, info.size != size { continue }
+      let other = try? await spawn { try fs.read(file) }
+      if let other = other, crypto.sha256(other).hex() == stamp { return row }
+    }
+    return none
   }
 
   /// A book's bookmarks, in the order they were made.
@@ -193,7 +297,7 @@ pub store Library {
 
   /// The further one reads, the fewer bytes get written: one row a book.
   pub fn save(id: string, chapter: int, percent: float) {
-    let row = lib.Reading(id: id, chapter: chapter, percent: percent)
+    let row = lib.Reading(id: id, chapter: chapter, percent: percent, updated: time.now().unix())
     var next: [lib.Reading] = []
     var replaced = false
     for old in readings {

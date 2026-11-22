@@ -45,11 +45,16 @@ fn fontCandidates() -> [string] {
 }
 
 /// The file the engine reads: the import's, or one written from the text the
-/// shelf kept.
+/// shelf kept. A row's path is resolved against the app's directory before it
+/// gets here; the fallback is a book whose row lost its file name.
 async fn bookFileOf(book: lib.Book) throws -> string {
   if !book.path.isEmpty() && fs.exists(book.path) { return book.path }
   let dir = fs.join([fs.appDir(), "books"])
-  let path = fs.join([dir, "{book.id}.txt"])
+  // An imported book's id is its file's name (with the extension); a sample's
+  // is its title, whose file is the title and .txt.
+  let lower = book.id.lower()
+  let name = if lower.hasSuffix(".txt") || lower.hasSuffix(".epub") { book.id } else { "{book.id}.txt" }
+  let path = fs.join([dir, name])
   if !fs.exists(path) && !book.raw.isEmpty() {
     let raw = book.raw
     try await spawn { try fs.mkdirAll(dir) }

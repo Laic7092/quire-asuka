@@ -69,6 +69,10 @@ component Cover(book: lib.Book) {
 component BookTile(book: lib.Book, reading: lib.Reading) {
   event open
 
+  // A row whose file iOS took with it (a container that was wiped, not just
+  // renamed) says so, rather than looking like a book that won't open.
+  let missing = !book.path.isEmpty() && !fs.exists(book.path)
+
   Column {
     gap: 6
     align: .center
@@ -80,9 +84,15 @@ component BookTile(book: lib.Book, reading: lib.Reading) {
       lines: 1
       textAlign: .center
     }
-    Text(if book.author.isEmpty() { reading.label() } else { "{book.author} · {reading.label()}" }) {
+    Text(if missing {
+      "文件找不到了"
+    } else if book.author.isEmpty() {
+      reading.label()
+    } else {
+      "{book.author} · {reading.label()}"
+    }) {
       font: .caption
-      color: .secondaryLabel
+      color: if missing { .red } else { .secondaryLabel }
       lines: 1
       textAlign: .center
     }
@@ -128,9 +138,15 @@ screen Shelf {
   // Runs the import, and says so when it can't.
   async fn bring(paths: [string]) {
     for p in paths {
+      let title = lib.titleOf(lib.fileName(p))
       do {
-        try await library.importFile(p)
-        snackbar("已加入《{lib.titleOf(lib.fileName(p))}》")
+        // A book already on the shelf (the same bytes, whatever the file is
+        // called) is reported, not added again.
+        if try await library.importFile(p) {
+          snackbar("已加入《{title}》")
+        } else {
+          snackbar("《{title}》已经在书架上了")
+        }
       } catch e {
         snackbar(e.message)
       }
