@@ -1,0 +1,64 @@
+// A scroll window's coverage: the bands it asks for always cover the viewport,
+// sit on tile boundaries (so a small scroll reuses them), and stay inside the
+// book. These are the properties that decide whether a fling lands on text or
+// on blank paper, so they're tested without the engine.
+
+test "a window's bands cover the whole viewport" {
+  let content = 1000.0
+  let window = bands(content: content, viewHeight: 844, tile: 512, total: 20000, overscan: 1024)
+  expect(!window.isEmpty())
+  expect(window[0].y <= content)
+  expect(covers(window, content, 844))
+  let last = window[window.count() - 1]
+  expect(last.y + last.height >= content + 844)
+}
+
+test "bands sit on tile boundaries, so a small scroll keeps them" {
+  let tile = 512.0
+  let window = bands(content: 3000, viewHeight: 844, tile: tile, total: 20000, overscan: 1024)
+  for band in window {
+    // y / tile is a whole number: the same band is the same file again.
+    let k = (band.y / tile).int()
+    expect(float(k) * tile == band.y)
+    expect(band.height <= tile)
+  }
+  // And the same window twice is the same bands.
+  let again = bands(content: 3000, viewHeight: 844, tile: tile, total: 20000, overscan: 1024)
+  expect(again.count() == window.count())
+  for (i, band) in window.enumerated() {
+    expect(band.key() == again[i].key())
+  }
+}
+
+test "a fling asks for where it lands, not for where it started" {
+  let content = 15000.0
+  let window = bands(content: content, viewHeight: 844, tile: 512, total: 20000, overscan: 1024)
+  // Nothing above the overscan line: a far jump must not draw the old place.
+  for band in window {
+    expect(band.y + band.height > content - 1024)
+  }
+  expect(covers(window, content, 844))
+}
+
+test "the end of the book clamps instead of going past it" {
+  let total = 20000.0
+  let window = bands(content: 19990, viewHeight: 844, tile: 512, total: total, overscan: 1024)
+  expect(!window.isEmpty())
+  let last = window[window.count() - 1]
+  expect(last.y + last.height == total)
+  expect(last.height > 0)
+  expect(last.height <= 512)
+}
+
+test "a book shorter than one band still covers its window" {
+  let window = bands(content: 0, viewHeight: 400, tile: 512, total: 300, overscan: 512)
+  expect(window.count() == 1)
+  expect(window[0].y == 0)
+  expect(window[0].height == 300)
+  expect(covers(window, 0, 300))
+}
+
+test "no column, no bands" {
+  expect(bands(content: 0, viewHeight: 844, tile: 512, total: 0, overscan: 1024).isEmpty())
+  expect(bands(content: 0, viewHeight: 844, tile: 0, total: 20000, overscan: 1024).isEmpty())
+}

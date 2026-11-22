@@ -1,0 +1,51 @@
+// The scroll column's arithmetic: which bands of the book's flow a window
+// needs. No engine and no views here, so a window's coverage — the thing that
+// decides whether a fling lands on paper or on text — is tested without a
+// device.
+
+/// One band of the flow: where it starts, and how tall it is. The engine draws
+/// a band, and a band may cross a chapter inside one (it keeps the seam in
+/// line), so a band never splits at a chapter end.
+pub struct Band {
+  y: float
+  height: float
+
+  /// A stable name for a band: the same place in the flow is the same file.
+  pub fn key() -> string = "{y.int()}:{height.int()}"
+}
+
+/// The bands a window needs: the viewport plus `overscan` either side, on
+/// `tile` boundaries so a small scroll keeps the bands already drawn. The first
+/// band starts at or before `content`, the last ends at or after
+/// `content + viewHeight`, and none of them leaves `0…total`.
+pub fn bands(content: float, viewHeight: float, tile: float, total: float, overscan: float) -> [Band] {
+  var out: [Band] = []
+  if tile <= 0 || total <= 0 || viewHeight <= 0 { return out }
+  var top = content - overscan
+  if top < 0 { top = 0 }
+  var end = content + viewHeight + overscan
+  if end > total { end = total }
+  var y = (top / tile).floor() * tile
+  while y < end {
+    var height = tile
+    if y + height > total { height = total - y }
+    if height <= 0 { break }
+    out.push(Band(y: y, height: height))
+    y += tile
+  }
+  return out
+}
+
+/// Whether `y…y+height` is covered by the bands without a gap. A window that
+/// isn't covered is a window with paper in it.
+pub fn covers(bands: [Band], y: float, height: float) -> bool {
+  if bands.isEmpty() || height <= 0 { return false }
+  var at = y
+  for band in bands {
+    if band.y <= at && band.y + band.height > at {
+      at = band.y + band.height
+      if at >= y + height { return true }
+    }
+  }
+  return at >= y + height
+}

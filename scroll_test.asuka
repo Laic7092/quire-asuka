@@ -1,0 +1,98 @@
+// The engine's scroll column, through the app's own bindings: chapter tops,
+// whole-book height, y → chapter, and a band that crosses a chapter seam. The
+// reader keeps no chapter table of its own, so this is what it relies on.
+
+import std/embed
+import std/fs
+
+import ./engine
+import ./lib
+
+let face = embed.bytes("fonts/NotoSerifSC-Regular.woff2")
+
+/// The sample book, open with a font, as the reader opens it.
+fn openSample() -> int {
+  let books = samples()
+  let book = books.find(b => b.title == "散文選") ?? books[0]
+  let path = fs.join([fs.appDir(), "scroll-column.txt"])
+  do { try fs.writeText(path, text: book.raw) } catch {}
+  let id = engine.open(path)
+  let _font = engine.registerFontBytes(id, data: face)
+  return id
+}
+
+fn paperFile(name: string, id: int, y: float, height: float) -> string {
+  let file = fs.join([fs.appDir(), name])
+  let _drawn = engine.flowBand(
+    id, y, height, 2.0,
+    lib.rgbaOf(lib.paletteFor("paper").ink), lib.rgbaOf(lib.paletteFor("paper").paper),
+    false, file,
+  )
+  return file
+}
+
+/// Whether any pixel in `rows` (0-based, within the band) is ink.
+fn inked(file: string, fromRow: int, toRow: int) -> bool {
+  let data = try? fs.read(file)
+  let all = data?.count() ?? 0
+  if all <= 12 { return false }
+  let width = (data?.get(4) ?? 0) + ((data?.get(5) ?? 0) << 8) + ((data?.get(6) ?? 0) << 16) + ((data?.get(7) ?? 0) << 24)
+  let rowBytes = width * 4
+  var row = fromRow
+  while row < toRow {
+    var i = 12 + row * rowBytes
+    let end = i + rowBytes
+    while i + 3 < end && i + 3 < all {
+      if (data?.get(i) ?? 255) < 0x80 && (data?.get(i + 1) ?? 255) < 0x80 { return true }
+      i += 4
+    }
+    row += 1
+  }
+  return false
+}
+
+test "the column's chapter tops are the sum of the ones before" {
+  let id = openSample()
+  expect(id > 0)
+  let count = engine.beginScroll(id, 390, 844, engine.Margins(top: 0, right: 24, bottom: 0, left: 24), 1.0, 1.6)
+  expect(count > 1)
+  let total = engine.flowHeight(id)
+  expect(total > 0)
+
+  var sum = 0.0
+  for c in 0..<count {
+    let chapter = engine.flowChapter(id, c)
+    expect(chapter.ok)
+    expect(chapter.spine == c)
+    expect((chapter.top - sum).abs() < 0.01)
+    expect(chapter.height > 0)
+    sum += chapter.height
+  }
+  expect((sum - total).abs() < 0.01)
+
+  // y → chapter, on both sides of a seam.
+  let second = engine.flowChapter(id, 1)
+  expect(engine.flowSpineAt(id, second.top + 10) == 1)
+  expect(engine.flowSpineAt(id, second.top - 10) == 0)
+  // A line's box: the first line sits within one line of the chapter's top
+  // (the leading above it), never before it.
+  let firstLine = engine.flowLineY(id, 1, 0)
+  expect(firstLine >= second.top)
+  expect(firstLine - second.top < 32)
+  expect((engine.flowProgress(id, total / 2) - 0.5).abs() < 0.01)
+  engine.close(id)
+}
+
+test "a band across a chapter seam has text from both chapters" {
+  let id = openSample()
+  let _count = engine.beginScroll(id, 390, 844, engine.Margins(top: 0, right: 24, bottom: 0, left: 24), 1.0, 1.6)
+  let second = engine.flowChapter(id, 1)
+  // A band whose middle is the seam: 200pt of the chapter before, 200 after.
+  let y = second.top - 200
+  let file = paperFile("scroll-seam.eqp", id, y, 400)
+  expect(fs.exists(file))
+  // 400pt at 2x is 800 rows; the seam is at row 400.
+  expect(inked(file, 0, 400))
+  expect(inked(file, 400, 800))
+  engine.close(id)
+}

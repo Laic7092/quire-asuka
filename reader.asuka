@@ -110,32 +110,24 @@ fn marginsOf(width: float, height: float, delta: float, env: Environment) -> eng
 /// The page files: one a book, chapter, page and size, next to the app's data.
 fn pagesDir() -> string = fs.join([fs.appDir(), "pages"])
 
-/// One chapter in the whole-book scroll column. `top` is the sum of the
-/// chapters before it, in content coordinates: the first chapter starts at
-/// 0, whichever page the reader opened at.
-struct ScrollChapter {
-  spine: int
-  top: float
-  height: float
-}
-
-/// One visible tile: a slice of a chapter, at its place in the column. The
-/// column is a real Scroll, so a tile is only ever a window onto the engine's
-/// chapter layout, never a row of a list.
+/// One visible band of the column, at its place in the book's flow. The column
+/// is a real Scroll and the engine owns the flow (chapter tops, seams), so a
+/// band is only ever a window onto it, never a row of a list.
 struct ScrollTile {
   key: string
-  spine: int
-  localY: float
+  /// Where the band starts in the book's flow coordinates.
+  y: float
+  /// And where it sits in the Scroll (the page's top room included).
   top: float
   height: float
   path: string
 }
 
-/// One scroll tile's file name: a slice of one chapter, not a page.
-fn slicePath(book: string, spine: int, top: float, height: float, width: float, viewHeight: float, insetLeft: float, insetRight: float, scale: float, tag: string) -> string {
+/// One scroll band's file name: a slice of the flow, which may cross a chapter.
+fn slicePath(book: string, y: float, height: float, width: float, viewHeight: float, insetLeft: float, insetRight: float, scale: float, tag: string) -> string {
   return fs.join([
     pagesDir(),
-    "{book}-{spine}-scroll-{top.int()}-{height.int()}-{width.int()}-v{viewHeight.int()}-l{insetLeft.int()}r{insetRight.int()}-{(scale * 10).int()}-{tag}.eqp",
+    "{book}-scroll-{y.int()}-{height.int()}-{width.int()}-v{viewHeight.int()}-l{insetLeft.int()}r{insetRight.int()}-{(scale * 10).int()}-{tag}.eqp",
   ])
 }
 
@@ -456,11 +448,10 @@ component Reader(book: lib.Book) {
   /// reading, a tap on the middle of the page brings them back.
   state chrome = true
 
-  /// Scroll mode: the whole book as one real Scroll. The engine lays a
-  /// chapter out as one tall page; the reader only asks for the windows that
-  /// are on screen. `chapters` is that column's map: each chapter's content
-  /// height, and where it starts.
-  state chapters: [ScrollChapter] = []
+  /// Scroll mode: the whole book as one real Scroll. The engine owns the
+  /// column — chapter tops, heights, and a band renderer that may cross a
+  /// chapter — so `scrollHeight` is its total flow height, and the reader
+  /// only asks for the bands that are on screen.
   state scrollHeight = 0.0
   state scrollTile = 0.0
   state scrollDone = false
@@ -583,7 +574,6 @@ component Reader(book: lib.Book) {
       scrollDone = false
       scrollOffset = 0
       windowBucket = 0
-      chapters = []
       tiles = []
     } else {
       let count = engine.chapterCount(engineId)
@@ -609,27 +599,18 @@ component Reader(book: lib.Book) {
     return contentY() / scrollHeight
   }
 
-  /// How far into its chapter the top line is (0…1).
+  /// How far into its chapter the top line is (0…1). The chapter and its top
+  /// are the engine's: the reader keeps no chapter table of its own.
   fn scrollWithin() -> float {
-    if let chapter = chapterAt(contentY()) {
-      if chapter.height <= 0 { return 0 }
-      var local = contentY() - chapter.top
-      if local < 0 { local = 0 }
-      if local > chapter.height { local = chapter.height }
-      return local / chapter.height
-    }
-    return 0
-  }
-
-  /// The chapter a content y falls in. The last one answers for the very end
-  /// of the book.
-  fn chapterAt(y: float) -> ScrollChapter? {
-    var last: ScrollChapter? = none
-    for chapter in chapters {
-      if y < chapter.top + chapter.height { return chapter }
-      last = chapter
-    }
-    return last
+    let y = contentY()
+    let index = engine.flowSpineAt(engineId, y)
+    if index < 0 { return 0 }
+    let chapter = engine.flowChapter(engineId, index)
+    if !chapter.ok || chapter.height <= 0 { return 0 }
+    var local = y - chapter.top
+    if local < 0 { local = 0 }
+    if local > chapter.height { local = chapter.height }
+    return local / chapter.height
   }
 
   fn windowBucketOf(y: float) -> int {
@@ -639,9 +620,10 @@ component Reader(book: lib.Book) {
     return (content / scrollTile).int()
   }
 
-  /// Lays every chapter out once for its content height: the engine keeps a
-  /// chapter as one tall page, and the heights are the column's map. The
-  /// window at the top is then just a y in that map, not a row of a list.
+  /// Opens the column: one call hands the engine the viewport and the type, and
+  /// it keeps the chapter tops from then on. Heights are measured lazily — the
+  /// total is what the Scroll's content height is — and a chapter that fails to
+  /// lay out is height 0 without stopping the ones after it.
   fn showScroll() {
     scrollDone = false
     // A new layout while the reader is already in place keeps the same place
@@ -651,39 +633,41 @@ component Reader(book: lib.Book) {
     let keptFraction = contentFraction()
     let targetChapter = startChapter
     let targetWithin = startWithin
-    let count = engine.chapterCount(engineId)
     let tile = scrollTileHeight()
     let fontScale = library.size / baseSize
     let margins = engine.Margins(top: 0, right: pageMargins.right, bottom: 0, left: pageMargins.left)
-    var list: [ScrollChapter] = []
-    var total = 0.0
-    for c in 0..<count {
-      let height = engine.layoutScroll(
-        engineId, c, frame.width, frame.height, margins,
-        fontScale, library.line, library.letter, library.word,
-      )
-      if height <= 0 { continue }
-      list.push(ScrollChapter(spine: c, top: total, height: height))
-      total += height
-    }
-    chapters = list
+    let count = engine.beginScroll(
+      engineId, frame.width, frame.height, margins,
+      fontScale, library.line, library.letter, library.word,
+    )
     scrollTile = tile
-    scrollHeight = total
     scrollTopPad = pageMargins.top
+    let total = engine.flowHeight(engineId)
+    scrollHeight = if count > 0 && total > 0 { total } else { 0 }
     scrollDone = true
+    if count < 0 {
+      // The engine refused the column (a book it can't lay out, a session it
+      // dropped): say so instead of pretending the book is empty.
+      error = "排版失败：{engine.lastError()}"
+      return
+    }
+    if scrollHeight <= 0 {
+      tiles = []
+      startChapter = -1
+      startWithin = 0
+      return
+    }
     var target = 0.0
     if keepingPlace {
-      target = keptFraction * total
+      target = keptFraction * scrollHeight
     } else if targetChapter >= 0 {
-      for chapter in list {
-        if chapter.spine == targetChapter {
-          target = chapter.top + targetWithin * chapter.height
-          break
-        }
+      let chapter = engine.flowChapter(engineId, targetChapter)
+      if chapter.ok {
+        target = chapter.top + targetWithin * chapter.height
       }
     }
     if target < 0 { target = 0 }
-    if target > total { target = total }
+    if target > scrollHeight { target = scrollHeight }
     startChapter = -1
     startWithin = 0
     goToScrollY(scrollTopPad + target)
@@ -707,9 +691,10 @@ component Reader(book: lib.Book) {
     rememberScroll()
   }
 
-  /// A tile is smaller than the viewport: one screen per bitmap makes every
-  /// tile boundary a large image upload. 512 DIP keeps each bake and upload
-  /// small, and a few of them fit around the visible screen.
+  /// A band is smaller than the viewport: one screen per bitmap makes every
+  /// band boundary a large image upload. 512 DIP keeps each one small, and a
+  /// few of them fit around the visible screen — and a band is only a few
+  /// milliseconds to draw, so a window fills in quickly.
   fn scrollTileHeight() -> float {
     if frame.width <= 0 { return 400 }
     let cap = 8_000_000.0 / (frame.width * scale * scale)
@@ -720,65 +705,48 @@ component Reader(book: lib.Book) {
 
   /// The windows the column needs around the one showing: one tile of
   /// overscan either side, so a small scroll doesn't ask for new bitmaps.
-  /// Tiles split at chapter ends: the engine's window is one chapter's.
+  /// Bands sit on flow boundaries, not chapter ones: the engine stitches a band
+  /// that crosses a chapter, so a seam is never a blank line or a new bitmap.
   fn windowTiles(offset: float) -> [ScrollTile] {
     var out: [ScrollTile] = []
-    if chapters.isEmpty() || scrollTile <= 0 || scrollHeight <= 0 { return out }
     var content = offset - scrollTopPad
     if content < 0 { content = 0 }
     if content > scrollHeight { content = scrollHeight }
-    let overscan = scrollTile * 2
-    var start = content
-    if start > overscan { start -= overscan } else { start = 0 }
-    var end = content + frame.height + overscan
-    if end > scrollHeight { end = scrollHeight }
-    var y = start
-    while y < end {
-      if let chapter = chapterAt(y) {
-        let local = y - chapter.top
-        let tileStart = (local / scrollTile).floor() * scrollTile
-        var height = chapter.height - tileStart
-        if height > scrollTile { height = scrollTile }
-        if height <= 0 { break }
-        let abs = chapter.top + tileStart
-        out.push(ScrollTile(
-          key: "{chapter.spine}:{tileStart.int()}:{height.int()}",
-          spine: chapter.spine, localY: tileStart,
-          top: scrollTopPad + abs, height: height, path: "",
-        ))
-        y = abs + height
-      } else {
-        break
-      }
+    for band in lib.bands(content, frame.height, scrollTile, scrollHeight, scrollTile * 2) {
+      out.push(ScrollTile(
+        key: band.key(), y: band.y, top: scrollTopPad + band.y,
+        height: band.height, path: "",
+      ))
     }
     return out
   }
 
-  /// The reader's place in the column. Saving waits for the scroll to settle:
-  /// a fling crosses several tiles, and a store write per tile is disk work
-  /// in the middle of the gesture for no reason.
+  /// The reader's place in the column, as the engine's chapter and how far into
+  /// it. Saving waits for the scroll to settle: a fling crosses several bands,
+  /// and a store write per band is disk work in the middle of the gesture.
   fn rememberScroll() {
     if scrollHeight <= 0 { return }
-    let y = contentY()
-    if let chapter = chapterAt(y) {
-      let within = scrollWithin()
-      hereChapter = chapter.spine
-      herePercent = within
+    let index = engine.flowSpineAt(engineId, contentY())
+    if index >= 0 {
+      hereChapter = index
+      herePercent = scrollWithin()
       placeTick += 1
     }
   }
 
   fn savePlace() {
     if scrollHeight <= 0 { return }
-    let y = contentY()
-    if let chapter = chapterAt(y) {
-      library.save(book.id, chapter.spine, scrollWithin())
-    }
+    let index = engine.flowSpineAt(engineId, contentY())
+    if index >= 0 { library.save(book.id, index, scrollWithin()) }
   }
 
-  /// Keeps a bookmark at the exact line at the top, not at a tile boundary.
+  /// Keeps a bookmark at the exact line at the top, not at a band boundary.
   fn toggleBookmark() {
-    let chapter = if library.mode == "scroll" { chapterAt(contentY())?.spine ?? hereChapter } else { spine }
+    var chapter = spine
+    if library.mode == "scroll" {
+      let index = engine.flowSpineAt(engineId, contentY())
+      chapter = if index >= 0 { index } else { hereChapter }
+    }
     let percent = if library.mode == "scroll" { scrollWithin() } else { herePercent }
     if library.toggleBookmark(book.id, chapter: chapter, percent: percent) {
       snackbar("已加书签")
@@ -792,21 +760,45 @@ component Reader(book: lib.Book) {
     var content = y - scrollTopPad
     if content < 0 { content = 0 }
     if content > scrollHeight { content = scrollHeight }
-    var p = content / scrollHeight * 100
-    if p < 0 { p = 0 }
-    if p > 100 { p = 100 }
-    return p.int()
+    let p = engine.flowProgress(engineId, content)
+    if p <= 0 { return 0 }
+    if p >= 1 { return 100 }
+    return (p * 100).int()
   }
 
-  // The windows around the reader. Missing ones are laid out and drawn on
-  // another thread, and `tiles` changes once, after every path is ready: a
-  // frame never rasterizes a strip or walks the view tree per tile.
+  // The bands around the reader. One band is a few milliseconds now that the
+  // engine paints only what's in it, so a window is filled band by band: what
+  // is already on disk shows before anything new is drawn, and each new band
+  // shows as soon as it lands, nearest the reader first. A fling then fills in
+  // behind the finger instead of blanking the page until the whole window is
+  // ready.
   task("{windowBucket}:{scrollDone}:{scrollHeight.int()}:{scrollTile.int()}:{frame.width.int()}:{frame.height.int()}:{layoutTag()}") {
-    if library.mode != "scroll" || !scrollDone || chapters.isEmpty() { return }
-    let wanted = windowTiles(scrollOffset)
+    if library.mode != "scroll" || !scrollDone || scrollHeight <= 0 { return }
+
+    let id = engineId
+    let bookId = book.id
+    let viewHeight = frame.height
+    let right = pageMargins.right
+    let left = pageMargins.left
+    let scaleNow = scale
+    let ink = lib.rgbaOf(palette.ink)
+    let paper = lib.rgbaOf(palette.paper)
+    let tag = layoutTag()
+
+    fn fileOf(tile: ScrollTile) -> string {
+      return slicePath(
+        book: bookId, y: tile.y, height: tile.height,
+        width: frame.width, viewHeight: viewHeight,
+        insetLeft: left, insetRight: right,
+        scale: scaleNow, tag: tag,
+      )
+    }
+
+    // What the column already has — the last window's bands, or an earlier
+    // pass over this part of the book — is shown at once, before any drawing.
     let old = tiles
     var next: [ScrollTile] = []
-    for tile in wanted {
+    for tile in windowTiles(scrollOffset) {
       var path = ""
       for seen in old {
         if seen.key == tile.key && !seen.path.isEmpty() {
@@ -814,52 +806,45 @@ component Reader(book: lib.Book) {
           break
         }
       }
-      next.push(ScrollTile(
-        key: tile.key, spine: tile.spine, localY: tile.localY,
-        top: tile.top, height: tile.height, path: path,
-      ))
+      if path.isEmpty() {
+        let file = fileOf(tile)
+        if fs.exists(file) { path = file }
+      }
+      next.push(ScrollTile(key: tile.key, y: tile.y, top: tile.top, height: tile.height, path: path))
     }
-
-    let id = engineId
-    let bookId = book.id
-    let width = frame.width
-    let height = frame.height
-    let viewHeight = frame.height
-    let right = pageMargins.right
-    let left = pageMargins.left
-    let fontScale = library.size / baseSize
-    let lineScale = library.line
-    let letter = library.letter
-    let word = library.word
-    let scaleNow = scale
-    let ink = lib.rgbaOf(palette.ink)
-    let paper = lib.rgbaOf(palette.paper)
-    let tag = layoutTag()
-
-    for i in 0..<next.count() {
-      if next[i].path.isEmpty() {
-        let tile = next[i]
-        let file = slicePath(
-          book: bookId, spine: tile.spine, top: tile.localY, height: tile.height,
-          width: width, viewHeight: viewHeight,
-          insetLeft: left, insetRight: right,
-          scale: scaleNow, tag: tag,
-        )
-        if !fs.exists(file) {
-          let _drawn = await spawn {
-            return engine.scrollSlice(
-              id: id, spine: tile.spine, width: width, height: height,
-              margins: engine.Margins(top: 0, right: right, bottom: 0, left: left),
-              fontScale: fontScale, lineScale: lineScale, letter: letter, word: word,
-              y: tile.localY, sliceHeight: tile.height, scale: scaleNow,
-              ink: ink, paper: paper, bold: false, path: file,
-            )
-          }
+    // Nothing new on screen: don't hand the view tree the same list again.
+    var changed = next.count() != old.count()
+    if !changed {
+      for i in 0..<next.count() {
+        if next[i].key != old[i].key || next[i].path != old[i].path {
+          changed = true
+          break
         }
-        if fs.exists(file) { next[i].path = file }
       }
     }
-    tiles = next
+    if changed { tiles = next }
+
+    // Nearest the reader first: the visible screen, then the room around it.
+    let content = contentY()
+    var order: [int] = []
+    for i in 0..<next.count() { order.push(i) }
+    order = order.sorted(key: i => (next[i].y - content).abs())
+
+    for i in order {
+      if !next[i].path.isEmpty() { continue }
+      let tile = next[i]
+      let file = fileOf(tile)
+      let _drawn = await spawn {
+        return engine.flowBand(
+          id: id, y: tile.y, height: tile.height, scale: scaleNow,
+          ink: ink, paper: paper, bold: false, path: file,
+        )
+      }
+      if fs.exists(file) {
+        next[i] = ScrollTile(key: tile.key, y: tile.y, top: tile.top, height: tile.height, path: file)
+        tiles = next
+      }
+    }
   }
 
   // A fling crosses tiles. Save once it has been quiet for a moment; the
@@ -972,12 +957,13 @@ component Reader(book: lib.Book) {
     let count = engine.chapterCount(engineId)
     if index < 0 || index >= count { return }
     if library.mode == "scroll" {
+      // The engine owns the chapter's top, and asking for one measures the
+      // chapters before it: no table of our own to look it up in.
       if scrollDone && scrollHeight > 0 {
-        for chapter in chapters {
-          if chapter.spine == index {
-            goToScrollY(scrollTopPad + chapter.top)
-            return
-          }
+        let chapter = engine.flowChapter(engineId, index)
+        if chapter.ok {
+          goToScrollY(scrollTopPad + chapter.top)
+          return
         }
       }
       // Not laid out yet: the next layout takes this as its place.
@@ -1000,12 +986,8 @@ component Reader(book: lib.Book) {
     if library.mode == "scroll" {
       if scrollDone && scrollHeight > 0 {
         var target = at * scrollHeight
-        for ch in chapters {
-          if ch.spine == chapter {
-            target = ch.top + at * ch.height
-            break
-          }
-        }
+        let ch = engine.flowChapter(engineId, chapter)
+        if ch.ok { target = ch.top + at * ch.height }
         goToScrollY(scrollTopPad + target)
       } else {
         startChapter = chapter
@@ -1042,7 +1024,7 @@ component Reader(book: lib.Book) {
           align: .center
           Text("排版中…") { color: palette.muted }
         }
-      } else if chapters.isEmpty() || scrollHeight <= 0 {
+      } else if scrollHeight <= 0 {
         Column {
           grow: 1
           justify: .center

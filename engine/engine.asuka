@@ -70,6 +70,50 @@ extern fn eb_plain_scroll_slice_raw(
   y: Float32, sliceHeight: Float32, scale: Float32,
   ink: UInt32, paper: UInt32, bold: bool, path: CString,
 ) -> Int32
+/// One chapter in the whole-book scroll session: where it starts in the flow,
+/// how tall it is, and whether it could be laid out at all.
+extern struct ScrollChapter {
+  ok: Int32
+  /// `UInt32.max` for an index out of range.
+  spine: UInt32
+  top: Float32
+  height: Float32
+}
+
+/// Where a point in the scroll column falls in the text.
+extern struct ScrollLoc {
+  /// -1: nothing there.
+  spine: Int32
+  line: UInt32
+  byte: UInt32
+  /// The line's box top, in the flow coordinates of the column.
+  y: Float32
+}
+
+/// ---- Continuous scrolling, across chapters ----
+///
+/// The engine owns the column: chapter tops, lazily measured heights, the
+/// band renderer (a band may cross a chapter and the seam stays in line),
+/// hits, line/anchor-to-y and progress — all in the book's flow coordinates,
+/// so the reader keeps no chapter table of its own.
+extern fn eb_plain_scroll_begin(
+  id: Int32, width: Float32, height: Float32,
+  top: Float32, right: Float32, bottom: Float32, left: Float32,
+  fontScale: Float32, lineScale: Float32, letterPx: Float32, wordPx: Float32, align: UInt32,
+) -> Int32
+extern fn eb_plain_scroll_chapter_count(id: Int32) -> UInt32
+extern fn eb_plain_scroll_chapter(id: Int32, index: UInt32) -> ScrollChapter
+extern fn eb_plain_scroll_total_height(id: Int32) -> Float32
+extern fn eb_plain_scroll_spine_at(id: Int32, y: Float32) -> Int32
+extern fn eb_plain_scroll_chapter_top(id: Int32, spine: UInt32) -> Float32
+extern fn eb_plain_scroll_band_raw(
+  id: Int32, y: Float32, height: Float32, scale: Float32,
+  ink: UInt32, paper: UInt32, bold: bool, path: CString,
+) -> Int32
+extern fn eb_plain_scroll_hit(id: Int32, x: Float32, y: Float32) -> ScrollLoc
+extern fn eb_plain_scroll_line_y(id: Int32, spine: UInt32, line: UInt32) -> Float32
+extern fn eb_plain_scroll_anchor_y(id: Int32, spine: UInt32, fragment: CString) -> Float32
+extern fn eb_plain_scroll_progress(id: Int32, y: Float32) -> Float32
 extern fn eb_plain_hit(id: Int32, page: UInt32, x: Float32, y: Float32) -> Loc
 extern fn eb_plain_progress(id: Int32, page: UInt32, line: UInt32, byte: UInt32) -> Float32
 extern fn eb_plain_toc_count(id: Int32) -> UInt32
@@ -180,6 +224,80 @@ pub fn scrollSlice(id: int, spine: int, width: float, height: float, margins: Ma
     y, sliceHeight, scale, ink, paper, bold, path,
   ) == 0
 }
+
+/// One chapter of the scroll column: where it starts in the flow, how tall it
+/// is, and whether it could be laid out (a chapter that can't is height 0 and
+/// doesn't stop the ones after it).
+pub struct FlowChapter {
+  spine: int
+  top: float
+  height: float
+  ok: bool
+}
+
+/// Where a point in the scroll column falls in the text.
+pub struct FlowLoc {
+  /// -1: nothing there.
+  spine: int
+  line: int
+  byte: int
+  /// The line's box top, in flow coordinates.
+  y: float
+}
+
+/// Opens the whole book as one scroll column: the engine keeps chapter tops,
+/// measures heights lazily and renders any band of the flow. Top and bottom
+/// margins are the scroll container's own room, so they're dropped here; left
+/// and right are the text's column. Returns the chapter count, -1/-2 an error.
+/// Call it after the font is registered: a new font drops the session.
+pub fn beginScroll(id: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float = 0, word: float = 0, align: int = 0) -> int {
+  if id <= 0 { return -1 }
+  return int(eb_plain_scroll_begin(
+    i32(clamping: id), width, height,
+    0, margins.right, 0, margins.left,
+    fontScale, lineScale, letter, word, u32(clamping: align),
+  ))
+}
+
+/// One chapter's place in the column. Asking for chapter i measures 0…i, so a
+/// host may spread the work over frames; `flowHeight` measures the whole book.
+pub fn flowChapter(id: int, index: int) -> FlowChapter {
+  let c = eb_plain_scroll_chapter(i32(clamping: id), u32(clamping: index))
+  return FlowChapter(
+    spine: if c.spine == u32.max { -1 } else { int(c.spine) },
+    top: c.top, height: c.height, ok: c.ok != 0,
+  )
+}
+
+/// The column's total height in points (the scroll container's content size).
+/// Measured on the first call; -1 when there's no session.
+pub fn flowHeight(id: int) -> float = eb_plain_scroll_total_height(i32(clamping: id))
+
+/// The chapter a flow y falls in; -1 past the end or with no session.
+pub fn flowSpineAt(id: int, y: float) -> int = int(eb_plain_scroll_spine_at(i32(clamping: id), y))
+
+/// One band of the column at `scale`, written to `path` as EQP1. A band may
+/// cross a chapter: the engine draws each chapter it touches and keeps the
+/// seam in line. Outside the content is paper.
+pub fn flowBand(id: int, y: float, height: float, scale: float, ink: u32, paper: u32, bold: bool, path: string) -> bool {
+  if id <= 0 || height <= 0 { return false }
+  return eb_plain_scroll_band_raw(i32(clamping: id), y, height, scale, ink, paper, bold, path) == 0
+}
+
+/// Flow point → the text there (spine -1 when there's none).
+pub fn flowHit(id: int, x: float, y: float) -> FlowLoc {
+  let loc = eb_plain_scroll_hit(i32(clamping: id), x, y)
+  return FlowLoc(spine: int(loc.spine), line: int(loc.line), byte: int(loc.byte), y: loc.y)
+}
+
+/// A line's box top, in flow coordinates; -1 when there's no such line.
+pub fn flowLineY(id: int, spine: int, line: int) -> float = eb_plain_scroll_line_y(i32(clamping: id), u32(clamping: spine), u32(clamping: line))
+
+/// A chapter's anchor ("#part-2") in flow coordinates; -1 when it has none.
+pub fn flowAnchorY(id: int, spine: int, fragment: string) -> float = eb_plain_scroll_anchor_y(i32(clamping: id), u32(clamping: spine), fragment)
+
+/// A flow y as 0…1 of the book; -1 on error.
+pub fn flowProgress(id: int, y: float) -> float = eb_plain_scroll_progress(i32(clamping: id), y)
 
 /// Where this point in the page falls in the text.
 pub fn hit(id: int, page: int, x: float, y: float) -> Loc = eb_plain_hit(i32(clamping: id), u32(clamping: page), x, y)

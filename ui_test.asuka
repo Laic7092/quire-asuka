@@ -49,15 +49,15 @@ test "a book scrolls, and switches back to pages" {
   app.expect("BookPage")
   app.expect("0%")
   app.expectNo("下一章")
-  // The tiles are the engine's, written where the native view reads them.
-  let tiles = (try? fs.walk(fs.join([fs.appDir(), "pages"])))?.filter(e => !e.isDir && e.name.contains("-scroll-")) ?? []
-  expect(!tiles.isEmpty())
-  // Not blank paper: at least one slice has the book's text on it.
-  var inked = 0
-  for tile in tiles {
-    if darkPixels(tile.path) > 200 { inked += 1 }
-  }
-  expect(inked > 0)
+  // The bands are the engine's, written where the native view reads them, and
+  // named by their place in the book's flow (no chapter in the name: a band
+  // may cross one).
+  let bands = scrollBands()
+  expect(!bands.isEmpty())
+  expect(bands.any(b => b.y == 0))
+  // And the first line of the book is on the band at the top, not blank paper.
+  let top = bands.filter(b => b.y == 0)
+  expect(!top.isEmpty() && darkPixels(top[0].path) > 200)
 
   // And back: the page is laid out again, at the same chapter.
   lib.mode = "page"
@@ -89,6 +89,15 @@ test "a chapter from the contents jumps in scroll mode" {
   let reading = lib.readingOf("朱自清·散文選")
   expect(reading.chapter == 3)
   expect(reading.percent < 0.05)
+
+  // The window drawn is the one it landed on, not the one it left: chapter 3
+  // is a third of the book, so its bands are past the first window's reach.
+  let far = scrollBands().filter(b => b.y >= 2900)
+  expect(!far.isEmpty())
+  if let nearest = far.min(key: b => b.y) {
+    // And it has the book's text on it, not blank paper.
+    expect(darkPixels(nearest.path) > 200)
+  }
 
   // The two modes keep the same place: a chapter and how far into it.
   lib.mode = "page"
@@ -127,6 +136,29 @@ test "opening a book remembers where the reader is" {
 
 /// The pages the reader has written for a book, newest last: the file names
 /// say how each was laid out.
+/// One scroll band the reader wrote, and where it sits in the book's flow: the
+/// file name is "{book}-scroll-{y}-{height}-{width}-…".
+struct BandFile {
+  y: float
+  height: float
+  path: string
+}
+
+fn scrollBands() -> [BandFile] {
+  let dir = fs.join([fs.appDir(), "pages"])
+  let found = (try? fs.walk(dir))?.filter(e => !e.isDir && e.name.contains("-scroll-")) ?? []
+  var out: [BandFile] = []
+  for entry in found {
+    let parts = entry.name.split("-")
+    if parts.count() >= 6 {
+      out.push(BandFile(
+        y: parts[2].toFloat() ?? 0, height: parts[3].toFloat() ?? 0, path: entry.path,
+      ))
+    }
+  }
+  return out
+}
+
 fn pagesMatching(tag: string) -> [string] {
   let dir = "{fs.appDir()}/pages"
   let found = try? fs.walk(dir)
