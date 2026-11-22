@@ -1,0 +1,17 @@
+// The search page: a placeholder for now. It is a page of the app's Tabs,
+// with its own navigation stack for results and a book once there is one.
+
+screen Search {
+  title: "搜索"
+
+  Column {
+    grow: 1
+    justify: .center
+    align: .center
+    gap: 8
+    Text("搜索") {
+      font: .title2
+      color: .secondaryLabel
+    }
+  }
+}

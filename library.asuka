@@ -19,7 +19,7 @@ pub store Library {
   /// Whether the samples have been put on the shelf (the first launch did it).
   pub state seeded: bool = store.read("shelf.seeded", false)
   pub state readings: [lib.Reading] = store.read("readings", [])
-  /// 书签：一本书里的位置，全书进度加分章，不是页码（换字号也还准）。
+  /// 书签：一本书里的位置，章内进度加分章，不是页码（换字号也还准）。
   pub state bookmarks: [lib.Bookmark] = store.read("bookmarks", [])
   pub state theme: string = store.read("reader.theme", "paper")
   pub state size: float = store.read("reader.size", 19.0)

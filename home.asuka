@@ -1,0 +1,17 @@
+// The home page: a placeholder for now. It is a page of the app's Tabs, so
+// it gets its own navigation stack and can grow into a real home later.
+
+screen Home {
+  title: "首页"
+
+  Column {
+    grow: 1
+    justify: .center
+    align: .center
+    gap: 8
+    Text("首页") {
+      font: .title2
+      color: .secondaryLabel
+    }
+  }
+}

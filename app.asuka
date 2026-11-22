@@ -1,7 +1,71 @@
 // Quire on Asuka: the shelf, and a reading page whose layout is the engine's
 // (ebook-engine, Rust, through its C ABI), drawn by each platform's own view.
 
+import ./lib
+
+/// The app's own root: the shelf and the book it opened, as two views, not a
+/// modal presented over the shelf. The reading page is a full-window layer,
+/// so the paper reaches the status bar too and the shelf's own bar is under
+/// it, not behind it.
+component Quire {
+  use library: Library
+
+  state reading = lib.Book(id: "", title: "", author: "", chapters: [])
+  state readingOpen = false
+  /// Which tab shows. The shelf is the one the app opens on; 首页 and 搜索
+  /// are placeholders for now.
+  state tab = 1
+
+  let paper = lib.paletteFor(library.theme).paper
+
+  View {
+    grow: 1
+    background: paper
+
+    Tabs {
+      selected: tab
+      on change(i) { tab = i }
+
+      Tab("首页") {
+        icon: "house"
+        Stack { Home() }
+      }
+      Tab("书架") {
+        icon: "books.vertical"
+        Stack {
+          Shelf() {
+            on open(book) {
+              reading = book
+              readingOpen = true
+            }
+          }
+        }
+      }
+      Tab("搜索") {
+        icon: "magnifyingglass"
+        Stack { Search() }
+      }
+    }
+
+    // The reader is a layer of the app, not a sheet: no presentation
+    // container around it, so its own paper is what the window shows.
+    if readingOpen {
+      View {
+        absolute: true
+        top: 0
+        left: 0
+        right: 0
+        bottom: 0
+        background: paper
+        Reader(reading) {
+          on close { readingOpen = false }
+        }
+      }
+    }
+  }
+}
+
 app {
   provide Library()
-  Stack { Shelf() }
+  Quire()
 }

@@ -9,9 +9,9 @@ import std/fs
 import ./engine
 import ./lib
 
-/// The app as it runs: a stack with the shelf at its root.
+/// The app as it runs: the shelf, and the reader over it.
 component Harness {
-  Stack { Shelf() }
+  Quire()
 }
 
 test "the shelf shows the sample books" {
@@ -66,12 +66,50 @@ test "a book scrolls, and switches back to pages" {
   lib.mode = "page"
 }
 
+test "a chapter from the contents jumps in scroll mode" {
+  let lib = Library()
+  let app = mount(Harness(), provide: lib)
+  app.tap("散文選")
+  await app.idle()
+  lib.mode = "scroll"
+  await app.idle()
+  await sleep(600ms)
+  await app.idle()
+
+  // 目录 opens at the reader's chapter; picking another one is a place in
+  // the column, so the reader is there without the page being laid out again.
+  app.tap("目录")
+  await app.idle()
+  app.expect("第4章 荷塘月色")
+  app.tap("第4章 荷塘月色")
+  await app.idle()
+  await sleep(300ms)
+  await app.idle()
+
+  let reading = lib.readingOf("朱自清·散文選")
+  expect(reading.chapter == 3)
+  expect(reading.percent < 0.05)
+
+  // The two modes keep the same place: a chapter and how far into it.
+  lib.mode = "page"
+  await app.idle()
+  let paged = lib.readingOf("朱自清·散文選")
+  expect(paged.chapter == 3)
+
+  lib.mode = "scroll"
+  await app.idle()
+  await sleep(600ms)
+  await app.idle()
+  let again = lib.readingOf("朱自清·散文選")
+  expect(again.chapter == 3)
+}
+
 test "the page goes away when it's put away" {
   let app = mount(Harness(), provide: Library())
   app.tap("散文選")
   await app.idle()
   app.expect("BookPage")
-  app.dismiss()
+  app.tap("返回")
   await app.idle()
   app.expectNo("BookPage")
 }

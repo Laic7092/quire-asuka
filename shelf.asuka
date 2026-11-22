@@ -105,10 +105,8 @@ component BookCell(book: lib.Book, reading: lib.Reading) {
 screen Shelf {
   use library: Library
 
-  /// What the reader has open, and whether its page is up: a full-screen
-  /// sheet, so the bar above it is the app's (three buttons over the page).
-  state reading = lib.Book(id: "", title: "", author: "", chapters: [])
-  state readingOpen = false
+  /// A book was chosen: the app opens the reader over the shelf.
+  event open(book: lib.Book)
 
   title: "书架"
   largeTitle: true
@@ -116,12 +114,12 @@ screen Shelf {
   // The books that came with the app are put on the shelf once, as books.
   task { await library.seedSamples() }
 
-  // Import is the shelf's main action: iOS puts it at the end of the bar as
-  // a prominent +, Android floats it.
-  primary {
+  // Import sits at the top right of the bar, not as a floating action.
+  toolbar {
     Button("") {
       icon: "plus"
-      variant: .glassProminent
+      variant: .glass
+      label: "导入"
       tooltip: "导入 .txt 或 .epub"
       on press { await pick() }
     }
@@ -182,22 +180,13 @@ screen Shelf {
       padding: [22, 20]
       for b in library.books() key b.id {
         BookCell(b, library.readingOf(b.id)) {
-          on open {
-            reading = b
-            readingOpen = true
-          }
+          on open { emit open(b) }
           on delete {
             library.forget(b.id)
             snackbar("已删除《{b.title}》")
           }
         }
       }
-    }
-
-    Sheet {
-      fullScreen: true
-      bind open: readingOpen
-      Reader(reading)
     }
   }
 }

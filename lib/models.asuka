@@ -60,8 +60,8 @@ pub struct Reading {
   }
 }
 
-/// A bookmark: a place the reader kept in a book, as the whole book's
-/// fraction, with the chapter it was made in.
+/// A bookmark: a place the reader kept in a book, as how far into its
+/// chapter it was made.
 pub struct Bookmark {
   id: string
   book: string
