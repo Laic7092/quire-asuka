@@ -507,9 +507,8 @@ test "the home page has the year's sections" {
   app.tap("首页")
   await app.idle()
   app.expect("继续阅读")
+  app.expect("今年")
   app.expect("之前读过")
-  app.expect("阅读目标")
-  app.expect("今年读过的书")
   // The goal is the app's, and the page writes it down as it's stepped.
   lib.goal = 24
   await app.idle()
