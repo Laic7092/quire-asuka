@@ -1,6 +1,6 @@
 # Quire
 
-Quire 是面向 iPhone / iPad 的本地阅读器。应用使用 [Asuka](https://asuka.egoist.dev) 编写，书籍解析、排版与光栅化由
+Quire 是跨平台的本地阅读器，使用 [Asuka](https://asuka.egoist.dev) 编写：同一套源码构建 iOS、macOS、Linux、Android 与 Web 应用，界面由各平台原生控件实现。书籍解析、排版与光栅化由
 [ebook-engine](https://github.com/Laic7092/ebook-engine)（Rust）通过 C ABI 提供。
 
 ## 功能
@@ -12,6 +12,10 @@ Quire 是面向 iPhone / iPad 的本地阅读器。应用使用 [Asuka](https://
 - 导入：文档选择器，以及 Files / Mail 中的“用 Quire 打开”。
 - 格式：`.txt`、`.epub`。
 - 导航：首页、书架、搜索三个标签，书架为默认页；首页与搜索为预留入口。
+
+## 平台
+
+Quire 使用 Asuka 的跨平台运行时，同一套源码可构建 iOS、macOS、Linux、Android 与 Web。iOS 是当前 CI 持续产出的目标；其他平台使用同一套 Asuka 源码和对应的 ebook-engine 目标库构建。
 
 ## 架构
 
@@ -58,7 +62,8 @@ BookPage（原生位图视图）
 - Asuka CLI
 - ebook-engine 预编译静态库：`lib/<target>/libebook_abi.a`
 - Linux：GTK 4
-- iOS：macOS、Xcode 26 或更新版本、iOS SDK
+- macOS / iOS：Xcode 26 或更新版本、iOS SDK
+- Android / Web：使用 Asuka 对应平台的工具链
 
 使用预编译库时不需要 Rust 工具链。
 

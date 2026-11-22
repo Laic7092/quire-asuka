@@ -22,6 +22,10 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
+    # Docs don't change the app or its engine: a README edit doesn't need a
+    # macOS runner. (Workflow changes themselves still run.)
+    paths-ignore:
+      - '**/*.md'
 
 permissions:
   contents: read
