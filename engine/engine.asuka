@@ -60,6 +60,16 @@ extern fn eb_plain_page_slice_raw(
   id: Int32, page: UInt32, y: Float32, height: Float32, scale: Float32,
   ink: UInt32, paper: UInt32, bold: bool, path: CString,
 ) -> Int32
+
+/// Lay a chapter out and take one scroll window in the same call: a host
+/// thread can draw a tile without another call replacing the layout.
+extern fn eb_plain_scroll_slice_raw(
+  id: Int32, spine: UInt32, width: Float32, height: Float32,
+  top: Float32, right: Float32, bottom: Float32, left: Float32,
+  fontScale: Float32, lineScale: Float32, letterPx: Float32, wordPx: Float32, align: UInt32,
+  y: Float32, sliceHeight: Float32, scale: Float32,
+  ink: UInt32, paper: UInt32, bold: bool, path: CString,
+) -> Int32
 extern fn eb_plain_hit(id: Int32, page: UInt32, x: Float32, y: Float32) -> Loc
 extern fn eb_plain_progress(id: Int32, page: UInt32, line: UInt32, byte: UInt32) -> Float32
 extern fn eb_plain_toc_count(id: Int32) -> UInt32
@@ -156,6 +166,19 @@ pub fn renderPage(id: int, page: int, scale: float, ink: u32, paper: u32, bold: 
 /// Rasterizes the slice at `y`, `height` points tall, into `path`.
 pub fn renderSlice(id: int, page: int, y: float, height: float, scale: float, ink: u32, paper: u32, bold: bool, path: string) -> bool {
   return eb_plain_page_slice_raw(i32(clamping: id), u32(clamping: page), y, height, scale, ink, paper, bold, path) == 0
+}
+
+/// Lays `spine` out for scrolling and rasterizes one window of it in the
+/// same engine call, so a background tile cannot be drawn from another
+/// chapter's layout. Top and bottom margins are the host's, hence 0.
+pub fn scrollSlice(id: int, spine: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float, word: float, y: float, sliceHeight: float, scale: float, ink: u32, paper: u32, bold: bool, path: string) -> bool {
+  if id <= 0 { return false }
+  return eb_plain_scroll_slice_raw(
+    i32(clamping: id), u32(clamping: spine), width, height,
+    0, margins.right, 0, margins.left,
+    fontScale, lineScale, letter, word, 0,
+    y, sliceHeight, scale, ink, paper, bold, path,
+  ) == 0
 }
 
 /// Where this point in the page falls in the text.

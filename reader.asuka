@@ -492,6 +492,11 @@ component Reader(book: lib.Book) {
   /// changes as the reader scrolls; `spine` is the page mode's chapter and
   /// stays put.
   state hereChapter = 0
+  /// The capsule's number, written only when the integer percent changes:
+  /// the view must not read the scroll offset itself.
+  state shownPercent = 0
+  /// Restarts the save task; the place is written after the scroll settles.
+  state placeTick = 0
 
   let palette = lib.paletteFor(library.theme)
   let barStyle = if library.theme == "night" { screen.BarStyle.light } else { screen.BarStyle.dark }
@@ -520,6 +525,7 @@ component Reader(book: lib.Book) {
   // The engine holds the book's bytes: let it go as the reading page does.
   cleanup {
     screen.setBars(style: .auto, hideStatus: false, hideNavigation: false)
+    if library.mode == "scroll" { savePlace() }
     if engineId > 0 {
       engine.close(engineId)
       engineId = -1
@@ -695,18 +701,21 @@ component Reader(book: lib.Book) {
     if target > max { target = max }
     scrollOffset = target
     windowBucket = windowBucketOf(target)
+    shownPercent = percentAt(target)
     scrollTarget = target
     scrollTick += 1
     rememberScroll()
   }
 
-  /// A tile is one screenful, capped so its bitmap stays under the engine's
-  /// page-pixel budget (a 4K window at 2x would otherwise be too large).
+  /// A tile is smaller than the viewport: one screen per bitmap makes every
+  /// tile boundary a large image upload. 512 DIP keeps each bake and upload
+  /// small, and a few of them fit around the visible screen.
   fn scrollTileHeight() -> float {
     if frame.width <= 0 { return 400 }
     let cap = 8_000_000.0 / (frame.width * scale * scale)
-    let height = if frame.height < cap { frame.height } else { cap }
-    return if height < 256 { 256.0 } else { height }
+    let height = if frame.height < 512 { frame.height } else { 512.0 }
+    let capped = if height < cap { height } else { cap }
+    return if capped < 256 { 256.0 } else { capped }
   }
 
   /// The windows the column needs around the one showing: one tile of
@@ -718,9 +727,10 @@ component Reader(book: lib.Book) {
     var content = offset - scrollTopPad
     if content < 0 { content = 0 }
     if content > scrollHeight { content = scrollHeight }
+    let overscan = scrollTile * 2
     var start = content
-    if start > scrollTile { start -= scrollTile } else { start = 0 }
-    var end = content + frame.height + scrollTile
+    if start > overscan { start -= overscan } else { start = 0 }
+    var end = content + frame.height + overscan
     if end > scrollHeight { end = scrollHeight }
     var y = start
     while y < end {
@@ -744,7 +754,9 @@ component Reader(book: lib.Book) {
     return out
   }
 
-  /// The reader's place, saved as whole-book progress with its chapter.
+  /// The reader's place in the column. Saving waits for the scroll to settle:
+  /// a fling crosses several tiles, and a store write per tile is disk work
+  /// in the middle of the gesture for no reason.
   fn rememberScroll() {
     if scrollHeight <= 0 { return }
     let y = contentY()
@@ -752,7 +764,15 @@ component Reader(book: lib.Book) {
       let within = scrollWithin()
       hereChapter = chapter.spine
       herePercent = within
-      library.save(book.id, chapter.spine, within)
+      placeTick += 1
+    }
+  }
+
+  fn savePlace() {
+    if scrollHeight <= 0 { return }
+    let y = contentY()
+    if let chapter = chapterAt(y) {
+      library.save(book.id, chapter.spine, scrollWithin())
     }
   }
 
@@ -767,17 +787,20 @@ component Reader(book: lib.Book) {
     }
   }
 
-  fn scrollPercent() -> int {
+  fn percentAt(y: float) -> int {
     if scrollHeight <= 0 { return 0 }
-    var p = contentFraction() * 100
+    var content = y - scrollTopPad
+    if content < 0 { content = 0 }
+    if content > scrollHeight { content = scrollHeight }
+    var p = content / scrollHeight * 100
     if p < 0 { p = 0 }
     if p > 100 { p = 100 }
     return p.int()
   }
 
-  // The windows around the reader, made one at a time: an existing file is
-  // handed over at once, a new one waits for a frame after it's drawn. The
-  // Scroll itself is the platform's, so it keeps its own fling and position.
+  // The windows around the reader. Missing ones are laid out and drawn on
+  // another thread, and `tiles` changes once, after every path is ready: a
+  // frame never rasterizes a strip or walks the view tree per tile.
   task("{windowBucket}:{scrollDone}:{scrollHeight.int()}:{scrollTile.int()}:{frame.width.int()}:{frame.height.int()}:{layoutTag()}") {
     if library.mode != "scroll" || !scrollDone || chapters.isEmpty() { return }
     let wanted = windowTiles(scrollOffset)
@@ -796,35 +819,55 @@ component Reader(book: lib.Book) {
         top: tile.top, height: tile.height, path: path,
       ))
     }
-    tiles = next
+
+    let id = engineId
+    let bookId = book.id
+    let width = frame.width
+    let height = frame.height
+    let viewHeight = frame.height
+    let right = pageMargins.right
+    let left = pageMargins.left
+    let fontScale = library.size / baseSize
+    let lineScale = library.line
+    let letter = library.letter
+    let word = library.word
+    let scaleNow = scale
+    let ink = lib.rgbaOf(palette.ink)
+    let paper = lib.rgbaOf(palette.paper)
+    let tag = layoutTag()
+
     for i in 0..<next.count() {
-      if tiles[i].path.isEmpty() {
-        let tile = tiles[i]
+      if next[i].path.isEmpty() {
+        let tile = next[i]
         let file = slicePath(
-          book: book.id, spine: tile.spine, top: tile.localY, height: tile.height,
-          width: frame.width, viewHeight: frame.height,
-          insetLeft: pageMargins.left, insetRight: pageMargins.right,
-          scale: scale, tag: layoutTag(),
+          book: bookId, spine: tile.spine, top: tile.localY, height: tile.height,
+          width: width, viewHeight: viewHeight,
+          insetLeft: left, insetRight: right,
+          scale: scaleNow, tag: tag,
         )
         if !fs.exists(file) {
-          let laid = engine.layoutScroll(
-            engineId, tile.spine, frame.width, frame.height,
-            engine.Margins(top: 0, right: pageMargins.right, bottom: 0, left: pageMargins.left),
-            library.size / baseSize, library.line, library.letter, library.word,
-          )
-          if laid >= 0 {
-            let _ok = engine.renderSlice(
-              engineId, 0, tile.localY, tile.height, scale,
-              lib.rgbaOf(palette.ink), lib.rgbaOf(palette.paper), false, file,
+          let _drawn = await spawn {
+            return engine.scrollSlice(
+              id: id, spine: tile.spine, width: width, height: height,
+              margins: engine.Margins(top: 0, right: right, bottom: 0, left: left),
+              fontScale: fontScale, lineScale: lineScale, letter: letter, word: word,
+              y: tile.localY, sliceHeight: tile.height, scale: scaleNow,
+              ink: ink, paper: paper, bold: false, path: file,
             )
           }
         }
-        if fs.exists(file) {
-          tiles[i].path = file
-          await sleep(8ms)
-        }
+        if fs.exists(file) { next[i].path = file }
       }
     }
+    tiles = next
+  }
+
+  // A fling crosses tiles. Save once it has been quiet for a moment; the
+  // tick restarts this task on every tile, so only the last one writes.
+  task("{placeTick}:{scrollDone}:{scrollHeight.int()}") {
+    if library.mode != "scroll" || !scrollDone || placeTick == 0 { return }
+    await sleep(250ms)
+    savePlace()
   }
 
   // The Scroll is moved here, after it has its new content height: a jump is
@@ -898,6 +941,11 @@ component Reader(book: lib.Book) {
   // idempotent, so this is only as expensive as the page it produces.
   task("{spine}:{page}:{frame.width}:{frame.height}:{library.size}:{library.line}:{library.margins}:{library.letter}:{library.theme}:{library.mode}") {
     if frame.width <= 32 { return }
+    // A slider changes several times a second. In scroll mode every change
+    // means laying out every chapter; wait for the hand to stop first.
+    if library.mode == "scroll" && scrollDone {
+      await sleep(180ms)
+    }
     try? await openBook()
     show()
   }
@@ -1011,12 +1059,17 @@ component Reader(book: lib.Book) {
           grow: 1
           background: palette.paper
           on scroll(x, y) {
-            scrollOffset = y
+            // The native Scroll moves the paper; the app only needs a new
+            // window when the reader crosses a tile. The capsule gets its
+            // own, much cheaper number.
             let bucket = windowBucketOf(y)
             if bucket != windowBucket {
+              scrollOffset = y
               windowBucket = bucket
               rememberScroll()
             }
+            let p = percentAt(y)
+            if p != shownPercent { shownPercent = p }
           }
           View {
             height: scrollTopPad + scrollHeight + pageMargins.bottom
@@ -1134,7 +1187,7 @@ component Reader(book: lib.Book) {
         left: 0
         right: 0
         justify: .center
-        Button(if library.mode == "scroll" { "{scrollPercent()}%" } else { "{page + 1} / {pages}" }) {
+        Button(if library.mode == "scroll" { "{shownPercent}%" } else { "{page + 1} / {pages}" }) {
           variant: .glass
           font: Font(size: 11)
           color: palette.muted
