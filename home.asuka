@@ -116,25 +116,6 @@ component EmptyNote(text: string) {
   }
 }
 
-/// The avatar: a circle that opens the reader's own page.
-component Avatar {
-  event tap
-
-  View {
-    width: 44
-    height: 44
-    radius: 999
-    align: .center
-    justify: .center
-    background: .accent
-    on press { emit tap }
-    Symbol("person.fill") {
-      font: .headline
-      color: .onAccent
-    }
-  }
-}
-
 /// A book still open: where it was left, and the way back into it.
 component ContinueRow(book: lib.Book, reading: lib.Reading) {
   event open
@@ -365,6 +346,18 @@ screen Home {
   title: "首页"
   largeTitle: true
 
+  // 我 sits at the top right of the bar, as the shelf's import button does,
+  // not in the page's first line.
+  toolbar {
+    Button("") {
+      icon: "person.crop.circle"
+      variant: .glass
+      label: "我"
+      tooltip: "阅读记录、WebDAV 与设置"
+      on press { present(Profile()) }
+    }
+  }
+
   let books = library.books()
   let rows = library.readings
   let reading = rows.filter(isReading).sorted(key: r => r.updated, descending: true)
@@ -386,22 +379,16 @@ screen Home {
     appearance: .bare
     for section in sections {
       match section {
-        .header => Row {
-          gap: 12
-          align: .center
+        .header => Column {
+          gap: 3
           padding: [8, 20, 0, 20]
-          Column {
-            grow: 1
-            gap: 3
-            Text(greeting()) {
-              font: .title2.bold()
-            }
-            Text(time.now().format("yyyy年M月d日 EEEE")) {
-              font: .footnote
-              color: .secondaryLabel
-            }
+          Text(greeting()) {
+            font: .title2.bold()
           }
-          Avatar() { on tap { present(Profile()) } }
+          Text(time.now().format("yyyy年M月d日 EEEE")) {
+            font: .footnote
+            color: .secondaryLabel
+          }
         }
         .reading => Column {
           gap: 12
