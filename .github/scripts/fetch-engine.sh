@@ -5,13 +5,18 @@
 #
 #   .github/scripts/fetch-engine.sh ios-arm64 linux-x64 macos-arm64
 #
-# ENGINE_VERSION pins the release (v0.1.0 by default); ENGINE_BASE overrides
+# ENGINE_VERSION is the release: `latest` (the default) follows the newest
+# non-prerelease, or give a tag (v0.2.0) to pin one. ENGINE_BASE overrides
 # where they come from (a mirror, or file:// for a directory of them).
 
 set -euo pipefail
 
-version="${ENGINE_VERSION:-v0.1.0}"
-base="${ENGINE_BASE:-https://github.com/Laic7092/ebook-engine/releases/download/$version}"
+version="${ENGINE_VERSION:-latest}"
+if [ "$version" = "latest" ]; then
+  base="${ENGINE_BASE:-https://github.com/Laic7092/ebook-engine/releases/latest/download}"
+else
+  base="${ENGINE_BASE:-https://github.com/Laic7092/ebook-engine/releases/download/$version}"
+fi
 app_dir="$(cd "$(dirname "$0")/../.." && pwd)"
 
 if [ "$#" -eq 0 ]; then

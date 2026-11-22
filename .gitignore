@@ -7,3 +7,6 @@
 # The engine's static libraries (lib/<target>/libebook_abi.a), downloaded by
 # .github/scripts/fetch-engine.sh: not the app's own sources under lib/.
 /lib/**/libebook_abi.a
+
+# The app ships the WOFF2; an OTF is a local source for regenerating it.
+/fonts/*.otf

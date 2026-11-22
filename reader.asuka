@@ -19,7 +19,7 @@ let baseSize = 19.0
 /// The face the pages are set in: a serif the app ships, so every device and
 /// every test lays the same book out the same way (and Chinese always has
 /// glyphs). SIL Open Font License; see fonts/OFL.txt.
-let bundledFace = embed.bytes("fonts/NotoSerifSC-Regular.otf")
+let bundledFace = embed.bytes("fonts/NotoSerifSC-Regular.woff2")
 
 /// The families to ask the platform for, in order. iOS's font files aren't
 /// where a reader would guess (and some live in the dyld cache), so the
@@ -109,17 +109,98 @@ fn marginsOf(width: float, height: float, delta: float, env: Environment) -> eng
 /// The page files: one a book, chapter, page and size, next to the app's data.
 fn pagesDir() -> string = fs.join([fs.appDir(), "pages"])
 
+/// A row in the scroll list: a tile of a chapter, or the room above/below
+/// the book. `spine` is -1 for the top room and -2 for the end of the book.
+struct ScrollRow {
+  spine: int
+  y: float
+  height: float
+  top: float
+}
+
+/// A tile on screen: what `remember` needs to know where the top is.
+struct VisibleTile {
+  chapter: int
+  at: float
+}
+
+/// One scroll tile's file name: a slice of one chapter, not a page.
+fn slicePath(book: string, spine: int, index: int, top: float, height: float, width: float, viewHeight: float, insetLeft: float, insetRight: float, scale: float, tag: string) -> string {
+  return fs.join([
+    pagesDir(),
+    "{book}-{spine}-scroll-{index}-{top.int()}-{height.int()}-{width.int()}-v{viewHeight.int()}-l{insetLeft.int()}r{insetRight.int()}-{(scale * 10).int()}-{tag}.eqp",
+  ])
+}
+
+/// One screenful of a chapter in scroll mode: the engine lays the chapter out
+/// again (it keeps only one) and rasterizes exactly this window. A List row is
+/// recycled, so the task is keyed on the row: the same view shows a different
+/// slice when it comes back, and a cached file skips the engine.
+component ScrollTile(engineId: int, book: string, row: int, spine: int, y: float, at: float, tileHeight: float, tileWidth: float, viewHeight: float, insetLeft: float, insetRight: float, fontScale: float, lineScale: float, letter: float, word: float, scale: float, ink: u32, paper: u32, tag: string) {
+  event shown(chapter: int, at: float)
+  event hidden(at: float)
+  state path = ""
+
+  task("{row}:{spine}:{y}:{tileHeight}:{tileWidth}:{viewHeight}:{insetLeft}:{insetRight}:{fontScale}:{lineScale}:{letter}:{word}:{scale}:{tag}:{ink}:{paper}") {
+    let id = engineId
+    let file = slicePath(book: book, spine: spine, index: row, top: y, height: tileHeight, width: tileWidth, viewHeight: viewHeight, insetLeft: insetLeft, insetRight: insetRight, scale: scale, tag: tag)
+    path = ""
+    if !fs.exists(file) {
+      let height = engine.layoutScroll(
+        id, spine, tileWidth, viewHeight,
+        engine.Margins(top: 0, right: insetRight, bottom: 0, left: insetLeft),
+        fontScale, lineScale, letter, word,
+      )
+      if height < 0 { return }
+      if !engine.renderSlice(id, 0, y, tileHeight, scale, ink, paper, false, file) { return }
+    }
+    path = file
+    emit shown(spine, at)
+  }
+
+  // The List recycles this row as it goes off screen: the parent can then
+  // stop counting it among the visible tiles.
+  cleanup { emit hidden(at) }
+
+  View {
+    width: tileWidth
+    height: tileHeight
+    bookpage.BookPage(path: path) { grow: 1 }
+  }
+}
+
 component Contents(items: [engine.TocItem], at: int) {
   event pick(index: int)
+  let list = Ref()
+  // The TOC's row for the chapter being read: a spine may be missing from
+  // the TOC, and nested entries mean the row isn't the spine.
+  let here = items.index(item => item.spine == at) ?? 0
+
+  // Open where the reader is, not at the first chapter.
+  task {
+    await sleep(30ms)
+    list.scrollToItem(here, animated: false)
+  }
 
   Column {
     gap: 0
     padding: [16, 0]
-    Text("目录") {
-      font: .title3
+    Row {
       padding: [8, 20]
+      gap: 8
+      align: .center
+      Text("目录") {
+        font: .title3
+        grow: 1
+      }
+      Button("") {
+        icon: "xmark"
+        variant: .glassProminent
+        on press { dismiss() }
+      }
     }
     List {
+      ref: list
       grow: 1
       for (i, item) in items.enumerated() key i {
         Row {
@@ -160,6 +241,26 @@ component Appearance(typeface: string) {
   Column {
     padding: [24, 24]
     gap: 16
+
+    Row {
+      gap: 8
+      align: .center
+      Text("阅读设置") {
+        font: .title3
+        grow: 1
+      }
+      Button("") {
+        icon: "xmark"
+        variant: .glassProminent
+        on press { dismiss() }
+      }
+    }
+
+    Text("翻页方式") { font: .headline }
+    Segmented(["分页", "滚动"]) {
+      selected: if library.mode == "scroll" { 1 } else { 0 }
+      on change(i) { library.mode = if i == 1 { "scroll" } else { "page" } }
+    }
 
     Row {
       gap: 12
@@ -299,10 +400,30 @@ component Reader(book: lib.Book) {
   /// reading, a tap on the middle of the page brings them back.
   state chrome = true
 
+  /// Scroll mode: the whole book as one column of tiles. `ScrollRow`'s spine
+  /// is -1 for the top room and -2 for the end of the book.
+  state scrollRows: [ScrollRow] = []
+  state scrollHeight = 0.0
+  state scrollTile = 0.0
+  state scrollDone = false
+  /// The content y at the top of what shows.
+  state topY = -1.0
+  /// The tiles the List currently has on screen.
+  state visible: [VisibleTile] = []
+  /// The whole-book fraction to put at the top, once the list is ready.
+  state startFraction = 0.0
+  /// A jump is pending; a type or paper change doesn't move the reader.
+  state jumped = true
+  /// A page-mode place to turn into a page once the chapter is laid out.
+  state pendingPageFraction = -1.0
+  state lastMode = ""
+
   let palette = lib.paletteFor(library.theme)
   let env = environment()
   let scale = if env.scale > 0 { env.scale } else { 2.0 }
+  let pageMargins = marginsOf(frame.width, frame.height, library.margins, env)
   let saved = library.readingOf(book.id)
+  let scrollList = Ref()
 
   let heading = if shownTitle.isEmpty() { book.title } else { shownTitle }
 
@@ -324,14 +445,25 @@ component Reader(book: lib.Book) {
     if engineId <= 0 || frame.width <= 32 || frame.height <= 64 { return }
     let chapterCount = engine.chapterCount(engineId)
     if spine >= chapterCount { spine = if chapterCount > 0 { chapterCount - 1 } else { 0 } }
+    if library.mode != lastMode { switchMode() }
+    if library.mode == "scroll" {
+      showScroll()
+      return
+    }
     let pagesNow = engine.layout(
       engineId, spine, frame.width, frame.height,
-      marginsOf(frame.width, frame.height, library.margins, env),
+      pageMargins,
       library.size / baseSize, library.line, library.letter, library.word,
     )
     if pagesNow <= 0 { return }
     pages = pagesNow
-    page = lib.resolve(page, pages)
+    if pendingPageFraction >= 0 {
+      page = int(pendingPageFraction * float(pagesNow))
+      if page >= pagesNow { page = pagesNow - 1 }
+      pendingPageFraction = -1.0
+    } else {
+      page = lib.resolve(page, pages)
+    }
     let path = fs.join([pagesDir(), "{book.id}-{spine}-{page}-{frame.width.int()}x{frame.height.int()}-{layoutTag()}.eqp"])
     let ok = engine.renderPage(engineId, page, scale, lib.rgbaOf(palette.ink), lib.rgbaOf(palette.paper), false, path)
     if ok {
@@ -340,6 +472,130 @@ component Reader(book: lib.Book) {
       let chapters = if chapterCount > 0 { float(chapterCount) } else { 1.0 }
       library.save(book.id, spine, (float(spine) + info.progress) / chapters)
     }
+  }
+
+  /// The first layout of a new mode: a page's place becomes a whole-book
+  /// fraction, or the other way around. The first layout after opening keeps
+  /// the fraction openBook took from the saved reading position.
+  fn switchMode() {
+    if lastMode.isEmpty() {
+      jumped = library.mode != "scroll"
+      topY = -1
+      scrollDone = false
+    } else if library.mode == "scroll" {
+      let count = engine.chapterCount(engineId)
+      let chapters = if count > 0 { float(count) } else { 1.0 }
+      let within = if pages > 1 { float(page) / float(pages) } else { 0.0 }
+      startFraction = (float(spine) + within) / chapters
+      jumped = false
+      topY = -1
+      visible = []
+      scrollDone = false
+    } else {
+      let count = engine.chapterCount(engineId)
+      let chapters = if count > 0 { float(count) } else { 1.0 }
+      let book = if scrollHeight > 0 && topY >= 0 { topY / scrollHeight } else { startFraction }
+      var place = book * chapters
+      if place < 0 { place = 0 }
+      let end = if count > 0 { float(count) - 0.001 } else { 0.0 }
+      if place > end { place = end }
+      let target = int(place)
+      if target != spine { spine = target }
+      pendingPageFraction = place - float(target)
+      jumped = true
+    }
+    lastMode = library.mode
+  }
+
+  /// Lays every chapter out once to learn its height, then cuts the whole
+  /// book into screenful tiles. The chapters join at their content height:
+  /// the last row of one can be shorter, and the next starts right under it,
+  /// so scrolling never stops at a chapter boundary.
+  fn showScroll() {
+    scrollDone = false
+    // A new layout while the reader is already in place: the old y no longer
+    // names the same line, so let the first visible tile say where it is.
+    if jumped {
+      topY = -1
+      visible = []
+    }
+    let count = engine.chapterCount(engineId)
+    let tile = scrollTileHeight()
+    let fontScale = library.size / baseSize
+    var rows: [ScrollRow] = [
+      ScrollRow(spine: -1, y: 0, height: pageMargins.top, top: 0),
+    ]
+    var total = 0.0
+    for c in 0..<count {
+      let height = engine.layoutScroll(
+        engineId, c, frame.width, frame.height,
+        engine.Margins(top: 0, right: pageMargins.right, bottom: 0, left: pageMargins.left),
+        fontScale, library.line, library.letter, library.word,
+      )
+      if height <= 0 { continue }
+      var y = 0.0
+      while y < height {
+        var h = tile
+        if height - y < h { h = height - y }
+        rows.push(ScrollRow(spine: c, y: y, height: h, top: total + y))
+        y += h
+      }
+      total += height
+    }
+    rows.push(ScrollRow(spine: -2, y: 0, height: pageMargins.bottom, top: total))
+    scrollRows = rows
+    scrollTile = tile
+    scrollHeight = total
+    scrollDone = true
+  }
+
+  /// A tile is one screenful, capped so its bitmap stays under the engine's
+  /// page-pixel budget (a 4K window at 2x would otherwise be too large).
+  fn scrollTileHeight() -> float {
+    if frame.width <= 0 { return 400 }
+    let cap = 8_000_000.0 / (frame.width * scale * scale)
+    let height = if frame.height < cap { frame.height } else { cap }
+    return if height < 256 { 256.0 } else { height }
+  }
+
+  /// A tile came on screen. While a jump is pending it's one of the rows
+  /// built before the list moves, so it's counted but not where the reader is.
+  fn appear(chapter: int, at: float) {
+    if at < 0 { return }
+    if visible.find(t => t.at == at) == none { visible.push(VisibleTile(chapter: chapter, at: at)) }
+    if jumped { settle() }
+  }
+
+  /// A tile went off screen: it's no longer a candidate for the top.
+  fn vanish(at: float) {
+    visible = visible.filter(t => t.at != at)
+    if jumped { settle() }
+  }
+
+  /// The top visible tile is the reader's place: save it as whole-book
+  /// progress, with its chapter, one row a book.
+  fn settle() {
+    if visible.isEmpty() { return }
+    var best = visible[0]
+    for tile in visible {
+      if tile.at < best.at { best = tile }
+    }
+    if topY >= 0 && best.at == topY { return }
+    topY = best.at
+    let chapters = engine.chapterCount(engineId)
+    if chapters <= 0 || scrollHeight <= 0 { return }
+    var fraction = best.at / scrollHeight
+    if fraction < 0 { fraction = 0 }
+    if fraction > 1 { fraction = 1 }
+    library.save(book.id, best.chapter, fraction)
+  }
+
+  fn scrollPercent() -> int {
+    if scrollHeight <= 0 || topY < 0 { return 0 }
+    var p = topY / scrollHeight * 100
+    if p < 0 { p = 0 }
+    if p > 100 { p = 100 }
+    return p.int()
   }
 
   /// How this page was laid out, in its file name: a page is a different
@@ -387,17 +643,45 @@ component Reader(book: lib.Book) {
     if !named.isEmpty() { shownTitle = named }
     let count = engine.chapterCount(id)
     if count > 0 && spine >= count { spine = 0 }
+    // Where the book was left, as a whole-book fraction. Page mode uses the
+    // chapter; scroll mode puts this fraction at the top of the column.
+    if saved.percent > 0 {
+      startFraction = if saved.percent > 1 { 1 } else { saved.percent }
+    } else {
+      startFraction = 0
+    }
     try await spawn { try fs.mkdirAll(pagesDir()) }
     show()
   }
 
   // One pass for every change: the chapter, the page, the view's size, the
-  // size of the type, the paper. The engine's layout is idempotent, so this
-  // is only as expensive as the page it produces.
-  task("{spine}:{page}:{frame.width}:{frame.height}:{library.size}:{library.line}:{library.margins}:{library.letter}:{library.theme}") {
+  // size of the type, the paper, the reading mode. The engine's layout is
+  // idempotent, so this is only as expensive as the page it produces.
+  task("{spine}:{page}:{frame.width}:{frame.height}:{library.size}:{library.line}:{library.margins}:{library.letter}:{library.theme}:{library.mode}") {
     if frame.width <= 32 { return }
     try? await openBook()
     show()
+  }
+
+  // After a chapter or a mode change, put the list where the reader was. A
+  // type or paper change keeps the place: `jumped` is already true then.
+  task("{spine}:{library.mode}:{scrollRows.count()}:{scrollHeight}:{scrollTile}:{startFraction}:{scrollDone}") {
+    if library.mode != "scroll" || !scrollDone || scrollRows.count() <= 2 || scrollTile <= 0 || jumped { return }
+    await sleep(30ms)
+    let topPad = pageMargins.top
+    var y = topPad + startFraction * scrollHeight
+    let maxY = topPad + scrollHeight - scrollTile
+    if y < topPad { y = topPad }
+    if y > maxY { y = maxY }
+    if y < topPad { y = topPad }
+    scrollList.scrollTo(0, y, animated: false)
+    await sleep(60ms)
+    var at = startFraction * scrollHeight
+    if at < 0 { at = 0 }
+    if at > scrollHeight { at = scrollHeight }
+    topY = at
+    jumped = true
+    settle()
   }
 
   fn next() {
@@ -417,8 +701,32 @@ component Reader(book: lib.Book) {
   fn jump(index: int) {
     let count = engine.chapterCount(engineId)
     if index < 0 || index >= count { return }
+    let same = index == spine
     spine = index
     page = 0
+    // Where this chapter begins in the whole-book column.
+    var at = 0.0
+    if scrollHeight > 0 {
+      var found = false
+      for row in scrollRows {
+        if row.spine == index {
+          at = row.top
+          found = true
+          break
+        }
+      }
+      if !found { at = float(index) / float(count) * scrollHeight }
+      startFraction = at / scrollHeight
+    } else {
+      startFraction = 0
+    }
+    topY = -1
+    visible = []
+    jumped = false
+    scrollDone = false
+    // Choosing the chapter already open changes no task key: lay it out here
+    // so the jump task has a list to scroll.
+    if library.mode == "scroll" && same { showScroll() }
   }
 
   View {
@@ -433,6 +741,58 @@ component Reader(book: lib.Book) {
         align: .center
         padding: 32
         Text(error) { color: palette.muted; textAlign: .center }
+      }
+    } else if library.mode == "scroll" {
+      if !scrollDone {
+        Column {
+          grow: 1
+          justify: .center
+          align: .center
+          Text("排版中…") { color: palette.muted }
+        }
+      } else if scrollRows.count() <= 2 {
+        Column {
+          grow: 1
+          justify: .center
+          align: .center
+          Text("本书没有内容") { color: palette.muted }
+        }
+      } else {
+        // The whole book is one column: a row a screenful, made only while
+        // it shows. The first and last rows are the room above and below it.
+        // Chapters meet at their content height, so scrolling runs through.
+        List {
+          ref: scrollList
+          grow: 1
+          for (i, row) in scrollRows.enumerated() key i {
+            if row.spine == -1 {
+              View { height: row.height }
+            } else if row.spine == -2 {
+              Column {
+                padding: [24, 24]
+                gap: 16
+                Text("全书完") {
+                  font: .footnote
+                  color: palette.muted
+                }
+                View { height: row.height }
+              }
+            } else {
+              ScrollTile(
+                engineId: engineId, book: book.id, row: i, spine: row.spine,
+                y: row.y, at: row.top, tileHeight: row.height, tileWidth: frame.width,
+                viewHeight: frame.height, insetLeft: pageMargins.left, insetRight: pageMargins.right,
+                fontScale: library.size / baseSize, lineScale: library.line,
+                letter: library.letter, word: library.word, scale: scale,
+                ink: lib.rgbaOf(palette.ink), paper: lib.rgbaOf(palette.paper),
+                tag: layoutTag(),
+              ) {
+                on shown(chapter, at) { appear(chapter: chapter, at: at) }
+                on hidden(at) { vanish(at: at) }
+              }
+            }
+          }
+        }
       }
     } else if pagePath.isEmpty() {
       Column {
@@ -471,16 +831,19 @@ component Reader(book: lib.Book) {
         gap: 4
         Button("") {
           icon: "chevron.left"
+          variant: .glassProminent
           on press { dismiss() }
         }
         // 返回 on the left; the other two at the right, where a reader's are.
         View { grow: 1 }
         Button("") {
           icon: "textformat"
+          variant: .glassProminent
           on press { present(Appearance(typeface: fontName)) }
         }
         Button("") {
           icon: "list.bullet"
+          variant: .glassProminent
           on press {
             present(Contents(engine.contents(engineId), spine) {
               on pick(i) {
@@ -503,7 +866,7 @@ component Reader(book: lib.Book) {
           material: .thin
           radius: 11
           padding: [3, 9]
-          Text("{page + 1} / {pages}") {
+          Text(if library.mode == "scroll" { "{scrollPercent()}%" } else { "{page + 1} / {pages}" }) {
             font: Font(size: 11)
             color: palette.muted
           }

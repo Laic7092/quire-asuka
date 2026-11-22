@@ -31,6 +31,7 @@ extern fn eb_plain_open(data: bytes, name: CString?) -> Int32
 extern fn eb_plain_close(id: Int32) -> Int32
 extern fn eb_plain_last_error() -> CString
 extern fn eb_plain_title(id: Int32) -> CString
+extern fn eb_plain_cover_write(id: Int32, path: CString) -> Int32
 extern fn eb_plain_spine_count(id: Int32) -> UInt32
 extern fn eb_plain_spine_href(id: Int32, index: UInt32) -> CString
 extern fn eb_plain_register_font(id: Int32, data: bytes) -> Int32
@@ -39,11 +40,25 @@ extern fn eb_plain_layout(
   top: Float32, right: Float32, bottom: Float32, left: Float32,
   fontScale: Float32, lineScale: Float32, letterPx: Float32, wordPx: Float32, align: UInt32,
 ) -> Int32
+extern fn eb_plain_layout_scroll(
+  id: Int32, spine: UInt32, width: Float32, height: Float32,
+  top: Float32, right: Float32, bottom: Float32, left: Float32,
+  fontScale: Float32, lineScale: Float32, letterPx: Float32, wordPx: Float32, align: UInt32,
+) -> Int32
+
+/// The content height of the last scroll layout, in points.
+extern fn eb_plain_content_height(id: Int32) -> Float32
 extern fn eb_plain_spine(id: Int32) -> Int32
 extern fn eb_plain_page_count(id: Int32) -> UInt32
 extern fn eb_plain_page_info(id: Int32, page: UInt32) -> PageInfo
 extern fn eb_plain_page_raw(
   id: Int32, page: UInt32, scale: Float32, ink: UInt32, paper: UInt32, bold: bool, path: CString,
+) -> Int32
+
+/// A slice of the scroll page: from `y` down `height` points, at `scale`.
+extern fn eb_plain_page_slice_raw(
+  id: Int32, page: UInt32, y: Float32, height: Float32, scale: Float32,
+  ink: UInt32, paper: UInt32, bold: bool, path: CString,
 ) -> Int32
 extern fn eb_plain_hit(id: Int32, page: UInt32, x: Float32, y: Float32) -> Loc
 extern fn eb_plain_progress(id: Int32, page: UInt32, line: UInt32, byte: UInt32) -> Float32
@@ -116,12 +131,31 @@ pub fn layout(id: int, spine: int, width: float, height: float, margins: Margins
   return int(eb_plain_page_count(i32(clamping: id)))
 }
 
+/// Lays a chapter out as one continuous scroll column. Returns its content
+/// height in points, -1 when it failed. `margins.top`/`bottom` are ignored:
+/// the host puts the top and bottom room around the list, not in each tile.
+pub fn layoutScroll(id: int, spine: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float = 0, word: float = 0, align: int = 0) -> float {
+  if id <= 0 { return -1 }
+  let rc = eb_plain_layout_scroll(
+    i32(clamping: id), u32(clamping: spine), width, height,
+    0, margins.right, 0, margins.left,
+    fontScale, lineScale, letter, word, u32(clamping: align),
+  )
+  if rc < 0 { return -1 }
+  return eb_plain_content_height(i32(clamping: id))
+}
+
 /// One page's box and chapter progress.
 pub fn pageInfo(id: int, page: int) -> PageInfo = eb_plain_page_info(i32(clamping: id), u32(clamping: page))
 
 /// Rasterizes a page into `path`, at `scale` device pixels per point.
 pub fn renderPage(id: int, page: int, scale: float, ink: u32, paper: u32, bold: bool, path: string) -> bool {
   return eb_plain_page_raw(i32(clamping: id), u32(clamping: page), scale, ink, paper, bold, path) == 0
+}
+
+/// Rasterizes the slice at `y`, `height` points tall, into `path`.
+pub fn renderSlice(id: int, page: int, y: float, height: float, scale: float, ink: u32, paper: u32, bold: bool, path: string) -> bool {
+  return eb_plain_page_slice_raw(i32(clamping: id), u32(clamping: page), y, height, scale, ink, paper, bold, path) == 0
 }
 
 /// Where this point in the page falls in the text.
@@ -152,6 +186,13 @@ pub fn contents(id: int) -> [TocItem] {
 
 /// The book's title: its metadata, or what the engine made of the file.
 pub fn title(id: int) -> string = eb_plain_title(i32(clamping: id))
+
+/// Writes the book's cover image (its original PNG/JPEG bytes) to `path`.
+/// False when the book has no cover.
+pub fn writeCover(id: int, path: string) -> bool {
+  if id <= 0 { return false }
+  return eb_plain_cover_write(i32(clamping: id), path) == 0
+}
 
 /// How many chapters (spine items) it has.
 pub fn chapterCount(id: int) -> int = int(eb_plain_spine_count(i32(clamping: id)))

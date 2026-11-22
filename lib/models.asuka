@@ -15,6 +15,9 @@ pub struct Book {
   chapters: [Chapter]
   /// The file the engine reads: the import, or one written from `raw`.
   path: string = ""
+  /// The cover image the engine wrote, when the book has one; "" for a
+  /// text book or an EPUB without a cover (the shelf draws a spine instead).
+  cover: string = ""
   /// The original text, for a book imported as text.
   raw: string = ""
 
@@ -35,12 +38,14 @@ pub struct Shelf {
   author: string
   /// The file in the app's directory; "" for a book that came with the app.
   path: string
+  /// The cover image in the app's directory; "" when there is none.
+  cover: string = ""
 
-  pub fn book() -> Book = Book(id: id, title: title, author: author, chapters: [], path: path)
+  pub fn book() -> Book = Book(id: id, title: title, author: author, chapters: [], path: path, cover: cover)
 }
 
 /// The shelf's row for a book.
-pub fn shelfOf(book: Book) -> Shelf = Shelf(id: book.id, title: book.title, author: book.author, path: book.path)
+pub fn shelfOf(book: Book) -> Shelf = Shelf(id: book.id, title: book.title, author: book.author, path: book.path, cover: book.cover)
 
 /// Where a book was left: the chapter, and how far into it (0…1).
 pub struct Reading {

@@ -10,7 +10,8 @@ name: iOS IPA
 #
 # Nothing here builds the book engine: it's released (ebook-engine's Releases)
 # with one static library per target, and both jobs download theirs — no Rust
-# toolchain, no cargo cache, no compile. ENGINE_VERSION pins which release.
+# toolchain, no cargo cache, no compile. ENGINE_VERSION is `latest` by default;
+# set a tag (v0.2.0) to pin one.
 #
 # Two jobs, in parallel: the tests run where they're cheap (a Linux runner, on
 # the engine's Linux build), and the Mac runner only does what needs Xcode.
@@ -27,7 +28,8 @@ permissions:
 
 env:
   # The engine release to build against: github.com/Laic7092/ebook-engine.
-  ENGINE_VERSION: v0.1.0
+  # `latest` follows the newest non-prerelease; a tag pins one.
+  ENGINE_VERSION: latest
 
 # A newer push on the same branch cancels the run before it: a macOS runner is
 # the expensive part.

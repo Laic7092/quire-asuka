@@ -2,7 +2,9 @@
 // titles, and where each one was left.
 
 import platform/dialog
+import std/fs
 
+import ./engine
 import ./lib
 
 /// Cover colors from Quire's icon sheet: ink, seal, cloth, dusk.
@@ -18,26 +20,53 @@ fn spine(title: string) -> Color {
 }
 
 component Cover(book: lib.Book) {
+  // The book's row may predate covers: ask the engine once, then keep the
+  // file next to the app's data. Text books have no cover and keep the spine.
+  state cover = book.cover
+
+  task(book.id) {
+    if !book.cover.isEmpty() && fs.exists(book.cover) { return }
+    if book.path.isEmpty() || !book.path.lower().hasSuffix(".epub") { return }
+    let path = coverPath(book.id)
+    if !fs.exists(path) {
+      let id = engine.open(book.path)
+      if id <= 0 { return }
+      let wrote = engine.writeCover(id, path: path)
+      engine.close(id)
+      if !wrote { return }
+    }
+    cover = path
+  }
+
   View {
     aspectRatio: 0.68
     radius: 8
+    clip: true
     background: spine(book.title)
-    Column {
-      grow: 1
-      justify: .center
-      align: .center
-      padding: 10
-      Text(book.title) {
-        font: .headline
-        color: #f4efe6
-        lines: 3
-        textAlign: .center
+    if !cover.isEmpty() {
+      Image(source: cover) {
+        grow: 1
+        mode: .fill
+      }
+    } else {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        padding: 10
+        Text(book.title) {
+          font: .headline
+          color: #f4efe6
+          lines: 3
+          textAlign: .center
+        }
       }
     }
   }
 }
 
-component BookCell(book: lib.Book, reading: lib.Reading) {
+/// The cell itself: a cover, a title, and where the reader is.
+component BookTile(book: lib.Book, reading: lib.Reading) {
   event open
 
   Column {
@@ -60,6 +89,23 @@ component BookCell(book: lib.Book, reading: lib.Reading) {
   }
 }
 
+/// A book on the shelf: long press an imported one for its actions. A sample
+/// came with the app and can't be taken off, so it has no menu.
+component BookCell(book: lib.Book, reading: lib.Reading) {
+  event open
+  event delete
+
+  if book.path.isEmpty() {
+    BookTile(book, reading) { on open { emit open } }
+  } else {
+    Menu {
+      longPress: true
+      actions: [.button(title: "删除", role: .destructive, run: () => { emit delete })]
+      BookTile(book, reading) { on open { emit open } }
+    }
+  }
+}
+
 screen Shelf {
   use library: Library
 
@@ -76,6 +122,7 @@ screen Shelf {
   primary {
     Button("") {
       icon: "plus"
+      variant: .glassProminent
       tooltip: "导入 .txt 或 .epub"
       on press { await pick() }
     }
@@ -139,6 +186,10 @@ screen Shelf {
           on open {
             reading = b
             readingOpen = true
+          }
+          on delete {
+            library.forget(b.id)
+            snackbar("已删除《{b.title}》")
           }
         }
       }

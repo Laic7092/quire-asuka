@@ -3,7 +3,13 @@
 
 import std/fs
 import std/store
+import ./engine
 import ./lib
+
+/// Where a book's cover image lives: the engine writes its original bytes
+/// here, and the shelf shows it. `.img` because the bytes keep their own
+/// format (PNG or JPEG) and every platform's image loader sniffs it.
+pub fn coverPath(id: string) -> string = fs.join([fs.appDir(), "covers", "{id}.img"])
 
 pub store Library {
   /// The books brought in, as the files they're read from: what survives a
@@ -23,6 +29,8 @@ pub store Library {
   pub state letter: float = store.read("reader.letter", 0.0)
   /// 词距，词与词之间额外的宽度（点），可正可负。
   pub state word: float = store.read("reader.word", 0.0)
+  /// 翻页方式："page"（分页）或 "scroll"（连续滚动）。
+  pub state mode: string = store.read("reader.mode", "page")
 
   effect { store.write("readings", readings) }
   effect { store.write("reader.theme", theme) }
@@ -31,6 +39,7 @@ pub store Library {
   effect { store.write("reader.marginDelta", margins) }
   effect { store.write("reader.letter", letter) }
   effect { store.write("reader.word", word) }
+  effect { store.write("reader.mode", mode) }
 
   /// Every book on the shelf: the samples first, then what was brought in.
   pub fn books() -> [lib.Book] {
@@ -82,6 +91,19 @@ pub store Library {
     }
     book.path = target
     if isText && book.empty() { throw Error("{name} 里没有可读的文字") }
+    if !isText {
+      // The engine already knows how to find the cover (EPUB3's
+      // cover-image, EPUB2's meta name="cover"): ask it once, at import.
+      let id = engine.open(target)
+      if id > 0 {
+        let named = engine.title(id)
+        if !named.isEmpty() { book.title = named }
+        let cover = coverPath(book.id)
+        try await spawn { try fs.mkdirAll(fs.join([fs.appDir(), "covers"])) }
+        if engine.writeCover(id, path: cover) { book.cover = cover }
+        engine.close(id)
+      }
+    }
     // What's kept is the row, not the text: the file in the app's directory
     // is the book, and the engine reads that.
     forget(book.id)

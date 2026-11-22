@@ -31,6 +31,39 @@ test "a book opens as a page the engine laid out" {
   app.expect("1 / 4")
 }
 
+test "a book scrolls, and switches back to pages" {
+  let lib = Library()
+  let app = mount(Harness(), provide: lib)
+  app.tap("散文選")
+  await app.idle()
+  app.expect("1 / 4")
+
+  // 滚动: the whole book is one column of tiles, not a page turn, and no
+  // chapter-by-chapter button interrupts it.
+  lib.mode = "scroll"
+  await app.idle()
+  await sleep(600ms)
+  await app.idle()
+  app.expect("BookPage")
+  app.expect("0%")
+  app.expectNo("下一章")
+  // The tiles are the engine's, written where the native view reads them.
+  let tiles = (try? fs.walk(fs.join([fs.appDir(), "pages"])))?.filter(e => !e.isDir && e.name.contains("-scroll-")) ?? []
+  expect(!tiles.isEmpty())
+  // Not blank paper: at least one slice has the book's text on it.
+  var inked = 0
+  for tile in tiles {
+    if darkPixels(tile.path) > 200 { inked += 1 }
+  }
+  expect(inked > 0)
+
+  // And back: the page is laid out again, at the same chapter.
+  lib.mode = "page"
+  await app.idle()
+  app.expect("1 / 4")
+  lib.mode = "page"
+}
+
 test "the page goes away when it's put away" {
   let app = mount(Harness(), provide: Library())
   app.tap("散文選")
@@ -71,6 +104,19 @@ fn lightPixels(path: string) -> int {
     i += 4
   }
   return light
+}
+
+/// How many pixels are dark: the paper theme's ink, not its paper.
+fn darkPixels(path: string) -> int {
+  let data = try? fs.read(path)
+  let all = data?.count() ?? 0
+  var dark = 0
+  var i = 12
+  while i + 3 < all {
+    if (data?.get(i) ?? 255) < 0x80 && (data?.get(i + 1) ?? 255) < 0x80 { dark += 1 }
+    i += 4
+  }
+  return dark
 }
 
 /// A page file's first pixel: "EQP1", width, height, then RGBA.
@@ -158,6 +204,7 @@ test "the appearance sheet changes the type and the paper" {
   // The sheet itself: the buttons over the page have no text to tap by, so
   // the test mounts what they open.
   let app = mount(Appearance(typeface: "Noto Serif SC"), provide: lib)
+  app.expect("阅读设置")
   app.expect("字号")
   app.expect("纸色")
   app.expect("行距")
@@ -215,4 +262,22 @@ test "a file that is neither text nor an EPUB is refused" {
   } catch e {
     expect(e.message == "只支持 .txt 和 .epub")
   }
+}
+
+test "long press an imported book and delete it" {
+  let path = "{fs.tempDir()}/quire-longpress-test.txt"
+  try await spawn { try fs.writeText(path, text: "第1章 测试\n\n一段文字。\n") }
+  let library = Library()
+  let app = mount(Harness(), provide: library)
+  try await library.importFile(path)
+  await app.idle()
+  app.expect("quire-longpress-test")
+
+  app.longPress("quire-longpress-test")
+  await app.idle()
+  app.expect("删除")
+  app.tap("删除")
+  await app.idle()
+  app.expectNo("quire-longpress-test")
+  expect(library.shelf.count(s => s.id == lib.idOf("quire-longpress-test.txt")) == 0)
 }
