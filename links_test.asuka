@@ -1,0 +1,130 @@
+// 书里的链接: the engine finds a link on a page and says where it goes; the
+// reading page only has to ask. A book is built here — the engine's own
+// fixtures aren't this repo's — so the test has one with both kinds: a
+// footnote inside the book, and a URL outside it.
+
+import std/archive
+import std/fs
+
+import ./engine
+
+/// A two-chapter EPUB. The first chapter's first line is a footnote link, so
+/// the test knows where to look for it; the second holds its anchor.
+fn makeEpub(dir: string) throws -> string {
+  try fs.mkdirAll(fs.join([dir, "META-INF"]))
+  try fs.mkdirAll(fs.join([dir, "OEBPS"]))
+  try fs.write(fs.join([dir, "mimetype"]), data: "application/epub+zip".bytes())
+  try fs.writeText(fs.join([dir, "META-INF/container.xml"]), text: """
+<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>
+""")
+  try fs.writeText(fs.join([dir, "OEBPS/content.opf"]), text: """
+<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>链接的书</dc:title>
+    <dc:language>zh</dc:language>
+    <dc:identifier id="id">quire-links</dc:identifier>
+  </metadata>
+  <manifest>
+    <item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ch2" href="ch2.xhtml" media-type="application/xhtml+xml"/>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+  </manifest>
+  <spine>
+    <itemref idref="ch1"/>
+    <itemref idref="ch2"/>
+  </spine>
+</package>
+""")
+  try fs.writeText(fs.join([dir, "OEBPS/nav.xhtml"]), text: """
+<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+  <head><title>目录</title></head>
+  <body><nav epub:type="toc"><ol>
+    <li><a href="ch1.xhtml">第一章</a></li>
+    <li><a href="ch2.xhtml">第二章</a></li>
+  </ol></nav></body>
+</html>
+""")
+  try fs.writeText(fs.join([dir, "OEBPS/ch1.xhtml"]), text: """
+<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>第一章</title></head>
+  <body>
+    <p><a href="ch2.xhtml#note">脚注</a></p>
+    <p>正文一段，只有一句话。</p>
+    <p><a href="https://example.com/a">外面</a></p>
+  </body>
+</html>
+""")
+  try fs.writeText(fs.join([dir, "OEBPS/ch2.xhtml"]), text: """
+<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>第二章</title></head>
+  <body>
+    <h1>第二章</h1>
+    <p id="note">脚注的内容在这里。</p>
+  </body>
+</html>
+""")
+  let file = "{dir}.epub"
+  try? fs.remove(file)
+  // `.epub` isn't a name the archive package knows; the format is a zip.
+  try archive.create(file, from: dir, format: .zip)
+  return file
+}
+
+test "a page's link says where it goes" {
+  let dir = fs.join([fs.tempDir(), "quire-links-epub"])
+  try? await spawn { try fs.removeAll(dir) }
+  let file = try await spawn { try makeEpub(dir) }
+  let id = engine.open(file)
+  expect(id > 0)
+  // The face the pages are set in, so the text is laid out at all.
+  expect(engine.registerFontBytes(id, data: bundledFace))
+  let margins = engine.Margins(top: 40, right: 20, bottom: 40, left: 20)
+  expect(engine.layout(id, 0, 390, 844, margins, 1, 1.6) > 0)
+
+  // The first line is the footnote: ask the page's corner until a point is
+  // in the link's box. (No API hands out the boxes themselves.)
+  var href = ""
+  for y in 0..<130 {
+    if !href.isEmpty() { break }
+    for x in 0..<330 {
+      if x % 2 != 0 || y % 2 != 0 { continue }
+      let found = engine.linkAt(id, 0, float(x), float(y))
+      if !found.isEmpty() { href = found }
+    }
+  }
+  expect(href == "ch2.xhtml#note")
+
+  // Where it goes: the second chapter, at the anchor, not outside the book.
+  let target = engine.resolveLink(id, href)
+  expect(target.ok)
+  expect(!target.external)
+  expect(target.spine == 1)
+  expect(target.fragment == "note")
+
+  // The anchor is a line in that chapter, and a line a fraction of it: that
+  // is the page the page mode turns to.
+  expect(engine.layout(id, 1, 390, 844, margins, 1, 1.6) > 0)
+  let line = engine.fragmentLine(id, "note")
+  expect(line >= 0)
+  let at = engine.progress(id, line)
+  expect(at >= 0 && at <= 1)
+
+  // A URL is outside the book: the reader hands it to the system.
+  let url = engine.resolveLink(id, "https://example.com/a")
+  expect(url.ok)
+  expect(url.external)
+  expect(url.spine < 0)
+
+  engine.close(id)
+  try? await spawn { try fs.removeAll(dir) }
+  try? await spawn { try fs.remove(file) }
+}

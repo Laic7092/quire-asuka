@@ -27,6 +27,19 @@ extern struct Loc {
   progress: Float32
 }
 
+/// A book's link, resolved: a URL outside it, or a place inside it.
+extern struct EbLink {
+  ok: Int32
+  /// -1 for an external link (or one that didn't resolve).
+  spine: Int32
+  external: Int32
+}
+
+extern fn eb_plain_link_at(id: Int32, page: UInt32, x: Float32, y: Float32) -> CString
+extern fn eb_plain_resolve_link(id: Int32, href: CString) -> EbLink
+extern fn eb_plain_resolved_fragment(id: Int32) -> CString
+extern fn eb_plain_fragment_line(id: Int32, fragment: CString) -> Int32
+
 extern fn eb_plain_open(data: bytes, name: CString?) -> Int32
 extern fn eb_plain_close(id: Int32) -> Int32
 extern fn eb_plain_last_error() -> CString
@@ -301,6 +314,47 @@ pub fn flowProgress(id: int, y: float) -> float = eb_plain_scroll_progress(i32(c
 
 /// Where this point in the page falls in the text.
 pub fn hit(id: int, page: int, x: float, y: float) -> Loc = eb_plain_hit(i32(clamping: id), u32(clamping: page), x, y)
+
+/// The link at a point on the last laid-out page: "" when there's none.
+pub fn linkAt(id: int, page: int, x: float, y: float) -> string {
+  if id <= 0 { return "" }
+  return eb_plain_link_at(i32(clamping: id), u32(clamping: page), x, y)
+}
+
+/// Where one of the book's links goes, and the anchor it names inside the
+/// chapter ("" for its start).
+pub struct Link {
+  ok: bool
+  external: bool
+  /// The chapter, -1 for a URL outside the book.
+  spine: int
+  fragment: string
+}
+
+pub fn resolveLink(id: int, href: string) -> Link {
+  let missing = Link(ok: false, external: false, spine: -1, fragment: "")
+  if id <= 0 || href.isEmpty() { return missing }
+  let link = eb_plain_resolve_link(i32(clamping: id), href)
+  if link.ok == 0 { return missing }
+  return Link(
+    ok: true,
+    external: link.external != 0,
+    spine: int(link.spine),
+    fragment: eb_plain_resolved_fragment(i32(clamping: id)),
+  )
+}
+
+/// A fragment's line in the chapter last laid out; -1 when it isn't there.
+pub fn fragmentLine(id: int, fragment: string) -> int {
+  if id <= 0 || fragment.isEmpty() { return -1 }
+  return int(eb_plain_fragment_line(i32(clamping: id), fragment))
+}
+
+/// A line of the last laid-out chapter as 0…1 of it: where a page falls.
+pub fn progress(id: int, line: int) -> float {
+  if id <= 0 || line < 0 { return 0 }
+  return eb_plain_progress(i32(clamping: id), 0, u32(clamping: line), 0)
+}
 
 /// A directory entry of the table of contents.
 pub struct TocItem {

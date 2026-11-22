@@ -7,6 +7,7 @@
 
 import std/embed
 import std/fs
+import platform/device
 import platform/screen
 
 import bookpage
@@ -480,6 +481,9 @@ component Reader(book: lib.Book) {
   state startWithin = 0.0
   /// A page-mode place to turn into a page once the chapter is laid out.
   state pendingPageFraction = -1.0
+  /// A link's anchor, applied once its chapter is laid out: a footnote's
+  /// fragment is a line in the chapter the page is about to show.
+  state pendingFragment = ""
   state lastMode = ""
   /// Where the reader is: how far into `hereChapter` (0…1). Not a page
   /// number, since the type's size is the reader's.
@@ -545,6 +549,13 @@ component Reader(book: lib.Book) {
     )
     if pagesNow <= 0 { return }
     pages = pagesNow
+    // A link with a fragment (a footnote's `#note-3`) names a line in this
+    // chapter, which is a page once the chapter is laid out.
+    if !pendingFragment.isEmpty() {
+      let line = engine.fragmentLine(engineId, pendingFragment)
+      if line >= 0 { pendingPageFraction = engine.progress(engineId, line) }
+      pendingFragment = ""
+    }
     if pendingPageFraction >= 0 {
       page = int(pendingPageFraction * float(pagesNow))
       if page >= pagesNow { page = pagesNow - 1 }
@@ -1008,6 +1019,67 @@ component Reader(book: lib.Book) {
     if same { show() }
   }
 
+  /// A link on the page: a URL goes to the app that takes it, a place in the
+  /// book to its chapter — and, for a footnote, to its anchor in that chapter.
+  fn follow(href: string) {
+    if engineId <= 0 || href.isEmpty() { return }
+    let target = engine.resolveLink(engineId, href)
+    if !target.ok { return }
+    if target.external {
+      device.openURL(href)
+      return
+    }
+    let count = engine.chapterCount(engineId)
+    if target.spine < 0 || target.spine >= count { return }
+    if library.mode == "scroll" {
+      goLinkScroll(target.spine, target.fragment)
+    } else {
+      goLinkPage(target.spine, target.fragment)
+    }
+  }
+
+  /// A chapter and an anchor in page mode: the layout that follows turns the
+  /// anchor into its line, and the line into its page.
+  fn goLinkPage(chapter: int, fragment: string) {
+    spine = chapter
+    page = 0
+    pendingPageFraction = 0
+    pendingFragment = fragment
+    show()
+  }
+
+  /// A chapter and an anchor in scroll mode: the column already holds them,
+  /// so this is a scrollTo, not a new layout.
+  fn goLinkScroll(chapter: int, fragment: string) {
+    if scrollDone && scrollHeight > 0 {
+      var y = -1.0
+      if !fragment.isEmpty() { y = engine.flowAnchorY(engineId, chapter, fragment) }
+      if y < 0 {
+        let ch = engine.flowChapter(engineId, chapter)
+        y = if ch.ok { ch.top } else { 0.0 }
+      }
+      goToScrollY(scrollTopPad + y)
+      return
+    }
+    startChapter = chapter
+    startWithin = 0
+  }
+
+  /// The link at a point of the book's flow. A chapter's links are in its own
+  /// layout, so the tap is asked for there: flowHit focuses that chapter (the
+  /// order matters, linkAt reads the last layout), and chapter.top makes the
+  /// flow y the chapter's own.
+  fn linkAtFlow(x: float, flowY: float) -> string {
+    if engineId <= 0 { return "" }
+    let spine = engine.flowSpineAt(engineId, flowY)
+    if spine < 0 { return "" }
+    let chapter = engine.flowChapter(engineId, spine)
+    if !chapter.ok { return "" }
+    let where = engine.flowHit(engineId, x, flowY)
+    if where.spine < 0 { return "" }
+    return engine.linkAt(engineId, 0, x, flowY - chapter.top)
+  }
+
   View {
     background: palette.paper
     grow: 1
@@ -1073,8 +1145,14 @@ component Reader(book: lib.Book) {
                   bookpage.BookPage(path: tile.path) {
                     grow: 1
                     on press(x, y) {
-                      let _where = y
-                      chrome = !chrome
+                      // The band's y is the book's flow: a link is found in
+                      // the chapter the tap fell in, at its own coordinates.
+                      let href = linkAtFlow(x, tile.y + y)
+                      if !href.isEmpty() {
+                        follow(href)
+                      } else {
+                        chrome = !chrome
+                      }
                     }
                   }
                 }
@@ -1103,13 +1181,20 @@ component Reader(book: lib.Book) {
       bookpage.BookPage(path: pagePath) {
         grow: 1
         on press(x, y) {
-          let width = if frame.width > 0 { frame.width } else { 320.0 }
-          if x < width / 3 {
-            back()
-          } else if x > width * 2 / 3 {
-            next()
+          // A link is a box on the page: a tap in it goes where it says,
+          // rather than turning the page under it.
+          let href = engine.linkAt(engineId, page, x, y)
+          if !href.isEmpty() {
+            follow(href)
           } else {
-            chrome = !chrome
+            let width = if frame.width > 0 { frame.width } else { 320.0 }
+            if x < width / 3 {
+              back()
+            } else if x > width * 2 / 3 {
+              next()
+            } else {
+              chrome = !chrome
+            }
           }
           let _where = y
         }
