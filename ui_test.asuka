@@ -102,6 +102,30 @@ test "a book scrolls, and switches back to pages" {
   lib.mode = "page"
 }
 
+test "a new paper is another picture of the same column, not another column" {
+  let lib = Library()
+  let app = mount(Harness(), provide: lib)
+  app.tap("散文選")
+  await app.idle()
+  lib.mode = "scroll"
+  await app.idle()
+  await sleep(600ms)
+  await app.idle()
+  expect(scrollBands().any(b => b.path.hasSuffix("-paper.eqp")))
+
+  // The paper changes: the reader stays where it was, and the bands it shows
+  // are drawn again — in the night's light ink, not relabelled paper.
+  lib.theme = "night"
+  await app.idle()
+  await sleep(600ms)
+  await app.idle()
+  app.expect("0%")
+  let night = scrollBands().filter(b => b.y == 0 && b.path.hasSuffix("-night.eqp"))
+  expect(!night.isEmpty())
+  expect(lightPixels(night[0].path) > 200)
+  lib.theme = "paper"
+}
+
 test "a chapter from the contents jumps in scroll mode" {
   let lib = Library()
   let app = mount(Harness(), provide: lib)
@@ -285,6 +309,30 @@ test "a page is drawn in the paper and the ink of its theme" {
   // And the text is light: the ink colours the glyphs, or the page would be
   // black on black — which is what a night page looked like.
   expect(lightPixels(night[night.count() - 1]) > 500)
+}
+
+test "the page cache goes when it outgrows its budget, and takes no other file" {
+  let dir = fs.join([fs.appDir(), "pages"])
+  try? fs.mkdirAll(dir)
+  let keep = fs.join([dir, "keep-me.txt"])
+  let page = fs.join([dir, "测试书-0-scroll-0-512-390-v844-l24r24-20-s190-l16-m0-k0-w0-paper.eqp"])
+  let part = fs.join([dir, "测试书-0-scroll-0-512-390-v844-l24r24-20-s190-l16-m0-k0-w0-paper.eqp.part"])
+  try? fs.writeText(keep, text: "not a page")
+  try? fs.writeText(page, text: "EQP1, pretended")
+  // A run that died mid-write leaves one of these: the engine renames into
+  // place, so anything still called `.part` is a half band.
+  try? fs.writeText(part, text: "half a band")
+
+  // Whatever the budget, a half-written file is never worth keeping.
+  prunePages(budget: 1_000_000_000)
+  expect(!fs.exists(part))
+  expect(fs.exists(page))
+
+  // Over it: the pages go, everything else in the directory stays.
+  prunePages(budget: 1)
+  expect(!fs.exists(page))
+  expect(fs.exists(keep))
+  try? fs.remove(keep)
 }
 
 test "a position is kept, one row a book" {
