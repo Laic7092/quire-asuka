@@ -4,9 +4,11 @@
 *.jks
 *.keystore
 
-# The engine's static libraries (lib/<target>/libebook_abi.a), downloaded by
-# .github/scripts/fetch-engine.sh: not the app's own sources under lib/.
+# The engine's static libraries (lib/<target>/libebook_abi.a) and their header,
+# downloaded by .github/scripts/fetch-engine.sh: not the app's own sources
+# under lib/.
 /lib/**/libebook_abi.a
+/lib/**/ebook_abi.h
 
 # The app embeds the WOFF2, but the repository doesn't carry it: 8 MB, and
 # .github/scripts/fetch-font.sh rebuilds it from the pinned upstream OTF
