@@ -1,8 +1,8 @@
 // 我 → 同步：主页面只回答「同步到哪了、现在做什么、云端在哪」。
 // 账号、密码、服务器地址是连接细节，收在「云端位置」里；配置好后
-// 不在主界面占地方。
+// 不在主界面占地方。坚果云和其他 WebDAV 是两套独立的配置，这里只
+// 决定当前用哪一套。
 
-import platform/device
 import std/fs
 import std/time
 
@@ -34,6 +34,19 @@ component SyncConnection {
   state busy = ""
   state note = ""
 
+  // 点空白处收起键盘：iOS 的键盘不会因为点了别处就下去。
+  let serverField = Ref()
+  let accountField = Ref()
+  let passwordField = Ref()
+  let folderField = Ref()
+
+  fn blurFields() {
+    serverField.blur()
+    accountField.blur()
+    passwordField.blur()
+    folderField.blur()
+  }
+
   // std/http is each platform's own client; Android's allows only the
   // standard methods, and a browser makes a WebDAV server's answer CORS's.
   let supported = @platform != .android && @platform != .web
@@ -62,6 +75,7 @@ component SyncConnection {
   Column {
     gap: 14
     padding: [22, 20, 22, 20]
+    on press { blurFields() }
 
     Row {
       gap: 8
@@ -89,6 +103,7 @@ component SyncConnection {
       grow: 1
       Column {
         gap: 13
+        on press { blurFields() }
 
         if !supported {
           Text("这个平台暂时不能同步：Android 的 HTTP 客户端只允许标准方法，网页端受浏览器 CORS 的限制。iOS、macOS、Windows 与 Linux 可以。") {
@@ -104,29 +119,64 @@ component SyncConnection {
         Segmented(["坚果云", "其他 WebDAV"]) {
           selected: if library.syncProvider == "nutstore" { 0 } else { 1 }
           on change(i) {
-            if i == 0 {
-              library.syncProvider = "nutstore"
-              library.davServer = nutstoreServer
-            } else {
-              library.syncProvider = "webdav"
-            }
+            library.setProvider(if i == 0 { "nutstore" } else { "webdav" })
           }
         }
 
         if library.syncProvider == "nutstore" {
-          Text("账号是坚果云的登录邮箱；密码是在「账户信息 → 安全选项 → 第三方应用管理」里为 Quire 生成的应用密码。") {
-            font: .caption
-            color: .secondaryLabel
+          Column {
+            gap: 5
+            Text("账号") {
+              font: .caption
+              color: .secondaryLabel
+            }
+            TextField {
+              ref: accountField
+              bind text: library.nutAccount
+              placeholder: "坚果云的登录邮箱"
+              keyboard: .email
+              autocapitalize: .off
+              autocorrect: .no
+            }
           }
-          Button("打开坚果云第三方应用管理") {
-            font: .caption
-            on press { device.openURL("https://www.jianguoyun.com/d/account/safety") }
+
+          Column {
+            gap: 5
+            Text("应用密码") {
+              font: .caption
+              color: .secondaryLabel
+            }
+            TextField {
+              ref: passwordField
+              bind text: library.nutPassword
+              placeholder: "第三方应用管理里生成的那串"
+              secure: true
+              autocapitalize: .off
+              autocorrect: .no
+            }
+            if !library.passwordSecured {
+              Text("{secureProblem}，密码改为保存在应用目录里：仅本人可读，但没有加密。") {
+                font: .caption2
+                color: .orange
+              }
+            }
+          }
+
+          Column {
+            gap: 5
+            Text("云端文件夹") {
+              font: .caption
+              color: .secondaryLabel
+            }
+            TextField {
+              ref: folderField
+              bind text: library.nutFolder
+              placeholder: "Quire"
+              autocapitalize: .off
+              autocorrect: .no
+            }
           }
         } else {
-          Text("Quire 只使用这个文件夹，不改动其它内容。") {
-            font: .caption
-            color: .secondaryLabel
-          }
           Column {
             gap: 5
             Text("服务器") {
@@ -134,62 +184,66 @@ component SyncConnection {
               color: .secondaryLabel
             }
             TextField {
-              bind text: library.davServer
+              ref: serverField
+              bind text: library.webServer
               placeholder: "https://dav.example.com/dav/"
               keyboard: .url
               autocapitalize: .off
               autocorrect: .no
             }
           }
-        }
 
-        Column {
-          gap: 5
-          Text("账号") {
-            font: .caption
-            color: .secondaryLabel
-          }
-          TextField {
-            bind text: library.davAccount
-            placeholder: "坚果云的登录邮箱"
-            keyboard: .email
-            autocapitalize: .off
-            autocorrect: .no
-          }
-        }
-
-        Column {
-          gap: 5
-          Text(if library.syncProvider == "nutstore" { "应用密码" } else { "密码" }) {
-            font: .caption
-            color: .secondaryLabel
-          }
-          TextField {
-            bind text: library.davPassword
-            placeholder: if library.syncProvider == "nutstore" { "第三方应用管理里生成的那串" } else { "账号的密码" }
-            secure: true
-            autocapitalize: .off
-            autocorrect: .no
-          }
-          if !library.passwordSecured {
-            Text("{secureProblem}，密码改为保存在应用目录的 sync-password 文件里：仅本人可读，但没有加密。") {
-              font: .caption2
-              color: .orange
+          Column {
+            gap: 5
+            Text("账号") {
+              font: .caption
+              color: .secondaryLabel
+            }
+            TextField {
+              ref: accountField
+              bind text: library.webAccount
+              placeholder: "账号或邮箱"
+              keyboard: .email
+              autocapitalize: .off
+              autocorrect: .no
             }
           }
-        }
 
-        Column {
-          gap: 5
-          Text("云端文件夹") {
-            font: .caption
-            color: .secondaryLabel
+          Column {
+            gap: 5
+            Text("密码") {
+              font: .caption
+              color: .secondaryLabel
+            }
+            TextField {
+              ref: passwordField
+              bind text: library.webPassword
+              placeholder: "账号的密码"
+              secure: true
+              autocapitalize: .off
+              autocorrect: .no
+            }
+            if !library.passwordSecured {
+              Text("{secureProblem}，密码改为保存在应用目录里：仅本人可读，但没有加密。") {
+                font: .caption2
+                color: .orange
+              }
+            }
           }
-          TextField {
-            bind text: library.davFolder
-            placeholder: "Quire"
-            autocapitalize: .off
-            autocorrect: .no
+
+          Column {
+            gap: 5
+            Text("云端文件夹") {
+              font: .caption
+              color: .secondaryLabel
+            }
+            TextField {
+              ref: folderField
+              bind text: library.webFolder
+              placeholder: "Quire"
+              autocapitalize: .off
+              autocorrect: .no
+            }
           }
         }
       }
@@ -205,16 +259,12 @@ component SyncConnection {
       }
     }
 
-    Text(if !note.isEmpty() { note } else if firstRun { "填好账号密码后返回，点「立即同步」就会开始。" } else { "改完这里，回到同步页再同步。" }) {
-      font: .footnote
-      color: if statusOk {
-        .green
-      } else if note.isEmpty() {
-        .secondaryLabel
-      } else {
-        .red
+    if !note.isEmpty() {
+      Text(note) {
+        font: .footnote
+        color: if statusOk { .green } else { .red }
+        lines: 3
       }
-      lines: 3
     }
   }
 }
@@ -227,8 +277,10 @@ component SyncSettings {
   /// The back button of the embedded page: 我 shows its list again.
   event close
 
-  /// "main" 是状态和动作，"connection" 是云端位置。
-  state page = if library.davConfigured() { "main" } else { "connection" }
+  /// "main" 是状态和动作，"connection" 是云端位置，"storage" 是书籍
+  /// 文件和缓存。peek：只取打开时的值；直接读 davConfigured() 会让这个
+  /// state 跟着它走，输入第一个字刚好配好时页面就自己跳回主页面。
+  state page = if peek(library.davConfigured()) { "main" } else { "connection" }
   /// "sync" while a sync or a backup-all is running, "" when idle.
   state busy = ""
   /// What this page just did, outranking the store's older message.
@@ -296,6 +348,84 @@ component SyncSettings {
           emit close
         } else {
           dismiss()
+        }
+      }
+    }
+  } else if page == "storage" {
+    Column {
+      gap: 14
+      padding: [22, 20, 22, 20]
+
+      Row {
+        gap: 8
+        align: .center
+        Column {
+          grow: 1
+          gap: 2
+          Text("存储") {
+            font: .title3
+          }
+          Text("书籍文件与本机缓存") {
+            font: .caption2
+            color: .secondaryLabel
+          }
+        }
+        Button("") {
+          icon: Icons.back
+          variant: .glass
+          label: "返回"
+          on press { page = "main" }
+        }
+      }
+
+      Scroll {
+        grow: 1
+        Column {
+          gap: 16
+
+          Text("书籍文件") {
+            font: .headline
+          }
+
+          Text(if pending > 0 {
+            "本机 {localCount} 本 · 云端 {cloudCount} 本 · 待备份 {pending} 本"
+          } else {
+            "本机 {localCount} 本 · 云端 {cloudCount} 本"
+          }) {
+            font: .footnote
+          }
+
+          Row {
+            Button("备份全部到云端") {
+              grow: 1
+              variant: .bordered
+              disabled: running || pending == 0
+              on press { await backupAll() }
+            }
+          }
+
+          Text("本地缓存") {
+            font: .headline
+          }
+
+          Text("已用 {sizeText(used)} / {cacheLimit}") {
+            font: .footnote
+          }
+
+          Segmented(["1 GB", "2 GB", "5 GB"]) {
+            selected: cacheSelected
+            on change(i) {
+              library.cacheLimitMB = cacheOptions[i]
+              library.evictCache()
+            }
+          }
+
+          if pinnedCount > 0 {
+            Text("{pinnedCount} 本固定在本机，不会被自动清理。") {
+              font: .caption2
+              color: .tertiaryLabel
+            }
+          }
         }
       }
     }
@@ -393,55 +523,6 @@ component SyncSettings {
             }
           }
 
-          Text("书籍文件") {
-            font: .headline
-          }
-
-          Text(if pending > 0 {
-            "本机 {localCount} 本 · 云端 {cloudCount} 本 · 待备份 {pending} 本"
-          } else {
-            "本机 {localCount} 本 · 云端 {cloudCount} 本"
-          }) {
-            font: .footnote
-          }
-
-          Text("正文按需下载，打开云端的书时才下载。关闭自动备份时，书只在「备份全部」时上传。") {
-            font: .caption
-            color: .secondaryLabel
-          }
-
-          Row {
-            Button("备份全部到云端") {
-              grow: 1
-              variant: .bordered
-              disabled: running || pending == 0
-              on press { await backupAll() }
-            }
-          }
-
-          Text("本地缓存") {
-            font: .headline
-          }
-
-          Text("已用 {sizeText(used)} / {cacheLimit}") {
-            font: .footnote
-          }
-
-          Segmented(["1 GB", "2 GB", "5 GB"]) {
-            selected: cacheSelected
-            on change(i) {
-              library.cacheLimitMB = cacheOptions[i]
-              library.evictCache()
-            }
-          }
-
-          if pinnedCount > 0 {
-            Text("{pinnedCount} 本固定在本机，不会被自动清理。") {
-              font: .caption2
-              color: .tertiaryLabel
-            }
-          }
-
           Row {
             gap: 12
             align: .center
@@ -458,7 +539,35 @@ component SyncSettings {
               Text("云端位置") {
                 font: .body
               }
-              Text("{provider} · {library.davFolder}") {
+              Text("{provider} · {library.davFolderNow()}") {
+                font: .caption2
+                color: .secondaryLabel
+                lines: 1
+              }
+            }
+            Symbol(Icons.disclosure) {
+              font: .caption2
+              color: .tertiaryLabel
+            }
+          }
+
+          Row {
+            gap: 12
+            align: .center
+            padding: [13, 4]
+            on press { page = "storage" }
+            Symbol(Icons.reading) {
+              font: .body
+              color: .accent
+              width: 26
+            }
+            Column {
+              grow: 1
+              gap: 2
+              Text("存储") {
+                font: .body
+              }
+              Text("{localCount} 本 · 已用 {sizeText(used)}") {
                 font: .caption2
                 color: .secondaryLabel
                 lines: 1

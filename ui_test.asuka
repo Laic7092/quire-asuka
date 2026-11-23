@@ -51,8 +51,8 @@ test "an empty shelf offers the cloud once it is set up" {
   let library = Library()
   library.shelf = []
   library.seeded = true
-  library.davAccount = "reader@example.com"
-  library.davPassword = "app-password"
+  library.nutAccount = "reader@example.com"
+  library.nutPassword = "app-password"
   let app = mount(Harness(), provide: library)
   await app.idle()
   app.expect("同步云端")
@@ -727,7 +727,7 @@ test "我 opens the sync setup, and its fields are kept" {
   // A field is the store's: typing is what a sync would use, with no Save.
   app.type("reader@example.com", into: "坚果云的登录邮箱")
   await app.idle()
-  expect(library.davAccount == "reader@example.com")
+  expect(library.nutAccount == "reader@example.com")
   app.tap("返回")
   await app.idle()
   app.expect("同步与备份")
@@ -735,20 +735,28 @@ test "我 opens the sync setup, and its fields are kept" {
 
 test "配置好之后，同步页只留状态和动作，连接细节在二级页" {
   let library = Library()
-  library.davAccount = "reader@example.com"
-  library.davPassword = "app-password"
+  library.nutAccount = "reader@example.com"
+  library.nutPassword = "app-password"
   let app = mount(Profile(), provide: library)
   await app.idle()
   app.tap("同步与备份")
   await app.idle()
   app.expect("同步")
   app.expect("立即同步")
-  app.expect("备份全部到云端")
   app.expect("云端位置")
   app.expect("启动时自动同步")
   app.expect("自动备份书籍")
+  app.expectNo("备份全部到云端")
   app.expectNo("应用密码")
   app.expectNo("测试连接")
+  // 存储的细节在二级页。
+  app.tap("存储")
+  await app.idle()
+  app.expect("备份全部到云端")
+  app.expect("本地缓存")
+  app.tap("返回")
+  await app.idle()
+  app.expect("立即同步")
   // 连接字段收在「云端位置」里。
   app.tap("云端位置")
   await app.idle()
@@ -764,9 +772,9 @@ test "a password with no keychain is kept beside the app" {
   await library.loadCredentials()
   // The test host has no keychain: the fallback is what it uses.
   expect(!library.passwordSecured)
-  library.davPassword = "app-password"
+  library.nutPassword = "app-password"
   await sleep(50ms)
-  let path = fs.join([fs.appDir(), "sync-password"])
+  let path = fs.join([fs.appDir(), "sync-password-nutstore"])
   expect(fs.exists(path))
   // Only the user may read it on Unix; Windows keeps only writability.
   let info = try? fs.stat(path)
@@ -777,7 +785,7 @@ test "a password with no keychain is kept beside the app" {
   // doesn't ask again.
   let again = Library()
   await again.loadCredentials()
-  expect(again.davPassword == "app-password")
+  expect(again.nutPassword == "app-password")
   expect(!again.passwordSecured)
 }
 
@@ -797,7 +805,40 @@ test "the shelf draws a book as a grid tile or a list row" {
   expect(app.texts().contains("朱自清 · 未开始"))
 }
 
-test "显示与排序 sets the shelf's layout and order" {
+test "the shelf's display choices set its layout and order" {
+  let library = Library()
+  let app = mount(Harness(), provide: library)
+  await app.idle()
+  app.tap("显示与排序")
+  await app.idle()
+  app.expect("网格")
+  app.expect("列表")
+  app.expect("最近阅读")
+  app.expect("手动")
+  app.tap("列表")
+  await app.idle()
+  expect(library.shelfLayout == "list")
+
+  // A menu closes with the choice, and opens again for the next one; Linux's
+  // page stays open instead.
+  if @platform != .linux {
+    app.tap("显示与排序")
+    await app.idle()
+  }
+  app.tap("书名")
+  await app.idle()
+  expect(library.shelfSort == "title")
+
+  if @platform != .linux {
+    app.tap("显示与排序")
+    await app.idle()
+  }
+  app.tap("作者名")
+  await app.idle()
+  expect(library.shelfSort == "author")
+}
+
+test "the Linux page for display and order sets the same" {
   let library = Library()
   let app = mount(ShelfDisplay(), provide: library)
   await app.idle()
@@ -838,4 +879,46 @@ test "the shelf's order is the sort it was told" {
   let titleFirst = byTitle.index(t => t.contains("散文選")) ?? -1
   let titleSecond = byTitle.index(t => t.contains("野草")) ?? -1
   expect(titleFirst >= 0 && titleSecond >= 0 && titleFirst < titleSecond)
+}
+
+test "typing into a field doesn't close the connection page" {
+  let library = Library()
+  library.nutPassword = "saved"
+  let app = mount(Profile(), provide: library)
+  await app.idle()
+  app.tap("同步与备份")
+  await app.idle()
+  app.type("r", into: "坚果云的登录邮箱")
+  await app.idle()
+  // 配好之后标题会从「连接云端」变成「云端位置」，但表单还得在：
+  // 不然输入第一个字页面就跳走。
+  app.expect("云端位置")
+  app.expect("测试连接")
+  app.expectNo("立即同步")
+}
+
+test "坚果云和其他 WebDAV 各留各的配置" {
+  let library = Library()
+  library.syncProvider = "nutstore"
+  library.nutAccount = "nut@example.com"
+  library.nutPassword = "nut-pass"
+  library.nutFolder = "nut-folder"
+  library.webServer = "https://dav.example.com/dav/"
+  library.webAccount = "web@example.com"
+  library.webPassword = "web-pass"
+  library.webFolder = "web-folder"
+
+  library.setProvider("webdav")
+  expect(library.davAccountNow() == "web@example.com")
+  expect(library.davPasswordNow() == "web-pass")
+  expect(library.davFolderNow() == "web-folder")
+  expect(library.davConfigured())
+
+  // 换回来时，坚果云那套还在，没被 WebDAV 的字段盖掉。
+  library.setProvider("nutstore")
+  expect(library.davAccountNow() == "nut@example.com")
+  expect(library.davPasswordNow() == "nut-pass")
+  expect(library.davFolderNow() == "nut-folder")
+  expect(library.webServer == "https://dav.example.com/dav/")
+  expect(library.webAccount == "web@example.com")
 }

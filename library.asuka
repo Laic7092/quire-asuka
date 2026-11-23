@@ -83,18 +83,22 @@ pub fn fileOf(kept: string) -> string {
   return fs.join([fs.appDir(), kept])
 }
 
-/// Where the account's password goes when the platform has no keychain: a
+/// Where a service's password goes when the platform has no keychain: a
 /// file only the user may read (0600 on Unix). A keyring is better; this is
 /// what keeps a keyring-less desktop from asking for the password each launch.
-fn passwordFile() -> string = fs.join([fs.appDir(), "sync-password"])
+/// "": the one file a build before the split kept, read once to move it.
+fn passwordFile(provider: string) -> string {
+  let name = if provider.isEmpty() { "sync-password" } else { "sync-password-{provider}" }
+  return fs.join([fs.appDir(), name])
+}
 
-async fn readPasswordFile() -> string {
-  let text = try? await spawn { try fs.readText(passwordFile()) }
+async fn readPasswordFile(provider: string) -> string {
+  let text = try? await spawn { try fs.readText(passwordFile(provider)) }
   return (text ?? "").trim()
 }
 
-async fn writePasswordFile(password: string) {
-  let path = passwordFile()
+async fn writePasswordFile(password: string, provider: string) {
+  let path = passwordFile(provider)
   if password.isEmpty() {
     try? await spawn { try fs.remove(path) }
     return
@@ -103,6 +107,15 @@ async fn writePasswordFile(password: string) {
     try fs.mkdirAll(fs.appDir())
     try fs.writeText(path, text: password)
     try fs.chmod(path, 0o600)
+  }
+}
+
+/// A service's password in the system keychain (or gone, when it's empty).
+async fn savePassword(provider: string, password: string) throws {
+  if password.isEmpty() {
+    try await secure.remove("sync.{provider}.password")
+  } else {
+    try await secure.write("sync.{provider}.password", password)
   }
 }
 
@@ -149,17 +162,20 @@ pub store Library {
   /// （架上原来的顺序）。
   pub state shelfSort: string = store.read("shelf.sort", "recent")
 
-  /// 坚果云 WebDAV：地址、账号、应用密码（不是登录密码）与同步文件夹。
-  /// 密码是秘密，放平台的钥匙串（platform/secure），其它几项放偏好设置。
-  pub state davServer: string = store.read("sync.server", "https://dav.jianguoyun.com/dav/")
-  pub state davAccount: string = store.read("sync.account", "")
-  pub state davPassword = ""
+  /// 每个服务一套，互不影响：连接页改哪一套，同步就用哪一套。
+  /// 坚果云的地址是固定的。
+  pub state nutAccount: string = store.read("sync.nutstore.account", "")
+  pub state nutPassword = ""
+  pub state nutFolder: string = store.read("sync.nutstore.folder", "Quire")
+  pub state webServer: string = store.read("sync.webdav.server", "https://dav.jianguoyun.com/dav/")
+  pub state webAccount: string = store.read("sync.webdav.account", "")
+  pub state webPassword = ""
+  pub state webFolder: string = store.read("sync.webdav.folder", "Quire")
   /// 密码在系统钥匙串里（true），还是在应用目录的 sync-password 文件里。
   /// 没有钥匙串的 Linux 桌面会走后者：不然每次启动都要重输。
   pub state passwordSecured = true
   /// 钥匙串为什么没用：给同步页显示。
   pub state passwordProblem = ""
-  pub state davFolder: string = store.read("sync.folder", "Quire")
   /// 云端的实现方式："nutstore"（坚果云，默认）或 "webdav"（自填地址）。
   /// 以后接别的服务，换的是这里，不是「同步」这个入口。
   pub state syncProvider: string = store.read("sync.provider", "nutstore")
@@ -212,9 +228,11 @@ pub store Library {
   effect { store.write("goal.books", goal) }
   effect { store.write("shelf.layout", shelfLayout) }
   effect { store.write("shelf.sort", shelfSort) }
-  effect { store.write("sync.server", davServer) }
-  effect { store.write("sync.account", davAccount) }
-  effect { store.write("sync.folder", davFolder) }
+  effect { store.write("sync.nutstore.account", nutAccount) }
+  effect { store.write("sync.nutstore.folder", nutFolder) }
+  effect { store.write("sync.webdav.server", webServer) }
+  effect { store.write("sync.webdav.account", webAccount) }
+  effect { store.write("sync.webdav.folder", webFolder) }
   effect { store.write("sync.provider", syncProvider) }
   effect { store.write("sync.auto", syncAuto) }
   effect { store.write("sync.last", syncLast) }
@@ -230,26 +248,25 @@ pub store Library {
   effect { store.write("sync.cacheMB", cacheLimitMB) }
 
   /// The keychain is read once, before the first sync: the password isn't in
-  /// the preferences the other settings are in.
-  task(credentialsLoaded, davPassword) {
+  /// the preferences the other settings are in. Each service has its own.
+  task(credentialsLoaded, nutPassword, webPassword) {
     if !credentialsLoaded { return }
     if passwordSecured {
       do {
-        if davPassword.isEmpty() {
-          try await secure.remove("sync.password")
-        } else {
-          try await secure.write("sync.password", davPassword)
-        }
-        await writePasswordFile("")
+        try await savePassword("nutstore", nutPassword)
+        try await savePassword("webdav", webPassword)
+        await writePasswordFile("", "nutstore")
+        await writePasswordFile("", "webdav")
         return
       } catch e {
-        // The keyring went away (or was never there): keep it where the next
-        // launch can read it, and say why in the sheet.
+        // The keyring went away (or was never there): keep them where the next
+        // launch can read them, and say why in the sheet.
         passwordSecured = false
         passwordProblem = e.message
       }
     }
-    await writePasswordFile(davPassword)
+    await writePasswordFile(nutPassword, "nutstore")
+    await writePasswordFile(webPassword, "webdav")
   }
 
   /// Every book on the shelf: a row each, the samples' included. A row keeps
@@ -552,13 +569,17 @@ pub store Library {
 
   /// Whether there is an account to sync with: the 我 page's entry and the
   /// launch task both ask before they show a status or touch the network.
-  pub fn davConfigured() -> bool = !davAccount.trim().isEmpty() && !davPassword.isEmpty()
+  pub fn davAccountNow() -> string = if syncProvider == "nutstore" { nutAccount } else { webAccount }
+  pub fn davPasswordNow() -> string = if syncProvider == "nutstore" { nutPassword } else { webPassword }
+  pub fn davFolderNow() -> string = if syncProvider == "nutstore" { nutFolder } else { webFolder }
+
+  pub fn davConfigured() -> bool = !davAccountNow().trim().isEmpty() && !davPasswordNow().isEmpty()
 
   fn davConfig() -> DavConfig = DavConfig(
-    server: if syncProvider == "nutstore" { nutstoreServer } else { davServer },
-    account: davAccount.trim(),
-    password: davPassword,
-    folder: davFolder,
+    server: if syncProvider == "nutstore" { nutstoreServer } else { webServer },
+    account: davAccountNow().trim(),
+    password: davPasswordNow(),
+    folder: davFolderNow(),
   )
 
   /// Signs in and reads the folder, writing nothing: the 测试连接 button.
@@ -569,30 +590,75 @@ pub store Library {
     return "连接成功 · 云端 {files} 个文件"
   }
 
-  /// Brings the application password back from the keychain. The launch task
-  /// runs it before anything reads the account.
+  /// Brings both services' settings and passwords back. The launch task runs
+  /// it before anything reads them. A build before the split kept one
+  /// config: it moves to whichever service was in use.
   pub async fn loadCredentials() {
-    var keychainWorked = true
-    do {
-      if let saved = try await secure.read("sync.password") {
-        if !saved.isEmpty() {
-          davPassword = saved
-          await writePasswordFile("")
-          passwordSecured = true
-          credentialsLoaded = true
-          return
+    let split = store.read("sync.split", false)
+    if !split {
+      let oldAccount = store.read("sync.account", "")
+      let oldFolder = store.read("sync.folder", "Quire")
+      let oldServer = store.read("sync.server", nutstoreServer)
+      // Nothing kept by an older build: nothing to move.
+      if !oldAccount.isEmpty() || oldFolder != "Quire" || oldServer != nutstoreServer {
+        if syncProvider == "webdav" {
+          webServer = oldServer
+          webAccount = oldAccount
+          webFolder = oldFolder
+        } else {
+          nutAccount = oldAccount
+          nutFolder = oldFolder
         }
       }
-    } catch e {
-      keychainWorked = false
-      passwordProblem = e.message
+      store.write("sync.split", true)
     }
-    // No keychain, or nothing in it yet: a password kept beside the app,
-    // where the last launch (or a system without a keyring) put it.
-    let kept = await readPasswordFile()
-    if !kept.isEmpty() { davPassword = kept }
+
+    var keychainWorked = true
+    if split {
+      do {
+        if let saved = try await secure.read("sync.nutstore.password") {
+          if !saved.isEmpty() { nutPassword = saved }
+        }
+        if let saved = try await secure.read("sync.webdav.password") {
+          if !saved.isEmpty() { webPassword = saved }
+        }
+      } catch e {
+        keychainWorked = false
+        passwordProblem = e.message
+      }
+    } else {
+      // The one password an older build kept, for the service in use.
+      var old = ""
+      do {
+        if let saved = try await secure.read("sync.password") { old = saved }
+      } catch e {
+        keychainWorked = false
+        passwordProblem = e.message
+      }
+      if old.isEmpty() { old = await readPasswordFile("") }
+      if !old.isEmpty() {
+        if syncProvider == "webdav" { webPassword = old } else { nutPassword = old }
+      }
+      await writePasswordFile("", "")
+    }
+
+    if keychainWorked {
+      // The keychain has them now: no copy beside the app.
+      await writePasswordFile("", "nutstore")
+      await writePasswordFile("", "webdav")
+      if !split { try? await secure.remove("sync.password") }
+    } else {
+      if nutPassword.isEmpty() { nutPassword = await readPasswordFile("nutstore") }
+      if webPassword.isEmpty() { webPassword = await readPasswordFile("webdav") }
+    }
     passwordSecured = keychainWorked
     credentialsLoaded = true
+  }
+
+  /// Switches which service syncs. Each one's fields are its own states,
+  /// so nothing is copied over the other.
+  pub fn setProvider(provider: string) {
+    if provider != syncProvider { syncProvider = provider }
   }
 
   /// The launch task: a sync only when the reader asked for one.
