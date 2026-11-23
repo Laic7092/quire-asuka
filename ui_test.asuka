@@ -31,7 +31,8 @@ test "a book that is only in the cloud is marked, not missing" {
   }
   let app = mount(Harness(), provide: library)
   await app.idle()
-  app.expect("云端 · 未开始")
+  app.expect("朱自清 · 未开始")
+  app.expectNo("云端 ·")
 }
 
 test "an empty shelf offers a way in" {
@@ -509,6 +510,26 @@ test "long press an imported book and delete it" {
   await app.idle()
   app.expectNo("quire-longpress-test")
   expect(library.shelf.count(s => s.id == lib.idOf("quire-longpress-test.txt")) == 0)
+}
+
+test "long press a book opens its reading record" {
+  let path = "{fs.tempDir()}/quire-record-menu.txt"
+  try await spawn { try fs.writeText(path, text: "第1章 测试\n\n一段文字。\n") }
+  let library = Library()
+  let app = mount(Harness(), provide: library)
+  try await library.importFile(path)
+  await app.idle()
+  app.longPress("quire-record-menu")
+  await app.idle()
+  app.expect("阅读记录")
+  app.tap("阅读记录")
+  await app.idle()
+  app.expect("返回")
+  app.expect("累计时长")
+  app.expect("每天的记录")
+  app.tap("返回")
+  await app.idle()
+  app.expect("quire-record-menu")
 }
 
 test "a sample book can be taken off the shelf" {

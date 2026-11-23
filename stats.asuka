@@ -156,6 +156,9 @@ component BookRecordPage(book: lib.Book) {
 
   event back
 
+  // 云端书库里的书，记录可能还没拉到本机；进这一页时只拉这一本。
+  task(book.id) { await library.loadBookDoc(book.id) }
+
   let rows = library.readingDays
     .filter(row => row.book == book.id)
     .sorted(key: row => row.day, descending: true)
@@ -383,5 +386,13 @@ component Stats {
         }
       }
     }
+  }
+}
+
+/// A book's record as a sheet from the shelf: the page's back button closes
+/// the sheet, not the shelf under it.
+component BookRecordSheet(book: lib.Book) {
+  BookRecordPage(book) {
+    on back { dismiss() }
   }
 }

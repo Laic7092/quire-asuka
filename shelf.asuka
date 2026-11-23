@@ -76,6 +76,7 @@ component Cover(book: lib.Book) {
 
 /// The cell itself: a cover, a title, and where the reader is.
 component BookTile(book: lib.Book, reading: lib.Reading) {
+  prop showCloud = false
   event open
 
   // 文件不在本机：云端有就是「按需下载」，没有才是真的找不到。
@@ -83,18 +84,28 @@ component BookTile(book: lib.Book, reading: lib.Reading) {
 
   Column {
     gap: 6
-    align: .center
+    align: .start
     padding: [0, 10]
     on press { emit open }
     Cover(book) { width: 150 }
-    Text(book.title) {
-      font: .subheadline
-      lines: 1
-      textAlign: .center
+    // 标题和进度左对齐，和封面左边齐；云端状态贴在标题行的右侧。
+    Row {
+      width: 150
+      gap: 5
+      align: .center
+      Text(book.title) {
+        font: .subheadline
+        lines: 1
+        shrink: 1
+      }
+      if showCloud {
+        Symbol(if book.remote || book.backedUp { Icons.cloud } else { Icons.cloudOff }) {
+          font: .caption2
+          color: if book.remote || book.backedUp { .secondaryLabel } else { .tertiaryLabel }
+        }
+      }
     }
-    Text(if book.remote {
-      "云端 · {reading.label()}"
-    } else if missing {
+    Text(if missing {
       if book.hash.isEmpty() { "文件找不到了" } else { "未备份到云端" }
     } else if book.author.isEmpty() {
       reading.label()
@@ -104,7 +115,7 @@ component BookTile(book: lib.Book, reading: lib.Reading) {
       font: .caption
       color: if missing { .red } else { .secondaryLabel }
       lines: 1
-      textAlign: .center
+      textAlign: .start
     }
   }
 }
@@ -113,21 +124,33 @@ component BookTile(book: lib.Book, reading: lib.Reading) {
 /// an imported one's.
 component BookCell(book: lib.Book, reading: lib.Reading) {
   prop pinned = false
+  prop showCloud = false
   event open
   event delete
   event backup
   event pin
   event evict
+  event record
 
   Menu {
     longPress: true
     actions: [
-      .button(title: if pinned { "取消固定" } else { "固定在本机" }, run: () => { emit pin }),
-      .button(title: "备份到云端", run: () => { emit backup }),
-      .button(title: "仅保留在云端", run: () => { emit evict }),
-      .button(title: "删除", role: .destructive, run: () => { emit delete }),
+      .button(title: "阅读记录", icon: Icons.statistics, run: () => { emit record }),
+      .section(title: "", items: [
+        .button(title: "备份到云端", icon: Icons.upload, disabled: book.backedUp, run: () => { emit backup }),
+        .button(title: "仅保留在云端", icon: Icons.cloud, disabled: book.remote || !book.backedUp, run: () => { emit evict }),
+      ]),
+      .section(title: "", items: [
+        .button(title: if pinned { "取消固定" } else { "固定在本机" }, icon: Icons.pin, run: () => { emit pin }),
+      ]),
+      .section(title: "", items: [
+        .button(title: "删除", icon: Icons.trash, role: .destructive, run: () => { emit delete }),
+      ]),
     ]
-    BookTile(book, reading) { on open { emit open } }
+    BookTile(book, reading) {
+      showCloud: showCloud
+      on open { emit open }
+    }
   }
 }
 
@@ -345,6 +368,7 @@ screen Shelf {
         for b in books key b.id {
           BookCell(b, library.readingOf(b.id)) {
             pinned: library.pinned.contains(b.id)
+            showCloud: library.davConfigured()
             on open { emit open(b) }
             on backup {
               if b.remote {
@@ -371,6 +395,9 @@ screen Shelf {
               } else {
                 snackbar("先备份到云端，才能只保留云端副本")
               }
+            }
+            on record {
+              present(BookRecordSheet(b))
             }
             on delete {
               library.forget(b.id)

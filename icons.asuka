@@ -51,4 +51,7 @@ struct Icons {
   let typography = symbolName(apple: "textformat", material: "textformat")
   let contents = symbolName(apple: "list.bullet", material: "list.bullet")
   let add = symbolName(apple: "plus", material: "plus")
+  let upload = symbolName(apple: "square.and.arrow.up", material: "square.and.arrow.up")
+  let pin = symbolName(apple: "pin", material: "pin")
+  let trash = symbolName(apple: "trash", material: "trash")
 }

@@ -629,6 +629,11 @@ pub store Library {
     }
   }
 
+  /// 打开一本书的阅读记录前调用：如果云端有更新的 sidecar，先拉下来。
+  pub async fn loadBookDoc(id: string) {
+    try? await pullDocIfNeeded(id)
+  }
+
   /// 统计页要把每本书的记录摊开时才调用：把还没拉过的 sidecar 按需
   /// 拉下来。平时同步不碰云端书库里的每本书。
   pub async fn loadAllDocs() {
