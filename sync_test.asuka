@@ -1,0 +1,131 @@
+// The sync's pure parts: the names a PROPFIND answers with, the URLs a path
+// becomes, and how two devices' shelves, places, bookmarks and removals
+// meet. No network: what a server does is the server's.
+
+import ./lib
+
+let multistatus = """<?xml version="1.0" encoding="utf-8"?>
+<D:multistatus xmlns:D="DAV:">
+  <D:response>
+    <D:href>/dav/Quire/books/</D:href>
+    <D:propstat>
+      <D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/dav/Quire/books</D:href>
+  </D:response>
+  <D:response>
+    <D:href>/dav/Quire/books/%E8%83%8C%E5%BD%B1.txt</D:href>
+    <D:propstat>
+      <D:prop><D:resourcetype/><D:getcontentlength>2048</D:getcontentlength></D:prop>
+      <D:status>HTTP/1.1 200 OK</D:status>
+    </D:propstat>
+  </D:response>
+  <D:response>
+    <D:href>/dav/Quire/books/abc.epub</D:href>
+    <D:propstat>
+      <D:prop><D:resourcetype/><D:getcontentlength>77</D:getcontentlength></D:prop>
+      <D:propstat>
+        <D:status>HTTP/1.1 200 OK</D:status>
+      </D:propstat>
+    </D:propstat>
+  </D:response>
+</D:multistatus>"""
+
+test "a PROPFIND's children come back with their names, sizes and kinds" {
+  let entries = davEntriesOf(multistatus, "/dav/Quire/books/")
+  expect(entries.count() == 2)
+  expect(entries[0].name == "背影.txt")
+  expect(entries[0].size == 2048)
+  expect(!entries[0].isDir)
+  expect(entries[1].name == "abc.epub")
+  expect(entries[1].size == 77)
+}
+
+test "the folder's own row isn't one of its children, whatever prefix the server uses" {
+  let lower = """<d:multistatus xmlns:d="DAV:"><d:response><d:href>/dav/Quire/books/</d:href></d:response></d:multistatus>"""
+  expect(davEntriesOf(lower, "/dav/Quire/books/").isEmpty())
+}
+
+test "a path becomes a URL under the folder, escaped where it must be" {
+  let c = DavConfig(server: "https://dav.jianguoyun.com/dav", account: "a@b.c", password: "p", folder: "/Quire/")
+  expect(davURLFor(c, "") == "https://dav.jianguoyun.com/dav/Quire/")
+  expect(davURLFor(c, "books/背影 01.txt") == "https://dav.jianguoyun.com/dav/Quire/books/%E8%83%8C%E5%BD%B1%2001.txt")
+  expect(davURLFor(c, "books/") == "https://dav.jianguoyun.com/dav/Quire/books/")
+}
+
+test "the later place wins, wherever it was saved" {
+  let here = [lib.Reading(id: "a", chapter: 1, percent: 0.2, updated: 100), lib.Reading(id: "b", chapter: 0, percent: 0.5, updated: 300)]
+  let there = [lib.Reading(id: "a", chapter: 4, percent: 0.9, updated: 200), lib.Reading(id: "b", chapter: 0, percent: 0.1, updated: 250), lib.Reading(id: "c", updated: 50)]
+  let (rows, adopted) = mergedReadings(here, there, [:])
+  expect(adopted == 2)
+  expect(rows.count() == 3)
+  expect(rows[0].chapter == 4)
+  expect(rows[1].percent == 0.5)
+  expect(rows[2].id == "c")
+}
+
+test "a book taken off isn't brought back by the merge" {
+  let here = [lib.Shelf(id: "a", title: "A", author: "", path: "books/a.txt")]
+  let there = [
+    lib.Shelf(id: "a", title: "A", author: "", path: "books/a.txt"),
+    lib.Shelf(id: "b", title: "B", author: "", path: "books/b.txt"),
+    lib.Shelf(id: "gone", title: "Gone", author: "", path: "books/gone.txt"),
+  ]
+  let (rows, added) = mergedShelf(here, there, ["gone": 10])
+  expect(added == 1)
+  expect(rows.count() == 2)
+  expect(!rows.any(r => r.id == "gone"))
+}
+
+test "bookmarks are put together, the same place once" {
+  let here = [lib.Bookmark(id: "a:0:100", book: "a", chapter: 0, percent: 0.01)]
+  let there = [
+    lib.Bookmark(id: "a:0:100", book: "a", chapter: 0, percent: 0.01),
+    lib.Bookmark(id: "b:2:5000", book: "b", chapter: 2, percent: 0.5),
+  ]
+  let (rows, added) = mergedBookmarks(here, there, [:])
+  expect(added == 1)
+  expect(rows.count() == 2)
+}
+
+test "removals keep the newer note" {
+  let rows = mergedRemoved(["a": 100, "b": 50], ["a": 30, "c": 70])
+  expect(rows.get("a") == 100)
+  expect(rows.get("b") == 50)
+  expect(rows.get("c") == 70)
+}
+
+test "a book put back outlives the note that took it off" {
+  let removed = mergedRemoved([:], ["a": 100])
+  let rows = [lib.Shelf(id: "a", title: "A", author: "", path: "books/a.txt", added: 200)]
+  let (next, added) = mergedShelf(rows, [], removed)
+  expect(added == 0)
+  expect(next.count() == 1)
+  let live = prunedRemoved(next, removed)
+  expect(live.get("a") == none)
+}
+
+test "the state file reads back what it wrote" {
+  let snap = SyncSnapshot(
+    updated: 1700000000,
+    shelf: [lib.Shelf(id: "a", title: "A", author: "", path: "books/a.txt")],
+    readings: [lib.Reading(id: "a", chapter: 2, percent: 0.25, updated: 1700000000)],
+    bookmarks: [lib.Bookmark(id: "a:2:2500", book: "a", chapter: 2, percent: 0.25)],
+    removed: ["b": 12],
+    theme: "night",
+    size: 22.0,
+    goal: 30,
+  )
+  let back = try syncDecode(syncEncode(snap))
+  expect(back.shelf.count() == 1)
+  expect(back.shelf[0].path == "books/a.txt")
+  expect(back.readings[0].chapter == 2)
+  expect(back.bookmarks[0].id == "a:2:2500")
+  expect(back.removed.get("b") == 12)
+  expect(back.theme == "night")
+  expect(back.size == 22.0)
+  expect(back.goal == 30)
+}

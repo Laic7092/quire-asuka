@@ -1,0 +1,163 @@
+// What a sync moves: one file on the server that names every book on the
+// shelf, where each was left, its bookmarks, and the reader's type, plus the
+// books and covers themselves under books/ and covers/.
+//
+// Merging is what makes it two-way: places and bookmarks the server has
+// newer come down, ones this device has newer stay, and the shelf is a
+// union. A book taken off the shelf is remembered by id in `removed`, so a
+// sync doesn't bring it back from a device that hasn't heard yet.
+
+import std/json
+
+import ./lib
+
+/// Why a sync can't start.
+pub enum SyncError: Error {
+  /// No account or password is set.
+  notConfigured
+
+  fn message() -> string = match self {
+    .notConfigured => "先填写云端的账号与密码"
+  }
+}
+
+/// The state file, as the server keeps it. Everything here is JSON the
+/// language writes and reads by itself; the defaults are what a device that
+/// has never synced has, so a first sync can tell "the reader changed this"
+/// from "this is still the default".
+pub struct SyncSnapshot {
+  version: int = 1
+  /// When this file was written, in unix seconds. 0 for no file yet.
+  updated: int = 0
+  shelf: [lib.Shelf] = []
+  readings: [lib.Reading] = []
+  bookmarks: [lib.Bookmark] = []
+  /// Books taken off the shelf, and when: "id" -> unix seconds.
+  removed: [string: int] = [:]
+  theme: string = "paper"
+  size: float = 19.0
+  line: float = 1.6
+  margins: float = 0.0
+  letter: float = 0.0
+  word: float = 0.0
+  mode: string = "page"
+  goal: int = 12
+}
+
+/// What one sync did, for the sheet that asked for it.
+pub struct SyncReport {
+  /// Book and cover files sent to the server.
+  uploaded: int = 0
+  /// Book and cover files brought from the server.
+  downloaded: int = 0
+  /// Files removed from the server because their book was taken off.
+  deleted: int = 0
+  /// Shelf rows the server had and this device didn't.
+  added: int = 0
+  /// Places the server had newer than this device's.
+  places: int = 0
+  /// Bookmarks the server had and this device didn't.
+  bookmarks: int = 0
+  /// Files that couldn't be moved this time: the sync goes on, the count
+  /// says it wasn't all of it.
+  failed: int = 0
+
+  pub fn text() -> string {
+    if uploaded == 0 && downloaded == 0 && deleted == 0 && added == 0 && places == 0 && bookmarks == 0 && failed == 0 {
+      return "已同步 · 没有要改的"
+    }
+    var parts: [string] = []
+    if added > 0 { parts.push("新增 {added} 本") }
+    if downloaded > 0 { parts.push("下载 {downloaded} 个文件") }
+    if uploaded > 0 { parts.push("上传 {uploaded} 个文件") }
+    if deleted > 0 { parts.push("删除 {deleted} 个文件") }
+    if places > 0 { parts.push("更新 {places} 处进度") }
+    if bookmarks > 0 { parts.push("新增 {bookmarks} 个书签") }
+    if failed > 0 { parts.push("{failed} 个文件失败") }
+    return "已同步 · " + parts.joined(separator: " · ")
+  }
+}
+
+pub fn syncEncode(s: SyncSnapshot) -> string = json.encode(s, indent: 2)
+
+pub fn syncDecode(text: string) throws -> SyncSnapshot = try json.decode(text)
+
+/// The shelf, with the server's rows added and this device's kept: a row on
+/// both sides is the same book, and the one here has the path this launch
+/// uses. A row taken off is left out, unless the book was put back after
+/// that note was made.
+pub fn mergedShelf(local: [lib.Shelf], remote: [lib.Shelf], removed: [string: int]) -> ([lib.Shelf], int) {
+  var out = local.filter(row => kept(row.id, row.added, removed))
+  var added = 0
+  for row in remote {
+    if !kept(row.id, row.added, removed) { continue }
+    if out.any(kept => kept.id == row.id) { continue }
+    out.push(row)
+    added += 1
+  }
+  return (out, added)
+}
+
+fn kept(id: string, added: int, removed: [string: int]) -> bool {
+  if let at = removed.get(id) { return added > at }
+  return true
+}
+
+/// Where each book is left: the later save wins, whatever side it came from.
+pub fn mergedReadings(local: [lib.Reading], remote: [lib.Reading], removed: [string: int]) -> ([lib.Reading], int) {
+  var out = local.filter(row => removed.get(row.id) == none)
+  var adopted = 0
+  for row in remote {
+    if removed.get(row.id) != none { continue }
+    if let at = out.index(r => r.id == row.id) {
+      if row.updated > out[at].updated {
+        out[at] = row
+        adopted += 1
+      }
+    } else {
+      out.push(row)
+      adopted += 1
+    }
+  }
+  return (out, adopted)
+}
+
+/// Bookmarks are places, not values: the two sides' are put together, and
+/// the same place (same id) is one bookmark.
+pub fn mergedBookmarks(local: [lib.Bookmark], remote: [lib.Bookmark], removed: [string: int]) -> ([lib.Bookmark], int) {
+  var out = local.filter(mark => removed.get(mark.book) == none)
+  var added = 0
+  for mark in remote {
+    if removed.get(mark.book) != none { continue }
+    if out.any(kept => kept.id == mark.id) { continue }
+    out.push(mark)
+    added += 1
+  }
+  return (out, added)
+}
+
+/// Books taken off on either side, the newer note of the two winning.
+pub fn mergedRemoved(local: [string: int], remote: [string: int]) -> [string: int] {
+  var out = local
+  for (id, at) in remote {
+    if let kept = out.get(id) {
+      if at > kept { out[id] = at }
+    } else {
+      out[id] = at
+    }
+  }
+  return out
+}
+
+/// The notes for books that are back on the shelf: a book put back after it
+/// was taken off outranks its own removal, so the next sync carries the book
+/// and no note that would hide it.
+pub fn prunedRemoved(rows: [lib.Shelf], removed: [string: int]) -> [string: int] {
+  var out = removed
+  for row in rows {
+    if let at = out.get(row.id) {
+      if row.added > at { out.remove(row.id) }
+    }
+  }
+  return out
+}

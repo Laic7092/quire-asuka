@@ -1,0 +1,253 @@
+// WebDAV, as Quire syncs with it: a folder of its own on a server the reader
+// brings (Nutstore's by default), read and written with the handful of
+// methods a sync needs. Basic auth, because that is what Nutstore's WebDAV
+// takes: the account's email and an application password.
+//
+// The protocol here is deliberately small. A sync asks for a folder's
+// children (PROPFIND depth 1), makes its folders (MKCOL), and moves files
+// (GET, PUT, DELETE). Nothing else is needed, and nothing else is used.
+
+import std/encoding
+import std/fs
+import std/http
+import std/regex
+import std/url
+
+/// Nutstore's WebDAV root. A reader on another server changes the address.
+pub let nutstoreServer = "https://dav.jianguoyun.com/dav/"
+
+pub struct DavConfig {
+  server: string = "https://dav.jianguoyun.com/dav/"
+  account: string = ""
+  password: string = ""
+  /// The folder under the server's root that Quire keeps its files in.
+  folder: string = "Quire"
+
+  /// Whether there is an account to sign a request with.
+  pub fn filled() -> bool = !account.trim().isEmpty() && !password.isEmpty()
+}
+
+/// What a WebDAV server answered that isn't the caller's to read as a value.
+pub enum WebDAVError: Error {
+  /// The server took the request but not the account's password.
+  unauthorized(reason: string)
+  /// A path isn't on the server, where the request needs it to be.
+  missing(path: string)
+  /// The server answered with a status the method doesn't expect.
+  status(method: string, path: string, code: int)
+
+  fn message() -> string = match self {
+    .unauthorized(r) => if r.isEmpty() { "账号或密码不对" } else { "账号或密码不对：{r}" }
+    .missing(p) => "服务器上没有「{p}」"
+    .status(m, p, c) => "{m} {p}：服务器回答 {c}"
+  }
+}
+
+/// One child of a folder: a file's name (no path), whether it is a folder,
+/// and its size in bytes (0 for a folder).
+pub struct DavEntry {
+  name: string
+  isDir: bool
+  size: int = 0
+}
+
+/// The request bodies and matching parsers. A server may prefix its elements
+/// (D:, d:, lp1:, or none), which is why every pattern makes the prefix
+/// optional.
+let propfindBody = """<?xml version="1.0" encoding="utf-8"?>
+<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/><d:getlastmodified/></d:prop></d:propfind>"""
+
+let responsePattern = regex.must(r"(?is)<(?:[a-z0-9_-]+:)?response(?:\s[^>]*)?>(.*?)</(?:[a-z0-9_-]+:)?response>")
+let hrefPattern = regex.must(r"(?is)<(?:[a-z0-9_-]+:)?href(?:\s[^>]*)?>([^<]*)</(?:[a-z0-9_-]+:)?href>")
+let lengthPattern = regex.must(r"(?is)<(?:[a-z0-9_-]+:)?getcontentlength(?:\s[^>]*)?>([^<]*)</(?:[a-z0-9_-]+:)?getcontentlength>")
+
+/// A server's address and folder as a URL a path hangs under, ending in "/".
+fn root(c: DavConfig) -> string {
+  var server = c.server.trim()
+  if server.isEmpty() { server = nutstoreServer }
+  if !server.hasSuffix("/") { server = server + "/" }
+  let folder = slashes(c.folder)
+  if folder.isEmpty() { return server }
+  return server + url.pathEscape(folder) + "/"
+}
+
+/// A folder name without leading or trailing separators: "Quire/books" stays
+/// "Quire/books", "/Quire/" becomes "Quire".
+fn slashes(text: string) -> string {
+  var out = text.trim()
+  while out.hasPrefix("/") {
+    out = out.slice(1, out.count())
+  }
+  while out.hasSuffix("/") && !out.isEmpty() {
+    out = out.slice(0, out.count() - 1)
+  }
+  return out
+}
+
+/// The URL of path under the configured folder. A path that ends in "/" is a
+/// folder's, and gets the trailing slash WebDAV wants for one.
+pub fn davURLFor(c: DavConfig, path: string) -> string {
+  let base = root(c)
+  let trimmed = slashes(path)
+  if trimmed.isEmpty() { return base }
+  let parts = trimmed.split("/").filter(p => !p.isEmpty()).map(p => url.pathEscape(p))
+  let url = base + parts.joined(separator: "/")
+  return if path.trim().hasSuffix("/") { url + "/" } else { url }
+}
+
+/// A request's Basic auth header: the account and its application password.
+fn auth(c: DavConfig) -> string = "Basic " + encoding.base64Encode("{c.account}:{c.password}".bytes())
+
+fn headersFor(method: string, depth: string = "0") -> [string: string] {
+  var headers = ["User-Agent": "Quire (Asuka)"]
+  if method == "PROPFIND" {
+    headers["Depth"] = depth
+    headers["Content-Type"] = "application/xml; charset=utf-8"
+  }
+  return headers
+}
+
+/// Sends one request to path with the account's signature.
+async fn send(c: DavConfig, method: string, path: string, body: bytes, depth: string = "0", timeout: Duration = 90s) throws -> http.Response {
+  var headers = headersFor(method, depth)
+  headers["Authorization"] = auth(c)
+  return try await http.request(method: method, url: davURLFor(c, path), headers: headers, body: body, timeout: timeout)
+}
+
+/// Tests the account without changing anything: a PROPFIND of the folder.
+pub async fn davTest(c: DavConfig) throws -> [DavEntry] {
+  let r = try await send(c, "PROPFIND", "", propfindBody.bytes(), depth: "1")
+  if r.status == 401 || r.status == 403 { throw WebDAVError.unauthorized("") }
+  if r.status == 404 { return [] }
+  if r.status != 207 {
+    throw WebDAVError.status(method: "PROPFIND", path: "", code: r.status)
+  }
+  return davEntriesOf(r.text(), davURLFor(c, ""))
+}
+
+/// Makes the folder Quire keeps its files in, and books/ and covers/ under
+/// it. A folder that's already there is left as it is (MKCOL says 405).
+pub async fn davEnsure(c: DavConfig) throws {
+  let status = try await statusOf(c, "")
+  if status == 401 || status == 403 { throw WebDAVError.unauthorized("") }
+  if status == 404 {
+    try await makeFolder(c, "")
+  } else if status != 207 && status != 200 {
+    throw WebDAVError.status(method: "PROPFIND", path: "", code: status)
+  }
+  for folder in ["books/", "covers/"] {
+    let child = try await statusOf(c, folder)
+    if child == 404 {
+      try await makeFolder(c, folder)
+    } else if child == 401 || child == 403 {
+      throw WebDAVError.unauthorized("")
+    }
+  }
+}
+
+/// What PROPFIND of path answers, as its status, for a folder's existence.
+async fn statusOf(c: DavConfig, path: string) throws -> int {
+  let r = try await send(c, "PROPFIND", path, propfindBody.bytes(), depth: "0")
+  return r.status
+}
+
+async fn makeFolder(c: DavConfig, path: string) throws {
+  let r = try await send(c, "MKCOL", path, bytes())
+  if r.status == 401 || r.status == 403 { throw WebDAVError.unauthorized("") }
+  if r.status != 201 && r.status != 405 {
+    throw WebDAVError.status(method: "MKCOL", path: path, code: r.status)
+  }
+}
+
+/// The children of a folder, one level deep, folders themselves included.
+pub async fn davList(c: DavConfig, path: string) throws -> [DavEntry] {
+  let r = try await send(c, "PROPFIND", path, propfindBody.bytes(), depth: "1")
+  if r.status == 401 || r.status == 403 { throw WebDAVError.unauthorized("") }
+  if r.status == 404 { return [] }
+  if r.status != 207 {
+    throw WebDAVError.status(method: "PROPFIND", path: path, code: r.status)
+  }
+  return davEntriesOf(r.text(), davURLFor(c, path))
+}
+
+/// A folder's children, read from the multistatus XML a PROPFIND answered.
+/// base is the folder's own URL or path, so the names come back relative to
+/// it. The folder itself (a href ending at base) isn't one of them.
+pub fn davEntriesOf(xml: string, base: string) -> [DavEntry] {
+  let basePath = if let parsed = url.parse(base), !parsed.path.isEmpty() { parsed.path } else { base }
+  var out: [DavEntry] = []
+  for response in responsePattern.findAllSubmatches(xml) {
+    if response.count() < 2 { continue }
+    let part = response[1]
+    let href = if let found = hrefPattern.findSubmatch(part) { found[1].trim() } else { continue }
+    // A server may answer with an absolute URL or a path; either way the
+    // name is what comes after the folder, unescaped (Chinese and spaces
+    // arrive as %XX).
+    let rawPath = if let parsed = url.parse(href), !parsed.path.isEmpty() { parsed.path } else { href }
+    let decoded = url.pathUnescape(rawPath) ?? rawPath
+    // The folder itself, with or without the slash some servers drop.
+    if decoded == basePath || decoded == basePath.trimSuffix("/") { continue }
+    var rel = decoded
+    if rel.hasPrefix(basePath) {
+      rel = rel.slice(basePath.count(), rel.count())
+    } else if let at = rel.findLast("/") {
+      rel = rel.slice(at + 1, rel.count())
+    }
+    let isDir = rel.hasSuffix("/")
+    rel = rel.trimSuffix("/")
+    // The collection's own row, and anything below a child (some servers
+    // answer deeper than depth 1): not a child of this folder.
+    if rel.isEmpty() || rel.contains("/") { continue }
+    let size = if let found = lengthPattern.findSubmatch(part) { found[1].trim().toInt() ?? 0 } else { 0 }
+    out.push(DavEntry(name: rel, isDir: isDir, size: size))
+  }
+  return out
+}
+
+/// The text at path, or none when the server doesn't have it.
+pub async fn davReadText(c: DavConfig, path: string) throws -> string? {
+  let r = try await send(c, "GET", path, bytes())
+  if r.status == 404 { return none }
+  if r.status == 401 || r.status == 403 { throw WebDAVError.unauthorized("") }
+  if !r.ok() { throw WebDAVError.status(method: "GET", path: path, code: r.status) }
+  return r.text()
+}
+
+/// Writes text at path, making (or replacing) the file.
+pub async fn davPutText(c: DavConfig, path: string, text: string) throws {
+  let r = try await send(c, "PUT", path, text.bytes())
+  if r.status == 401 || r.status == 403 { throw WebDAVError.unauthorized("") }
+  if !r.ok() { throw WebDAVError.status(method: "PUT", path: path, code: r.status) }
+}
+
+/// Uploads the file at local to path on the server.
+pub async fn davPutFile(c: DavConfig, path: string, local: string) throws {
+  let data = try await spawn { try fs.read(local) }
+  let r = try await send(c, "PUT", path, data, timeout: 5min)
+  if r.status == 401 || r.status == 403 { throw WebDAVError.unauthorized("") }
+  if !r.ok() { throw WebDAVError.status(method: "PUT", path: path, code: r.status) }
+}
+
+/// Downloads path into the file at into, which is made or replaced.
+pub async fn davDownload(c: DavConfig, path: string, into: string) throws {
+  let r = try await http.download(
+    davURLFor(c, path),
+    into,
+    headers: ["Authorization": auth(c), "User-Agent": "Quire (Asuka)"],
+    timeout: 5min,
+  )
+  if r.ok() { return }
+  // What the server said when it wasn't the file: leave nothing behind that
+  // looks like one.
+  try? await spawn { try fs.remove(into) }
+  if r.status == 401 || r.status == 403 { throw WebDAVError.unauthorized("") }
+  throw WebDAVError.status(method: "GET", path: path, code: r.status)
+}
+
+/// Removes path from the server. A path that's already gone is not an error.
+pub async fn davRemove(c: DavConfig, path: string) throws {
+  let r = try await send(c, "DELETE", path, bytes())
+  if r.status == 404 || r.ok() { return }
+  if r.status == 401 || r.status == 403 { throw WebDAVError.unauthorized("") }
+  throw WebDAVError.status(method: "DELETE", path: path, code: r.status)
+}

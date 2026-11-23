@@ -11,11 +11,16 @@ Quire 是跨平台的本地阅读器，使用 [Asuka](https://asuka.egoist.dev) 
 - 排版：字号、行距、页边距、字距、词距，纸色与夜间主题。
 - 导入：文档选择器，以及 Files / Mail 中的“用 Quire 打开”。
 - 格式：`.txt`、`.epub`。
+- 同步：书架、进度、书签、排版设置与书籍文件双向同步；云端默认是坚果云，也可选其他 WebDAV 服务器。入口在书架右上角的云图标与「我 → 同步与备份」，可开启启动时自动同步。
 - 导航：首页、书架、搜索三个标签，书架为默认页；首页与搜索为预留入口。
 
 ## 平台
 
 Quire 使用 Asuka 的跨平台运行时，同一套源码可构建 iOS、macOS、Linux、Android 与 Web。iOS 是当前 CI 持续产出的目标；其他平台使用同一套 Asuka 源码和对应的 ebook-engine 目标库构建。
+
+WebDAV 同步走 `std/http`：iOS / macOS 的 URLSession、Linux 的 libsoup 与 Windows 的 WinHTTP 都能发 `PROPFIND` / `MKCOL`。Android 的 `HttpURLConnection` 只允许标准方法，这一版在 Android 上暂时用不了同步；网页端还受浏览器 CORS 的限制。
+
+同步密码优先存系统钥匙串（`platform/secure`）。没有钥匙串的桌面（例如没装或没运行 Secret Service 的 Linux）会退回到应用目录里一个仅本人可读（`0600`）的 `sync-password` 文件，并在同步页提示；这样每次启动不用重输。
 
 ## 架构
 
@@ -23,10 +28,13 @@ Quire 使用 Asuka 的跨平台运行时，同一套源码可构建 iOS、macOS�
 Asuka 应用
   ├─ Tabs：首页 / 书架 / 搜索
   ├─ Shelf → Reader（根层覆盖页）
-  └─ Library store（书架、进度、书签、排版设置）
-          │
-          │ C ABI：eb_plain_*
-          ▼
+  ├─ Library store（书架、进度、书签、排版设置）
+  │      │ WebDAV：PROPFIND / MKCOL / GET / PUT / DELETE
+  │      ▼
+  │   坚果云（或别的 WebDAV 服务器）
+  │
+  │ C ABI：eb_plain_*
+  ▼
 ebook-engine
   ├─ 解析 TXT / EPUB
   ├─ 按章排版
@@ -51,6 +59,10 @@ BookPage（原生位图视图）
 | `reader.asuka` | 阅读器、翻页/滚动、目录、书签、排版设置 |
 | `library.asuka` | 书架与阅读状态的持久化 store |
 | `home.asuka` / `search.asuka` | 首页与搜索入口 |
+| `sync.asuka` | 同步的文件格式与合并规则（进度取新、书签并集、删除记录） |
+| `webdav.asuka` | WebDAV 客户端：认证、列目录、上传/下载、删除 |
+| `sync_sheet.asuka` | 「同步」页：云端服务（坚果云 / 其他 WebDAV）、账号与手动同步 |
+| `sync_test.asuka` | 列目录解析、URL、合并与状态文件的测试 |
 | `engine/engine.asuka` | ebook-engine 的 C ABI 绑定 |
 | `bookpage/` | 原生 `BookPage` 组件（iOS、Linux、Android、Web） |
 | `lib/` | 数据模型、纯文本解析、分页辅助与对应测试 |
@@ -144,7 +156,7 @@ asuka test
 asuka test lib
 ```
 
-测试覆盖书架、导入、阅读位置、书签、目录跳转、分页/滚动切换、主题与排版参数、纯文本章节解析。
+测试覆盖书架、导入、阅读位置、书签、目录跳转、分页/滚动切换、主题与排版参数、纯文本章节解析，以及 WebDAV 列目录解析、同步合并与状态文件读回。
 
 ## 字体
 

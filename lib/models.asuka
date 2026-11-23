@@ -43,6 +43,10 @@ pub struct Shelf {
   path: string
   /// The cover image under the app's directory; "" when there is none.
   cover: string = ""
+  /// When the book came onto the shelf, in unix seconds: 0 for a row
+  /// written before it was kept. A book put back after being taken off
+  /// outranks the note that took it off.
+  added: int = 0
 
   pub fn book() -> Book = Book(id: id, title: title, author: author, chapters: [], path: path, cover: cover)
 }

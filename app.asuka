@@ -17,10 +17,16 @@ component Quire {
   state tab = 1
 
   let paper = lib.paletteFor(library.theme).paper
-  // Rows written by an older build keep their files' whole paths, container
-  // and all; iOS may have given that container another name since. Rewrite
-  // them once, now, so a launch's books are found wherever they are.
-  task { library.migratePaths() }
+  // A launch's first steps, in order: rows written by an older build keep
+  // their files' whole paths (iOS may have renamed that container since), so
+  // they're cut back to names; the samples go on the shelf once; and then,
+  // if the reader asked for it, the shelf meets the server's.
+  task {
+    library.migratePaths()
+    await library.loadCredentials()
+    await library.seedSamples()
+    await library.syncIfAuto()
+  }
 
   View {
     grow: 1

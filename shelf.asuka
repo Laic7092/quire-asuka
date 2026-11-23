@@ -121,11 +121,49 @@ screen Shelf {
   title: "书架"
   largeTitle: true
 
-  // The books that came with the app are put on the shelf once, as books.
-  task { await library.seedSamples() }
+  // 同步 is a state of this shelf, not a feature buried in settings: the
+  // cloud says whether the shelf has a copy in the cloud, and tapping it
+  // opens the page where the account and the folder are.
+  let syncFailed = library.syncMessage.hasPrefix("同步失败")
+  // Symbols every platform draws: Linux has no checkmark.icloud or
+  // exclamationmark.icloud (its icon table is Material + Adwaita), so those
+  // would leave the button blank there. The cloud itself is the state; the
+  // color and the tooltip say which.
+  let syncIcon = if !library.davConfigured() {
+    "icloud.slash"
+  } else if library.syncBusy {
+    "arrow.triangle.2.circlepath"
+  } else if syncFailed {
+    "exclamationmark.circle"
+  } else {
+    "icloud"
+  }
+  let syncTip = if !library.davConfigured() {
+    "同步未配置"
+  } else if library.syncBusy {
+    "正在同步"
+  } else if syncFailed {
+    "上次同步失败"
+  } else {
+    "同步"
+  }
 
-  // Import sits at the top right of the bar, not as a floating action.
+  // Import and sync sit at the top right of the bar, not as floating actions.
   toolbar {
+    Button("") {
+      icon: syncIcon
+      variant: .glass
+      label: "同步"
+      tooltip: syncTip
+      color: if syncFailed {
+        .red
+      } else if !library.davConfigured() {
+        .secondaryLabel
+      } else {
+        .label
+      }
+      on press { present(SyncSettings()) }
+    }
     Button("") {
       icon: "plus"
       variant: .glass

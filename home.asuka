@@ -229,82 +229,108 @@ component YearRow(book: lib.Book, reading: lib.Reading) {
   }
 }
 
-/// 我：the avatar's page. Every entry is a placeholder for now: the screens
-/// behind them come later.
+/// 我：the avatar's page. 同步与备份 is the one entry with a screen behind it;
+/// the rest are placeholders for now.
 component Profile {
+  use library: Library
+
+  /// Which page this sheet shows: its own list, or the WebDAV setup.
+  state page = ""
+
+  let syncNote = if !library.davConfigured() {
+    "跨设备同步书架、进度与书签"
+  } else if library.syncLast > 0 {
+    "上次同步 {whenOf(library.syncLast)}"
+  } else {
+    "已配置 · 尚未同步"
+  }
+
   let entries = [
+    ProfileEntry(icon: "icloud", title: "同步与备份", note: syncNote),
     ProfileEntry(icon: "chart.bar.doc.horizontal", title: "阅读记录统计", note: "读完的书、读过的日子"),
-    ProfileEntry(icon: "externaldrive.badge.icloud", title: "WebDAV 配置", note: "同步书架与进度"),
     ProfileEntry(icon: "target", title: "阅读目标", note: "今年读几本"),
     ProfileEntry(icon: "bell.badge", title: "阅读提醒", note: "每天读一点"),
     ProfileEntry(icon: "paintbrush", title: "外观与排版", note: "纸色、字号、行距"),
     ProfileEntry(icon: "info.circle", title: "关于 Quire", note: "版本 0.1"),
   ]
 
-  Column {
-    gap: 18
-    padding: [20, 20, 24, 20]
-
-    Row {
-      gap: 14
-      align: .center
-      View {
-        width: 60
-        height: 60
-        radius: 999
-        align: .center
-        justify: .center
-        background: .accent
-        Symbol("person.fill") {
-          font: .title2
-          color: .onAccent
-        }
-      }
-      Column {
-        grow: 1
-        gap: 3
-        Text("Quire 读者") {
-          font: .title3.bold()
-        }
-        Text("本机 · 未登录") {
-          font: .footnote
-          color: .secondaryLabel
-        }
-      }
-      Button("") {
-        icon: "xmark"
-        variant: .glass
-        on press { dismiss() }
-      }
+  if page == "sync" {
+    SyncSettings {
+      embedded: true
+      on close { page = "" }
     }
-
+  } else {
     Column {
-      gap: 0
-      for entry in entries key entry.title {
-        Row {
-          gap: 12
+      gap: 18
+      padding: [20, 20, 24, 20]
+
+      Row {
+        gap: 14
+        align: .center
+        View {
+          width: 60
+          height: 60
+          radius: 999
           align: .center
-          padding: [13, 4]
-          on press { snackbar("「{entry.title}」即将推出") }
-          Symbol(entry.icon) {
-            font: .body
-            color: .accent
-            width: 26
+          justify: .center
+          background: .accent
+          Symbol("person.fill") {
+            font: .title2
+            color: .onAccent
           }
-          Column {
-            grow: 1
-            gap: 2
-            Text(entry.title) {
+        }
+        Column {
+          grow: 1
+          gap: 3
+          Text("Quire 读者") {
+            font: .title3.bold()
+          }
+          Text(if library.davConfigured() { "本机 · 云端已连接" } else { "本机 · 未连接云端" }) {
+            font: .footnote
+            color: .secondaryLabel
+          }
+        }
+        Button("") {
+          icon: "xmark"
+          variant: .glass
+          on press { dismiss() }
+        }
+      }
+
+      Column {
+        gap: 0
+        for entry in entries key entry.title {
+          Row {
+            gap: 12
+            align: .center
+            padding: [13, 4]
+            on press {
+              if entry.title == "同步与备份" {
+                page = "sync"
+              } else {
+                snackbar("「{entry.title}」即将推出")
+              }
+            }
+            Symbol(entry.icon) {
               font: .body
+              color: .accent
+              width: 26
             }
-            Text(entry.note) {
+            Column {
+              grow: 1
+              gap: 2
+              Text(entry.title) {
+                font: .body
+              }
+              Text(entry.note) {
+                font: .caption2
+                color: .secondaryLabel
+              }
+            }
+            Symbol("chevron.right") {
               font: .caption2
-              color: .secondaryLabel
+              color: .tertiaryLabel
             }
-          }
-          Symbol("chevron.right") {
-            font: .caption2
-            color: .tertiaryLabel
           }
         }
       }
@@ -334,7 +360,7 @@ screen Home {
       icon: "person.crop.circle"
       variant: .glass
       label: "我"
-      tooltip: "阅读记录、WebDAV 与设置"
+      tooltip: "阅读记录、同步与设置"
       on press { present(Profile()) }
     }
   }

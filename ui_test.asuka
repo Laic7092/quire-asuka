@@ -520,3 +520,44 @@ test "a place is kept with the time it was kept" {
   library.save("書", chapter: 0, percent: 0.5)
   expect(library.readingOf("書").updated > 0)
 }
+
+test "我 opens the sync setup, and its fields are kept" {
+  let library = Library()
+  let app = mount(Profile(), provide: library)
+  await app.idle()
+  app.expect("同步与备份")
+  app.tap("同步与备份")
+  await app.idle()
+  app.expect("同步")
+  app.expect("测试连接")
+  app.expect("立即同步")
+  // A field is the store's: typing is what a sync would use, with no Save.
+  app.type("reader@example.com", into: "坚果云的登录邮箱")
+  await app.idle()
+  expect(library.davAccount == "reader@example.com")
+  app.tap("返回")
+  await app.idle()
+  app.expect("同步与备份")
+}
+
+test "a password with no keychain is kept beside the app" {
+  let library = Library()
+  await library.loadCredentials()
+  // The test host has no keychain: the fallback is what it uses.
+  expect(!library.passwordSecured)
+  library.davPassword = "app-password"
+  await sleep(50ms)
+  let path = fs.join([fs.appDir(), "sync-password"])
+  expect(fs.exists(path))
+  // Only the user may read it on Unix; Windows keeps only writability.
+  let info = try? fs.stat(path)
+  if let info = info {
+    expect(info.mode == 0 || (info.mode & 0o077) == 0)
+  }
+  // The next launch (another Library over the same directory) finds it, and
+  // doesn't ask again.
+  let again = Library()
+  await again.loadCredentials()
+  expect(again.davPassword == "app-password")
+  expect(!again.passwordSecured)
+}

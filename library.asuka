@@ -1,6 +1,7 @@
 // The shelf: books, and where each was left. Kept across launches in each
 // platform's own preferences (std/store), the way Quire keeps state.json.
 
+import platform/secure
 import std/crypto
 import std/fs
 import std/store
@@ -58,6 +59,37 @@ pub fn fileOf(kept: string) -> string {
   return fs.join([fs.appDir(), kept])
 }
 
+/// Where the account's password goes when the platform has no keychain: a
+/// file only the user may read (0600 on Unix). A keyring is better; this is
+/// what keeps a keyring-less desktop from asking for the password each launch.
+fn passwordFile() -> string = fs.join([fs.appDir(), "sync-password"])
+
+async fn readPasswordFile() -> string {
+  let text = try? await spawn { try fs.readText(passwordFile()) }
+  return (text ?? "").trim()
+}
+
+async fn writePasswordFile(password: string) {
+  let path = passwordFile()
+  if password.isEmpty() {
+    try? await spawn { try fs.remove(path) }
+    return
+  }
+  try? await spawn {
+    try fs.mkdirAll(fs.appDir())
+    try fs.writeText(path, text: password)
+    try fs.chmod(path, 0o600)
+  }
+}
+
+/// A book's row, with the moment it came onto the shelf: a book put back
+/// after being taken off outranks the note that hid it, here and in a sync.
+fn rowOf(book: lib.Book) -> lib.Shelf {
+  var row = lib.shelfOf(book)
+  row.added = time.now().unix()
+  return row
+}
+
 pub store Library {
   /// The books on the shelf, as the files they're read from: what survives a
   /// launch. A sample brought with the app is seeded into it (once), so it's a
@@ -85,6 +117,33 @@ pub store Library {
   /// 今年的阅读目标，读完几本。首页的目标环读它。
   pub state goal: int = store.read("goal.books", 12)
 
+  /// 坚果云 WebDAV：地址、账号、应用密码（不是登录密码）与同步文件夹。
+  /// 密码是秘密，放平台的钥匙串（platform/secure），其它几项放偏好设置。
+  pub state davServer: string = store.read("sync.server", "https://dav.jianguoyun.com/dav/")
+  pub state davAccount: string = store.read("sync.account", "")
+  pub state davPassword = ""
+  /// 密码在系统钥匙串里（true），还是在应用目录的 sync-password 文件里。
+  /// 没有钥匙串的 Linux 桌面会走后者：不然每次启动都要重输。
+  pub state passwordSecured = true
+  /// 钥匙串为什么没用：给同步页显示。
+  pub state passwordProblem = ""
+  pub state davFolder: string = store.read("sync.folder", "Quire")
+  /// 云端的实现方式："nutstore"（坚果云，默认）或 "webdav"（自填地址）。
+  /// 以后接别的服务，换的是这里，不是「同步」这个入口。
+  pub state syncProvider: string = store.read("sync.provider", "nutstore")
+  /// 启动时自动同步一次。
+  pub state syncAuto: bool = store.read("sync.auto", false)
+  /// 上次同步成功的时间（unix 秒），0 表示还没同步过。
+  pub state syncLast: int = store.read("sync.last", 0)
+  /// 上次同步的结果，配置页读它。
+  pub state syncMessage: string = store.read("sync.message", "")
+  /// 一次同步正在跑：两个按钮、自动同步都不会重入。
+  pub state syncBusy = false
+  /// 钥匙串读过没有：写回它之前要先读，免得空密码把读到的删掉。
+  state credentialsLoaded = false
+  /// 取下的书，按 id 记下时间：双向合并时不该被另一台设备带回来。
+  pub state removedIds: [string: int] = store.read("sync.removed", [:])
+
   effect { store.write("readings", readings) }
   effect { store.write("bookmarks", bookmarks) }
   effect { store.write("shelf.seeded", seeded) }
@@ -96,6 +155,37 @@ pub store Library {
   effect { store.write("reader.word", word) }
   effect { store.write("reader.mode", mode) }
   effect { store.write("goal.books", goal) }
+  effect { store.write("sync.server", davServer) }
+  effect { store.write("sync.account", davAccount) }
+  effect { store.write("sync.folder", davFolder) }
+  effect { store.write("sync.provider", syncProvider) }
+  effect { store.write("sync.auto", syncAuto) }
+  effect { store.write("sync.last", syncLast) }
+  effect { store.write("sync.message", syncMessage) }
+  effect { store.write("sync.removed", removedIds) }
+
+  /// The keychain is read once, before the first sync: the password isn't in
+  /// the preferences the other settings are in.
+  task(credentialsLoaded, davPassword) {
+    if !credentialsLoaded { return }
+    if passwordSecured {
+      do {
+        if davPassword.isEmpty() {
+          try await secure.remove("sync.password")
+        } else {
+          try await secure.write("sync.password", davPassword)
+        }
+        await writePasswordFile("")
+        return
+      } catch e {
+        // The keyring went away (or was never there): keep it where the next
+        // launch can read it, and say why in the sheet.
+        passwordSecured = false
+        passwordProblem = e.message
+      }
+    }
+    await writePasswordFile(davPassword)
+  }
 
   /// Every book on the shelf: a row each, the samples' included. A row keeps
   /// where its file is relative to the app's directory; this is where that
@@ -148,7 +238,7 @@ pub store Library {
       // Kept relative: the directory's name is the system's, not the row's.
       book.path = "books/{name}"
       shelf.removeWhere(s => s.id == book.id)
-      shelf.push(lib.shelfOf(book))
+      shelf.push(rowOf(book))
     }
     // Last: a launch that dies in the middle seeds again next time, and a row
     // already there is replaced, not doubled.
@@ -162,6 +252,9 @@ pub store Library {
     shelf.removeWhere(s => s.id == id)
     readings.removeWhere(r => r.id == id)
     bookmarks = bookmarks.filter(b => b.book != id)
+    // The note is what keeps a sync (or another device that hasn't synced
+    // yet) from putting the book back. Its file goes on the next sync.
+    removedIds[id] = time.now().unix()
     keep()
   }
 
@@ -225,7 +318,10 @@ pub store Library {
     // replaced, not doubled — and the reading isn't: where a book was left is
     // about the book, not the bytes it came in as.
     shelf.removeWhere(s => s.id == book.id)
-    shelf.push(lib.shelfOf(book))
+    shelf.push(rowOf(book))
+    // Importing it again is what puts a book back on a shelf it was taken
+    // off: the note that hid it goes, here and on the next sync.
+    removedIds.remove(book.id)
     keep()
     return true
   }
@@ -311,4 +407,237 @@ pub store Library {
     if !replaced { next.push(row) }
     readings = next
   }
+
+  /// Whether there is an account to sync with: the 我 page's entry and the
+  /// launch task both ask before they show a status or touch the network.
+  pub fn davConfigured() -> bool = !davAccount.trim().isEmpty() && !davPassword.isEmpty()
+
+  fn davConfig() -> DavConfig = DavConfig(
+    server: if syncProvider == "nutstore" { nutstoreServer } else { davServer },
+    account: davAccount.trim(),
+    password: davPassword,
+    folder: davFolder,
+  )
+
+  /// Signs in and reads the folder, writing nothing: the 测试连接 button.
+  pub async fn testDav() throws -> string {
+    if !davConfigured() { throw SyncError.notConfigured }
+    let entries = try await davTest(davConfig())
+    let files = entries.filter(e => !e.isDir).count()
+    return "连接成功 · 云端 {files} 个文件"
+  }
+
+  /// Brings the application password back from the keychain. The launch task
+  /// runs it before anything reads the account.
+  pub async fn loadCredentials() {
+    var keychainWorked = true
+    do {
+      if let saved = try await secure.read("sync.password") {
+        if !saved.isEmpty() {
+          davPassword = saved
+          await writePasswordFile("")
+          passwordSecured = true
+          credentialsLoaded = true
+          return
+        }
+      }
+    } catch e {
+      keychainWorked = false
+      passwordProblem = e.message
+    }
+    // No keychain, or nothing in it yet: a password kept beside the app,
+    // where the last launch (or a system without a keyring) put it.
+    let kept = await readPasswordFile()
+    if !kept.isEmpty() { davPassword = kept }
+    passwordSecured = keychainWorked
+    credentialsLoaded = true
+  }
+
+  /// The launch task: a sync only when the reader asked for one.
+  pub async fn syncIfAuto() {
+    if !syncAuto || !davConfigured() { return }
+    try? await syncNow()
+  }
+
+  /// A full two-way sync: files, then the state that names them. The message
+  /// is what the 我 page and the sheet show; the error is thrown as well, so
+  /// a sheet that asked can say what happened.
+  pub async fn syncNow() throws -> string {
+    if !davConfigured() { throw SyncError.notConfigured }
+    if syncBusy { return syncMessage }
+    syncBusy = true
+    defer { syncBusy = false }
+    do {
+      let report = try await runSync(davConfig())
+      syncLast = time.now().unix()
+      syncMessage = report.text()
+      return syncMessage
+    } catch e {
+      syncMessage = "同步失败：{e.message}"
+      throw e
+    }
+  }
+
+  async fn runSync(cfg: DavConfig) throws -> SyncReport {
+    try await davEnsure(cfg)
+
+    let serverText = try await davReadText(cfg, "state.json")
+    var server = SyncSnapshot()
+    if let text = serverText {
+      // A file a newer Quire wrote still reads everything this one knows;
+      // anything else isn't ours to destroy, so start from what's here.
+      server = (try? syncDecode(text)) ?? SyncSnapshot()
+    }
+
+    // Rows written by an older build keep absolute paths; the server's are
+    // taken back to names under books/ and covers/, and a name that would
+    // leave those folders isn't one.
+    var serverShelf: [lib.Shelf] = []
+    for row in server.shelf {
+      var kept = row
+      kept.path = safeName(row.path)
+      kept.cover = safeName(row.cover)
+      serverShelf.push(kept)
+    }
+
+    let removed = mergedRemoved(removedIds, server.removed)
+    let (nextShelf, added) = mergedShelf(shelf, serverShelf, removed)
+    // A book put back isn't under its old removal note any more: its places
+    // and bookmarks come with it.
+    let live = prunedRemoved(nextShelf, removed)
+    let (nextReadings, places) = mergedReadings(readings, server.readings, live)
+    let (nextBookmarks, marks) = mergedBookmarks(bookmarks, server.bookmarks, live)
+
+    // What the server already has, by name: a file goes one way only, and an
+    // unchanged one never goes over the network at all.
+    let serverBooks: Set<string> = Set((try await davList(cfg, "books/")).filter(e => !e.isDir).map(e => e.name))
+    let serverCovers: Set<string> = Set((try await davList(cfg, "covers/")).filter(e => !e.isDir).map(e => e.name))
+
+    var report = SyncReport(added: added, places: places, bookmarks: marks)
+
+    // The files of books taken off the shelf go too, so a device that hasn't
+    // heard doesn't bring the book back with them.
+    for row in serverShelf {
+      if live.get(row.id) == none { continue }
+      if nextShelf.any(kept => kept.id == row.id) { continue }
+      if !row.path.isEmpty() {
+        do {
+          try await davRemove(cfg, row.path)
+          report.deleted += 1
+        } catch { report.failed += 1 }
+      }
+      if !row.cover.isEmpty() {
+        do {
+          try await davRemove(cfg, row.cover)
+          report.deleted += 1
+        } catch { report.failed += 1 }
+      }
+    }
+
+    let booksDir = fs.join([fs.appDir(), "books"])
+    let coversDir = fs.join([fs.appDir(), "covers"])
+
+    for row in nextShelf {
+      if !row.path.isEmpty() {
+        let name = lib.fileName(row.path)
+        let local = fileOf(row.path)
+        let here = await spawn { fs.exists(local) }
+        if here && !serverBooks.contains(name) {
+          do {
+            try await davPutFile(cfg, row.path, local)
+            report.uploaded += 1
+          } catch { report.failed += 1 }
+        } else if !here && serverBooks.contains(name) {
+          do {
+            try await spawn { try fs.mkdirAll(booksDir) }
+            try await davDownload(cfg, row.path, into: local)
+            report.downloaded += 1
+          } catch { report.failed += 1 }
+        }
+      }
+      if !row.cover.isEmpty() {
+        let name = lib.fileName(row.cover)
+        let local = fileOf(row.cover)
+        let here = await spawn { fs.exists(local) }
+        if here && !serverCovers.contains(name) {
+          do {
+            try await davPutFile(cfg, row.cover, local)
+            report.uploaded += 1
+          } catch { report.failed += 1 }
+        } else if !here && serverCovers.contains(name) {
+          do {
+            try await spawn { try fs.mkdirAll(coversDir) }
+            try await davDownload(cfg, row.cover, into: local)
+            report.downloaded += 1
+          } catch { report.failed += 1 }
+        }
+      }
+    }
+
+    // A page may have been saved, or a book imported, while the files were
+    // moving: merge again, now, so the state read before the transfer doesn't
+    // overwrite what happened during it.
+    let finalRemoved = mergedRemoved(removedIds, server.removed)
+    let (finalShelf, finalAdded) = mergedShelf(shelf, serverShelf, finalRemoved)
+    let finalLive = prunedRemoved(finalShelf, finalRemoved)
+    let (finalReadings, finalPlaces) = mergedReadings(readings, server.readings, finalLive)
+    let (finalBookmarks, finalMarks) = mergedBookmarks(bookmarks, server.bookmarks, finalLive)
+    shelf = finalShelf
+    readings = finalReadings
+    bookmarks = finalBookmarks
+    removedIds = finalLive
+    report.added = finalAdded
+    report.places = finalPlaces
+    report.bookmarks = finalMarks
+
+    // A setting still at its default takes the server's, so a new device
+    // gets the old one's type on its first sync. A changed one stays.
+    if syncLast == 0 && server.updated > 0 {
+      if theme == "paper" { theme = server.theme }
+      if size == 19.0 { size = server.size }
+      if line == 1.6 { line = server.line }
+      if margins == 0.0 { margins = server.margins }
+      if letter == 0.0 { letter = server.letter }
+      if word == 0.0 { word = server.word }
+      if mode == "page" { mode = server.mode }
+      if goal == 12 { goal = server.goal }
+    }
+    keep()
+
+    let written = SyncSnapshot(
+      updated: time.now().unix(),
+      shelf: shelf,
+      readings: readings,
+      bookmarks: bookmarks,
+      removed: removedIds,
+      theme: theme,
+      size: size,
+      line: line,
+      margins: margins,
+      letter: letter,
+      word: word,
+      mode: mode,
+      goal: goal,
+    )
+    try await davPutText(cfg, "state.json", syncEncode(written))
+    return report
+  }
+}
+
+/// A path the server sent, kept only when it is one of the app's own names:
+/// "books/x.txt" or "covers/x.img", without a step out of either folder.
+fn safeName(path: string) -> string {
+  let kept = keptName(path)
+  if kept.isEmpty() || kept.contains("..") { return "" }
+  let rest = if kept.hasPrefix("books/") {
+    kept.trimPrefix("books/")
+  } else if kept.hasPrefix("covers/") {
+    kept.trimPrefix("covers/")
+  } else {
+    return ""
+  }
+  // One name under one of the two folders, not a path into a folder of its
+  // own: the server's list only names children.
+  if rest.isEmpty() || rest.contains("/") || rest.contains("\\") { return "" }
+  return kept
 }
