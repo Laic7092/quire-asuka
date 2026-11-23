@@ -86,26 +86,7 @@ component BookTile(book: lib.Book, reading: lib.Reading) {
     align: .center
     padding: [0, 10]
     on press { emit open }
-    Stack {
-      Cover(book) { width: 150 }
-      if book.remote {
-        View {
-          absolute: true
-          top: 6
-          right: 6
-          width: 26
-          height: 26
-          radius: 999
-          background: #00000088
-          align: .center
-          justify: .center
-          Symbol(Icons.cloud) {
-            font: .caption2
-            color: #ffffff
-          }
-        }
-      }
-    }
+    Cover(book) { width: 150 }
     Text(book.title) {
       font: .subheadline
       lines: 1
@@ -361,7 +342,7 @@ screen Shelf {
         columns: columns
         gap: 22
         padding: [22, 20]
-        for b in books key "{b.id}:{b.remote}" {
+        for b in books key b.id {
           BookCell(b, library.readingOf(b.id)) {
             pinned: library.pinned.contains(b.id)
             on open { emit open(b) }
