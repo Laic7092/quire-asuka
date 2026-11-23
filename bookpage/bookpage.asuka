@@ -5,8 +5,29 @@
 // platform's code reads it straight into a texture. No pixels cross the
 // Asuka runtime.
 
+/// A rectangle drawn over the page, in the page's own points: a kept
+/// note's highlight, or the selection under the finger. The view draws
+/// them in order, and its layer takes no touches: a page's gestures are
+/// the page's.
+pub struct Highlight {
+  x: float = 0
+  y: float = 0
+  w: float = 0
+  h: float = 0
+  /// Its color, RGBA: #rrggbbaa.
+  color: Color = #00000000
+}
+
 /// A page bitmap, drawn to fill its view.
 pub native component BookPage(path: string) {
+  /// The highlights over the page, in the order they were given. The
+  /// layer is never the target of a touch.
+  prop highlights: [Highlight] = []
+  /// A touch is adjusting a selection: the page then takes a drag from
+  /// where it lands, without waiting for another long press.
+  prop selecting: bool = false
+  /// Device pixels to a point, as the engine rendered the page.
+  prop scale: float = 1
   /// A tap: where it landed in the page, in points.
   event press(x: float, y: float)
   /// A long press: where it began, in points. The reader selects from here.

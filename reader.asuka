@@ -103,10 +103,19 @@ fn fontFile() -> string {
   return ""
 }
 
+/// A page's side margin in points: the default proportion (7.5% of the page,
+/// at least 24 points) times the reader's setting, where 0 keeps the default,
+/// 1 doubles it and -0.3 leaves seven tenths. The sheet shows this number, so
+/// the slider says 24 点 rather than -30%.
+fn sideMargin(width: float, delta: float) -> float {
+  let side = if width * 0.075 > 24 { width * 0.075 } else { 24.0 }
+  let factor = if delta > -0.9 { 1.0 + delta } else { 0.1 }
+  return side * factor
+}
+
 /// The margins a page is set in, from the view it's shown in and the reader's
 /// own factor (1 is the default: the proportion below, with a floor).
 fn marginsOf(width: float, height: float, delta: float, env: Environment) -> engine.Margins {
-  let side = if width * 0.075 > 24 { width * 0.075 } else { 24.0 }
   let top = if height * 0.055 > 28 { height * 0.055 } else { 28.0 }
   // 0 is the default proportions; the setting is how much wider they get.
   let factor = if delta > -0.9 { 1.0 + delta } else { 0.1 }
@@ -114,10 +123,18 @@ fn marginsOf(width: float, height: float, delta: float, env: Environment) -> eng
   // is the layout's to leave.
   return engine.Margins(
     top: top * factor + env.safeTop,
-    right: side * factor + env.safeRight,
+    right: sideMargin(width, delta) + env.safeRight,
     bottom: top * factor + env.safeBottom,
-    left: side * factor + env.safeLeft,
+    left: sideMargin(width, delta) + env.safeLeft,
   )
+}
+
+/// A setting with its sign, as a person reads it: "+5%", "-20%", "0%".
+fn signedPercent(v: float) -> string {
+  let p = (v * 100).rounded().int()
+  if p > 0 { return "+{p}%" }
+  if p < 0 { return "{p}%" }
+  return "0%"
 }
 
 /// The page files: one a book, chapter, page and size, next to the app's data.
@@ -385,6 +402,20 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
   }
 }
 
+/// A setting as the 0…1 a slider's track holds, and back. The slider's
+/// value reaches the platform before its min and max do, so a value outside
+/// the platform's default 0…1 is clamped where the track starts: settings
+/// use the whole track, and the sheet maps.
+fn norm(v: float, lo: float, hi: float) -> float {
+  if hi <= lo { return 0 }
+  var x = (v - lo) / (hi - lo)
+  if x < 0 { x = 0 }
+  if x > 1 { x = 1 }
+  return x
+}
+
+fn denorm(f: float, lo: float, hi: float) -> float = lo + f * (hi - lo)
+
 /// Type size, line spacing, the margins, the letter spacing, and the paper.
 /// Everything a page is laid out with, so nothing has to be guessed at.
 component Appearance(typeface: string) {
@@ -395,6 +426,15 @@ component Appearance(typeface: string) {
     ["sepia", "米黄"],
     ["night", "夜间"],
   ]
+
+  /// 滑块的位置是 0…1，不是设置值本身：Slider 的 value 比 min/max 先
+  /// 到平台，落在默认的 0…1 之外就会被平台夹住，滑块停在最左（或最
+  /// 右），和旁边的数字对不上。0…1 的轨道永远不会被夹，位置也一样准。
+  state size = norm(peek(library.size), 14, 30)
+  state line = norm(peek(library.line), 0.8, 2.5)
+  state margins = norm(peek(library.margins), -0.1, 0.1)
+  state letter = norm(peek(library.letter), -0.1, 0.1)
+  state word = norm(peek(library.word), -0.2, 0.2)
 
   Column {
     padding: [24, 24]
@@ -428,12 +468,16 @@ component Appearance(typeface: string) {
         width: 42
       }
       Slider {
-        bind value: library.size
-        min: 14
-        max: 30
+        value: size
+        min: 0
+        max: 1
         grow: 1
+        on change(f) {
+          size = f
+          library.size = denorm(f, 14, 30)
+        }
       }
-      Text("{library.size.int()} 点") {
+      Text("{denorm(size, 14, 30).rounded().int()} 点") {
         font: .footnote
         color: .secondaryLabel
         width: 44
@@ -449,12 +493,16 @@ component Appearance(typeface: string) {
         width: 42
       }
       Slider {
-        bind value: library.line
-        min: 1.2
-        max: 2.2
+        value: line
+        min: 0
+        max: 1
         grow: 1
+        on change(f) {
+          line = f
+          library.line = denorm(f, 0.8, 2.5)
+        }
       }
-      Text("{(library.line * 100).int()}%") {
+      Text("{denorm(line, 0.8, 2.5).fixed(1)} 倍") {
         font: .footnote
         color: .secondaryLabel
         width: 44
@@ -471,12 +519,16 @@ component Appearance(typeface: string) {
         width: 42
       }
       Slider {
-        bind value: library.margins
-        min: -0.3
+        value: margins
+        min: 0
         max: 1
         grow: 1
+        on change(f) {
+          margins = f
+          library.margins = denorm(f, -0.1, 0.1)
+        }
       }
-      Text("{(library.margins * 100).int()}%") {
+      Text(signedPercent(denorm(margins, -0.1, 0.1))) {
         font: .footnote
         color: .secondaryLabel
         width: 44
@@ -492,12 +544,16 @@ component Appearance(typeface: string) {
         width: 42
       }
       Slider {
-        bind value: library.letter
-        min: -1
-        max: 3
+        value: letter
+        min: 0
+        max: 1
         grow: 1
+        on change(f) {
+          letter = f
+          library.letter = denorm(f, -0.1, 0.1)
+        }
       }
-      Text(library.letter.fixed(1)) {
+      Text(signedPercent(denorm(letter, -0.1, 0.1))) {
         font: .footnote
         color: .secondaryLabel
         width: 44
@@ -513,12 +569,16 @@ component Appearance(typeface: string) {
         width: 42
       }
       Slider {
-        bind value: library.word
-        min: -2
-        max: 8
+        value: word
+        min: 0
+        max: 1
         grow: 1
+        on change(f) {
+          word = f
+          library.word = denorm(f, -0.2, 0.2)
+        }
       }
-      Text(library.word.fixed(1)) {
+      Text(signedPercent(denorm(word, -0.2, 0.2))) {
         font: .footnote
         color: .secondaryLabel
         width: 44
@@ -659,6 +719,9 @@ component Reader(book: lib.Book) {
   /// fragment is a line in the chapter the page is about to show.
   state pendingFragment = ""
   state lastMode = ""
+  /// The type the last page layout was made with: a slider moves it many
+  /// times a second, and only the place the hand stops is worth a page.
+  state lastTag = ""
   /// Where the reader is: how far into `hereChapter` (0…1). Not a page
   /// number, since the type's size is the reader's.
   state herePercent = 0.0
@@ -787,7 +850,7 @@ component Reader(book: lib.Book) {
     let pagesNow = engine.layout(
       engineId, spine, frame.width, frame.height,
       pageMargins,
-      library.size / baseSize, library.line, library.letter, library.word,
+      library.size / baseSize, library.line, library.letter * library.size, library.word * library.size,
     )
     if pagesNow <= 0 { return }
     pages = pagesNow
@@ -908,7 +971,7 @@ component Reader(book: lib.Book) {
     let margins = engine.Margins(top: 0, right: pageMargins.right, bottom: 0, left: pageMargins.left)
     let count = engine.beginScroll(
       engineId, frame.width, frame.height, margins,
-      fontScale, library.line, library.letter, library.word,
+      fontScale, library.line, library.letter * library.size, library.word * library.size,
     )
     scrollTile = tile
     scrollTopPad = pageMargins.top
@@ -1033,14 +1096,29 @@ component Reader(book: lib.Book) {
     }
   }
 
-  /// 长按落点：先选中那里的一个词。引擎给的行号与行内字节是这次排版里的
-  /// 位置，`wordAt` 从那一行的原文里量出词的两端。
+  /// 长按落点：还没有选区时先选中那里的一个词；已经有选区时，抓住离
+  /// 手指近的那一端，让这一端跟到手指下，另一端不动。
   fn beginSelection(x: float, y: float) {
     touch()
     if library.mode != "page" || engineId <= 0 || pages <= 0 { return }
     let loc = engine.hit(engineId, page, x, y)
     if loc.page < 0 { return }
     let line = int(loc.line)
+    if selOn {
+      // 选区的起点和终点是规范化过的：抓起点就留终点，反之亦然。
+      if nearStart(line, int(loc.byte)) {
+        selAnchorLine = selEndLine
+        selAnchorByte = selEndByte
+      } else {
+        selAnchorLine = selStartLine
+        selAnchorByte = selStartByte
+      }
+      selFocusLine = line
+      selFocusByte = int(loc.byte)
+      chrome = false
+      updateSelection()
+      return
+    }
     let word = lib.wordAt(engine.lineText(engineId, line), int(loc.byte))
     selAnchorLine = line
     selAnchorByte = word.start
@@ -1050,6 +1128,19 @@ component Reader(book: lib.Book) {
     // 选字时把顶上的按钮收起来：它们会压在选区和动作条上。
     chrome = false
     updateSelection()
+  }
+
+  /// 落点离选区的起点更近吗（起点在文档里更靠前）。
+  fn nearStart(line: int, byte: int) -> bool {
+    if line < selStartLine { return true }
+    if line > selEndLine { return false }
+    if selStartLine == selEndLine {
+      return (byte - selStartByte).abs() <= (byte - selEndByte).abs()
+    }
+    let toStart = line - selStartLine
+    let toEnd = selEndLine - line
+    if toStart != toEnd { return toStart < toEnd }
+    return (byte - selStartByte).abs() <= (byte - selEndByte).abs()
   }
 
   /// 按住拖：远的那一端跟到手指下的字。
@@ -1066,7 +1157,9 @@ component Reader(book: lib.Book) {
   fn updateSelection() {
     let count = engine.selectLines(engineId, selAnchorLine, selAnchorByte, selFocusLine, selFocusByte)
     if count <= 0 {
-      clearSelection()
+      // 焦点还在锚点那个字里：这一帧没有可扩的区间。选区留着，等手指
+      // 移出这个字再扩；把它当成「取消」会让一次微小的左右抖动清掉
+      // 整个选区。取消只有「取消」按钮和点选区外面两种。
       return
     }
     let start = engine.selectionStart(engineId)
@@ -1133,6 +1226,31 @@ component Reader(book: lib.Book) {
     )
     clearSelection()
     refreshMarks()
+  }
+
+  /// 这一页上要画的矩形：已有笔记的高亮在下，手上的选区在上。它交给
+  /// BookPage 自己的图层去画，而不是一个盖在页面上的 Canvas——iOS 上
+  /// 那样的画布会把页面的触摸全拦下来。
+  fn pageHighlights() -> [bookpage.Highlight] {
+    var out: [bookpage.Highlight] = []
+    for mark in marks {
+      out.push(bookpage.Highlight(x: mark.x, y: mark.y, w: mark.w, h: mark.h, color: noteFill))
+    }
+    for mark in selRects {
+      out.push(bookpage.Highlight(x: mark.x, y: mark.y, w: mark.w, h: mark.h, color: selectionFill))
+    }
+    return out
+  }
+
+  /// 这个点落在选区里吗：拖完手指常落在自己刚选的那几行上，那一下
+  /// 不该被当成「取消」。每边留一点余量，和高亮的边对齐。
+  fn pointInSelection(x: float, y: float) -> bool {
+    for mark in selRects {
+      if x >= mark.x - 6 && x <= mark.x + mark.w + 6 && y >= mark.y - 6 && y <= mark.y + mark.h + 6 {
+        return true
+      }
+    }
+    return false
   }
 
   fn percentAt(y: float) -> int {
@@ -1269,8 +1387,8 @@ component Reader(book: lib.Book) {
     let size = (library.size * 10).int()
     let line = (library.line * 10).int()
     let margin = (library.margins * 100).int()
-    let letter = (library.letter * 10).int()
-    let word = (library.word * 10).int()
+    let letter = (library.letter * 1000).int()
+    let word = (library.word * 1000).int()
     return "s{size}-l{line}-m{margin}-k{letter}-w{word}"
   }
 
@@ -1340,7 +1458,7 @@ component Reader(book: lib.Book) {
   // One pass for every change: the chapter, the page, the view's size, the
   // size of the type, the paper, the reading mode. The engine's layout is
   // idempotent, so this is only as expensive as the page it produces.
-  task("{spine}:{page}:{frame.width}:{frame.height}:{library.size}:{library.line}:{library.margins}:{library.letter}:{library.theme}:{library.mode}") {
+  task("{spine}:{page}:{frame.width}:{frame.height}:{library.size}:{library.line}:{library.margins}:{library.letter}:{library.word}:{library.theme}:{library.mode}") {
     if frame.width <= 32 { return }
     // A new paper is another picture of the column the reader is in, not
     // another layout: the band task follows the new tag by itself and the
@@ -1350,9 +1468,16 @@ component Reader(book: lib.Book) {
       return
     }
     // A slider changes several times a second. In scroll mode every change
-    // means laying out every chapter; wait for the hand to stop first.
+    // means laying out every chapter; in page mode it means a whole page
+    // rasterized to a file on the main thread. Wait for the hand to stop:
+    // the next change cancels this run, and the last one lays out once.
+    let tag = layoutTag()
+    let retyped = !lastTag.isEmpty() && lastTag != tag
+    lastTag = tag
     if library.mode == "scroll" && columnReady {
       await sleep(180ms)
+    } else if retyped {
+      await sleep(150ms)
     }
     try? await openBook()
     show()
@@ -1603,11 +1728,15 @@ component Reader(book: lib.Book) {
       // back, its right third forward, its middle puts the chrome away.
       bookpage.BookPage(path: pagePath) {
         grow: 1
+        // 高亮画在页面自己的图层里，不挡触摸；选区在时，拖动直接调整它。
+        highlights: pageHighlights()
+        selecting: selOn
+        scale: scale
         on press(x, y) {
           touch()
-          // A tap drops a selection; the gestures that make one are the
-          // page's hold, drag and release.
+          // 点选区里面不清它：拖完手一松常常落在这里。点外面才是取消。
           if selOn {
+            if pointInSelection(x, y) { return }
             clearSelection()
             return
           }
@@ -1631,29 +1760,6 @@ component Reader(book: lib.Book) {
         on hold(x, y) { beginSelection(x, y) }
         on drag(x, y) { extendSelection(x, y) }
         on release { finishSelection() }
-      }
-    }
-
-    // 选区和高亮画在页面位图上面。Canvas 不接点击（没有事件的画布把点击
-    // 交给下面的 BookPage），所以长按、拖动和翻页照旧。
-    if library.mode == "page" && !pagePath.isEmpty() && (!marks.isEmpty() || !selRects.isEmpty()) {
-      Canvas(g => {
-        if !marks.isEmpty() {
-          let path = g.path()
-          for mark in marks { path.rect(mark.x, mark.y, mark.w, mark.h) }
-          g.fill(path, noteFill)
-        }
-        if !selRects.isEmpty() {
-          let path = g.path()
-          for mark in selRects { path.rect(mark.x, mark.y, mark.w, mark.h) }
-          g.fill(path, selectionFill)
-        }
-      }) {
-        absolute: true
-        top: 0
-        left: 0
-        width: frame.width
-        height: frame.height
       }
     }
 

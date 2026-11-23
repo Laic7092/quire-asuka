@@ -157,14 +157,15 @@ pub store Library {
   pub state size: float = store.read("reader.size", 19.0)
   /// 行距，一行的字号的倍数。
   pub state line: float = store.read("reader.line", 1.6)
-  /// 页边留白，相对默认留白的比例：0 是默认，-0.3 更窄，+1 是两倍宽。
-  /// 相对默认留白的比例。旧版本这里存的是「默认留白的倍数」（默认 1），
-  /// 所以换了 key：升级上来的人拿到 0，而不是突然 +100% 的留白。
+  /// 页边留白，相对默认留白的增量：0 是默认，±0.1 是收窄/放宽一成。
+  /// 旧版本这里存的是「默认留白的倍数」（默认 1），所以换了 key：升级上
+  /// 来的人拿到 0，而不是突然 +100% 的留白。
   pub state margins: float = store.read("reader.marginDelta", 0.0)
-  /// 字距，一个字的额外宽度（点），可正可负。
-  pub state letter: float = store.read("reader.letter", 0.0)
-  /// 词距，词与词之间额外的宽度（点），可正可负。
-  pub state word: float = store.read("reader.word", 0.0)
+  /// 字距，占字号的比例：+0.1 是每个字多出字号的 10%。按比例存，换字号
+  /// 时间距跟着走，不会小字挤成一片、大字又空得离谱。
+  pub state letter: float = store.read("reader.letterRate", 0.0)
+  /// 词距，占字号的比例：+0.2 是词与词之间多出字号的 20%。
+  pub state word: float = store.read("reader.wordRate", 0.0)
   /// 翻页方式："page"（分页）或 "scroll"（连续滚动）。
   pub state mode: string = store.read("reader.mode", "page")
   /// 今年的阅读目标，读完几本。首页的目标环读它。
@@ -236,8 +237,8 @@ pub store Library {
   effect { store.write("reader.size", size) }
   effect { store.write("reader.line", line) }
   effect { store.write("reader.marginDelta", margins) }
-  effect { store.write("reader.letter", letter) }
-  effect { store.write("reader.word", word) }
+  effect { store.write("reader.letterRate", letter) }
+  effect { store.write("reader.wordRate", word) }
   effect { store.write("reader.mode", mode) }
   effect { store.write("goal.books", goal) }
   effect { store.write("shelf.layout", shelfLayout) }

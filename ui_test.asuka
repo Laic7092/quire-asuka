@@ -373,6 +373,40 @@ test "the appearance sheet changes the type and the paper" {
   expect(lib.theme == "night")
 }
 
+test "the appearance sheet's sliders are where the settings are" {
+  let lib = Library()
+  lib.size = 22
+  let app = mount(Appearance(typeface: ""), provide: lib)
+  await app.idle()
+  // What the numbers say, in the units a reader knows: points of type, a
+  // multiple of the type's line, and a percentage of the default for the
+  // spacing and the page's margin.
+  app.expect("22 点")
+  app.expect("1.6 倍")
+  app.expect("0%")
+  // 22 is the middle of 14…30: the thumb is at the middle of the track,
+  // not clamped to an end before the track's own bounds arrive.
+  app.slide("字号", 0.5)
+  expect(lib.size == 22)
+  app.slide("字号", 1)
+  expect(lib.size == 30)
+  app.slide("字号", 0)
+  expect(lib.size == 14)
+  // The ranges are the ones Apple Books uses: line 0.8…2.5, the page's
+  // margin ±10%, character spacing ±10% of the type, word spacing ±20%.
+  app.slide("行距", 0)
+  expect(lib.line == 0.8)
+  app.slide("行距", 1)
+  expect(lib.line == 2.5)
+  app.slide("边距", 1)
+  expect(lib.margins == 0.1)
+  app.expect("+10%")
+  app.slide("字距", 1)
+  expect(lib.letter == 0.1)
+  app.slide("词距", 0)
+  expect(lib.word == -0.2)
+}
+
 test "a .txt brought in becomes a book on the shelf" {
   let path = "{fs.tempDir()}/quire-import-test.txt"
   try await spawn { try fs.writeText(path, text: "第1章 测试\n\n一段文字。\n") }
