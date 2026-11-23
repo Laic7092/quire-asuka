@@ -97,7 +97,7 @@ private final class PageMapping {
     deinit { munmap(base, size) }
 }
 
-@MainActor final class SwiftBookPage: BookPage {
+@MainActor final class SwiftBookPage: NSObject, BookPage {
     private let picture: AsukaPlatformView
     private let highlightsView = PageHighlightView(frame: .zero)
     private let events: BookPageEvents
@@ -139,6 +139,9 @@ private final class PageMapping {
         imageView.wantsLayer = true
         picture = imageView
 #endif
+        // Every stored property is set: the gesture recognizers below take
+        // self as their target, which only a built object may be.
+        super.init()
         highlightsView.frame = picture.bounds
 #if canImport(UIKit)
         highlightsView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
