@@ -55,7 +55,7 @@ BookPage（原生位图视图）
 | `bookpage/` | 原生 `BookPage` 组件（iOS、Linux、Android、Web） |
 | `lib/` | 数据模型、纯文本解析、分页辅助与对应测试 |
 | `samples/` | 编译时嵌入的公版样书 |
-| `fonts/` | 内嵌的 Noto Serif SC 字体及许可证 |
+| `fonts/` | 字体的许可证；字体本身由脚本生成，不入库 |
 
 ## 环境
 
@@ -70,6 +70,9 @@ BookPage（原生位图视图）
 ## 开发
 
 ```sh
+# 首次：生成内嵌字体（8 MB 的 WOFF2，不入库）
+.github/scripts/fetch-font.sh
+
 asuka check
 asuka test
 asuka test lib
@@ -146,3 +149,5 @@ asuka test lib
 ## 字体
 
 内嵌字体为 Noto Serif SC Regular，采用 SIL Open Font License 1.1，许可证见 `fonts/OFL.txt`。字体以 WOFF2 形式提供，由 ebook-engine 直接读取。
+
+WOFF2 本身不入库：它由 `.github/scripts/fetch-font.sh` 从固定版本的上游 OTF 生成，并校验哈希，细节见 `fonts/README.md`。

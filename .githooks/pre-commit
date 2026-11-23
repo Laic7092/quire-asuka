@@ -42,6 +42,13 @@ if [ -n "$ignored" ]; then
   exit 1
 fi
 
+# reader.asuka embeds fonts/NotoSerifSC-Regular.woff2, which the repository
+# doesn't carry (fonts/README.md): without it, the check fails with embed-file.
+if [ ! -f fonts/NotoSerifSC-Regular.woff2 ]; then
+  echo "pre-commit: fetching the font"
+  bash .github/scripts/fetch-font.sh
+fi
+
 echo "pre-commit: asuka check"
 "$asuka" check || {
   echo "pre-commit: asuka check failed" >&2

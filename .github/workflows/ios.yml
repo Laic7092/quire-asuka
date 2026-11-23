@@ -48,6 +48,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # reader.asuka embeds the font, and the repository doesn't carry it:
+      # the script builds the WOFF2 from the pinned upstream OTF.
+      - name: Fetch the font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y woff2
+          bash .github/scripts/fetch-font.sh
+
       # The tests link the engine, so they need it for their own machine.
       - name: Fetch the engine
         run: bash .github/scripts/fetch-engine.sh linux-x64
@@ -80,6 +88,13 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+
+      # reader.asuka embeds the font, and the repository doesn't carry it:
+      # the script builds the WOFF2 from the pinned upstream OTF.
+      - name: Fetch the font
+        run: |
+          brew install woff2
+          bash .github/scripts/fetch-font.sh
 
       # The device's library only: a simulator's is for whoever builds for one.
       - name: Fetch the engine

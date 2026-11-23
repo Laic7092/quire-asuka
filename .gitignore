@@ -8,5 +8,8 @@
 # .github/scripts/fetch-engine.sh: not the app's own sources under lib/.
 /lib/**/libebook_abi.a
 
-# The app ships the WOFF2; an OTF is a local source for regenerating it.
+# The app embeds the WOFF2, but the repository doesn't carry it: 8 MB, and
+# .github/scripts/fetch-font.sh rebuilds it from the pinned upstream OTF
+# (fonts/README.md). An OTF here is a local source for that same script.
+/fonts/*.woff2
 /fonts/*.otf
