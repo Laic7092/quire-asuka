@@ -143,6 +143,11 @@ pub store Library {
   pub state mode: string = store.read("reader.mode", "page")
   /// 今年的阅读目标，读完几本。首页的目标环读它。
   pub state goal: int = store.read("goal.books", 12)
+  /// 书架怎么摆："grid"（网格）或 "list"（列表）。
+  pub state shelfLayout: string = store.read("shelf.layout", "grid")
+  /// 书架的次序："recent"（最近阅读）、"title"、"author" 或 "manual"
+  /// （架上原来的顺序）。
+  pub state shelfSort: string = store.read("shelf.sort", "recent")
 
   /// 坚果云 WebDAV：地址、账号、应用密码（不是登录密码）与同步文件夹。
   /// 密码是秘密，放平台的钥匙串（platform/secure），其它几项放偏好设置。
@@ -205,6 +210,8 @@ pub store Library {
   effect { store.write("reader.word", word) }
   effect { store.write("reader.mode", mode) }
   effect { store.write("goal.books", goal) }
+  effect { store.write("shelf.layout", shelfLayout) }
+  effect { store.write("shelf.sort", shelfSort) }
   effect { store.write("sync.server", davServer) }
   effect { store.write("sync.account", davAccount) }
   effect { store.write("sync.folder", davFolder) }
@@ -1044,7 +1051,6 @@ pub store Library {
     try await davPutText(cfg, "catalog.json", syncEncode(written))
     return report
   }
-
 }
 
 /// A path the server sent, kept only when it is one of the app's own names:

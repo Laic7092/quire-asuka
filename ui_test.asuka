@@ -780,3 +780,62 @@ test "a password with no keychain is kept beside the app" {
   expect(again.davPassword == "app-password")
   expect(!again.passwordSecured)
 }
+
+test "the shelf draws a book as a grid tile or a list row" {
+  let library = Library()
+  await library.seedSamples()
+  library.shelfLayout = "list"
+  let app = mount(Harness(), provide: library)
+  await app.idle()
+  // 列表把作者和进度分成两列；网格把它们拼成一行。
+  let rows = app.texts()
+  expect(rows.contains("朱自清"))
+  expect(rows.contains("未开始"))
+  expect(!rows.contains("朱自清 · 未开始"))
+  library.shelfLayout = "grid"
+  await app.idle()
+  expect(app.texts().contains("朱自清 · 未开始"))
+}
+
+test "显示与排序 sets the shelf's layout and order" {
+  let library = Library()
+  let app = mount(ShelfDisplay(), provide: library)
+  await app.idle()
+  app.expect("显示与排序")
+  app.expect("网格")
+  app.expect("列表")
+  app.expect("最近阅读")
+  app.expect("手动")
+  app.tap("列表")
+  await app.idle()
+  expect(library.shelfLayout == "list")
+  app.tap("书名")
+  await app.idle()
+  expect(library.shelfSort == "title")
+  app.tap("作者名")
+  await app.idle()
+  expect(library.shelfSort == "author")
+}
+
+test "the shelf's order is the sort it was told" {
+  let library = Library()
+  await library.seedSamples()
+  // 野草 是最近读的，所以「最近阅读」把它排在前面；按书名时「朱」在「魯」前。
+  library.readings = [
+    lib.Reading(id: "魯迅·野草", percent: 0.4, updated: 200),
+    lib.Reading(id: "朱自清·散文選", percent: 0.2, updated: 100),
+  ]
+  library.shelfSort = "recent"
+  let app = mount(Harness(), provide: library)
+  await app.idle()
+  let recent = app.texts()
+  let recentFirst = recent.index(t => t.contains("野草")) ?? -1
+  let recentSecond = recent.index(t => t.contains("散文選")) ?? -1
+  expect(recentFirst >= 0 && recentSecond >= 0 && recentFirst < recentSecond)
+  library.shelfSort = "title"
+  await app.idle()
+  let byTitle = app.texts()
+  let titleFirst = byTitle.index(t => t.contains("散文選")) ?? -1
+  let titleSecond = byTitle.index(t => t.contains("野草")) ?? -1
+  expect(titleFirst >= 0 && titleSecond >= 0 && titleFirst < titleSecond)
+}

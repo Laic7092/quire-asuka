@@ -1,5 +1,6 @@
 // The shelf: one cell a book, the way Quire's library shows it — covers,
-// titles, and where each one was left.
+// titles, and where each one was left. The display menu at the top right
+// picks a grid or a list, and the order the cells are in.
 
 import platform/dialog
 import std/fs
@@ -120,11 +121,60 @@ component BookTile(book: lib.Book, reading: lib.Reading) {
   }
 }
 
+/// The same book as a list row: a small cover, its title, and its author or
+/// where it's missing. The reading position sits at the row's end, where a
+/// list's column of numbers is easy to scan.
+component BookRow(book: lib.Book, reading: lib.Reading) {
+  prop showCloud = false
+  event open
+
+  let missing = !book.remote && !book.path.isEmpty() && !fs.exists(book.path)
+
+  Row {
+    gap: 12
+    align: .center
+    padding: [9, 4]
+    on press { emit open }
+    Cover(book) { width: 42 }
+    Column {
+      grow: 1
+      gap: 3
+      Text(book.title) {
+        font: .body
+        lines: 1
+      }
+      Text(if missing {
+        if book.hash.isEmpty() { "文件找不到了" } else { "未备份到云端" }
+      } else if book.author.isEmpty() {
+        ""
+      } else {
+        book.author
+      }) {
+        font: .caption
+        color: if missing { .red } else { .secondaryLabel }
+        lines: 1
+      }
+    }
+    Text(reading.label()) {
+      font: .caption2
+      color: .secondaryLabel
+    }
+    if showCloud {
+      Symbol(if book.remote || book.backedUp { Icons.cloud } else { Icons.cloudOff }) {
+        font: .caption2
+        color: if book.remote || book.backedUp { .secondaryLabel } else { .tertiaryLabel }
+      }
+    }
+  }
+}
+
 /// A book on the shelf: long press one for its actions, a sample's as much as
-/// an imported one's.
+/// an imported one's. The menu is the same in either layout; only the body
+/// under it changes.
 component BookCell(book: lib.Book, reading: lib.Reading) {
   prop pinned = false
   prop showCloud = false
+  prop mode = "grid"
   event open
   event delete
   event backup
@@ -147,9 +197,66 @@ component BookCell(book: lib.Book, reading: lib.Reading) {
         .button(title: "删除", icon: Icons.trash, role: .destructive, run: () => { emit delete }),
       ]),
     ]
-    BookTile(book, reading) {
-      showCloud: showCloud
-      on open { emit open }
+    if mode == "list" {
+      BookRow(book, reading) {
+        showCloud: showCloud
+        on open { emit open }
+      }
+    } else {
+      BookTile(book, reading) {
+        showCloud: showCloud
+        on open { emit open }
+      }
+    }
+  }
+}
+
+/// One row of the shelf with its own actions: the shelf can be drawn as a grid
+/// or a list without the screen repeating the same handlers twice.
+component ShelfBook(book: lib.Book, reading: lib.Reading) {
+  use library: Library
+
+  prop mode = "grid"
+  prop showCloud = false
+  event open
+
+  BookCell(book, reading) {
+    pinned: library.pinned.contains(book.id)
+    showCloud: showCloud
+    mode: mode
+    on open { emit open }
+    on backup {
+      if book.remote {
+        snackbar("先打开这本书，下载到本机后再备份")
+      } else {
+        do {
+          snackbar(try await library.backupBook(book))
+        } catch e {
+          snackbar(e.message)
+        }
+      }
+    }
+    on pin {
+      library.togglePin(book.id)
+      snackbar(if library.pinned.contains(book.id) { "已固定《{book.title}》" } else { "已取消固定《{book.title}》" })
+    }
+    on evict {
+      if book.remote {
+        snackbar("《{book.title}》已经只在云端")
+      } else if library.removeLocalCopy(book.id) {
+        snackbar("已从本机移除《{book.title}》，云端仍保留")
+      } else if library.pinned.contains(book.id) {
+        snackbar("这本书已固定在本机，先取消固定")
+      } else {
+        snackbar("先备份到云端，才能只保留云端副本")
+      }
+    }
+    on record {
+      present(BookRecordSheet(book))
+    }
+    on delete {
+      library.forget(book.id)
+      snackbar("已删除《{book.title}》")
     }
   }
 }
@@ -218,6 +325,88 @@ component EmptyShelf {
   }
 }
 
+/// One option of 显示与排序: the chosen one keeps a check at its end.
+component DisplayOption(title: string, selected: bool) {
+  event choose
+
+  Row {
+    gap: 12
+    align: .center
+    padding: [12, 4]
+    on press { emit choose }
+    Text(title) {
+      font: .body
+      grow: 1
+    }
+    if selected {
+      Symbol(Icons.checkmark) {
+        font: .body
+        color: .accent
+      }
+    }
+  }
+}
+
+/// 显示与排序: what the shelf's top-right button opens. It's a page of the
+/// app rather than the platform's own menu: a toolbar menu on Linux stopped
+/// opening once one of its checked items changed (the bar re-packs its
+/// buttons), and a page also draws the same on every platform.
+component ShelfDisplay {
+  use library: Library
+
+  Column {
+    gap: 16
+    padding: [22, 22, 30, 22]
+
+    Row {
+      gap: 8
+      align: .center
+      Text("显示与排序") {
+        font: .title3
+        grow: 1
+      }
+      Button("") {
+        icon: Icons.close
+        variant: .glass
+        on press { dismiss() }
+      }
+    }
+
+    Text("显示") { font: .headline }
+    Column {
+      gap: 0
+      DisplayOption("网格", library.shelfLayout == "grid") {
+        on choose { library.shelfLayout = "grid" }
+      }
+      DisplayOption("列表", library.shelfLayout == "list") {
+        on choose { library.shelfLayout = "list" }
+      }
+    }
+
+    Text("排序") { font: .headline }
+    Column {
+      gap: 0
+      DisplayOption("最近阅读", library.shelfSort == "recent") {
+        on choose { library.shelfSort = "recent" }
+      }
+      DisplayOption("书名", library.shelfSort == "title") {
+        on choose { library.shelfSort = "title" }
+      }
+      DisplayOption("作者名", library.shelfSort == "author") {
+        on choose { library.shelfSort = "author" }
+      }
+      DisplayOption("手动", library.shelfSort == "manual") {
+        on choose { library.shelfSort = "manual" }
+      }
+      Text("手动：按书架上原来的顺序") {
+        font: .caption
+        color: .secondaryLabel
+        padding: [2, 4]
+      }
+    }
+  }
+}
+
 screen Shelf {
   use library: Library
 
@@ -254,7 +443,18 @@ screen Shelf {
   }
 
   // Import and sync sit at the top right of the bar, not as floating actions.
+  // 显示 comes first: it only changes how the shelf looks, while sync and
+  // import change what it holds, so they keep the rightmost place.
   toolbar {
+    if !library.shelf.isEmpty() {
+      Button("") {
+        icon: Icons.display
+        variant: .glass
+        label: "显示"
+        tooltip: "显示方式与排序"
+        on press { present(ShelfDisplay()) }
+      }
+    }
     Button("") {
       icon: syncIcon
       variant: .glass
@@ -273,7 +473,7 @@ screen Shelf {
       icon: Icons.add
       variant: .glass
       label: "导入"
-      tooltip: "导入 .txt 或 .epub"
+      tooltip: "导入 .txt 或 .epub，可多选"
       on press { await pick() }
     }
   }
@@ -302,9 +502,10 @@ screen Shelf {
         title: "导入书籍",
         button: "导入",
         // Both formats the engine reads: it tells them apart by the file's
-        // own bytes, so the picker only has to let them through.
+        // own bytes, so the picker only has to let them through. 一次可以
+        // 选多本；bring 一本一本导入，其中一本失败不会挡住后面的。
         filters: [dialog.Filter(name: "文本与 EPUB", extensions: ["txt", "epub"])],
-        multiple: false,
+        multiple: true,
       )
       await bring(paths)
     } catch e {
@@ -338,6 +539,8 @@ screen Shelf {
   let width = environment().width
   let columns = if width > 1180 { 6 } else if width > 980 { 5 } else if width > 780 { 4 } else if width > 560 { 3 } else { 2 }
   let books = library.books()
+  let listMode = library.shelfLayout == "list"
+  let ordered = lib.sortBooks(books, library.readings, library.shelfSort)
 
   View {
     grow: 1
@@ -362,47 +565,14 @@ screen Shelf {
       }
     } else {
       List {
-        columns: columns
-        gap: 22
-        padding: [22, 20]
-        for b in books key b.id {
-          BookCell(b, library.readingOf(b.id)) {
-            pinned: library.pinned.contains(b.id)
+        columns: if listMode { 1 } else { columns }
+        gap: if listMode { 0 } else { 22 }
+        padding: if listMode { [10, 20] } else { [22, 20] }
+        for b in ordered key b.id {
+          ShelfBook(b, library.readingOf(b.id)) {
+            mode: library.shelfLayout
             showCloud: library.davConfigured()
             on open { emit open(b) }
-            on backup {
-              if b.remote {
-                snackbar("先打开这本书，下载到本机后再备份")
-              } else {
-                do {
-                  snackbar(try await library.backupBook(b))
-                } catch e {
-                  snackbar(e.message)
-                }
-              }
-            }
-            on pin {
-              library.togglePin(b.id)
-              snackbar(if library.pinned.contains(b.id) { "已固定《{b.title}》" } else { "已取消固定《{b.title}》" })
-            }
-            on evict {
-              if b.remote {
-                snackbar("《{b.title}》已经只在云端")
-              } else if library.removeLocalCopy(b.id) {
-                snackbar("已从本机移除《{b.title}》，云端仍保留")
-              } else if library.pinned.contains(b.id) {
-                snackbar("这本书已固定在本机，先取消固定")
-              } else {
-                snackbar("先备份到云端，才能只保留云端副本")
-              }
-            }
-            on record {
-              present(BookRecordSheet(b))
-            }
-            on delete {
-              library.forget(b.id)
-              snackbar("已删除《{b.title}》")
-            }
           }
         }
       }

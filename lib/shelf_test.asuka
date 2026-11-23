@@ -1,0 +1,21 @@
+// 书架的次序：显示菜单选的四种排法，不依赖界面或存储。
+
+fn book(id: string, title: string, author: string = "") -> Book =
+  Book(id: id, title: title, author: author, chapters: [])
+
+test "最近阅读 first, and a book never opened last" {
+  let books = [book("a", "A"), book("b", "B"), book("c", "C")]
+  let readings = [Reading(id: "b", updated: 20), Reading(id: "a", updated: 10)]
+  expect(sortBooks(books, readings, "recent").map(b => b.id) == ["b", "a", "c"])
+}
+
+test "by title, by author, and a book with no author last" {
+  let books = [book("c", "C", "Zed"), book("a", "A"), book("b", "B", "Amy")]
+  expect(sortBooks(books, [], "title").map(b => b.id) == ["a", "b", "c"])
+  expect(sortBooks(books, [], "author").map(b => b.id) == ["b", "c", "a"])
+}
+
+test "手动 keeps the shelf's own order" {
+  let books = [book("c", "C"), book("a", "A"), book("b", "B")]
+  expect(sortBooks(books, [], "manual").map(b => b.id) == ["c", "a", "b"])
+}

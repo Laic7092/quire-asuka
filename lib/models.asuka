@@ -98,6 +98,32 @@ pub struct Bookmark {
   percent: float
 }
 
+/// The shelf's books in the order the display menu chose: the most recently
+/// read first (never-read books last), by title, by author (a book without
+/// one last), or the shelf's own order.
+pub fn sortBooks(books: [Book], readings: [Reading], sort: string) -> [Book] {
+  if sort == "manual" { return books }
+  if sort == "title" {
+    return books.sorted(by: (a, b) => a.title.compare(b.title) < 0)
+  }
+  if sort == "author" {
+    return books.sorted(by: (a, b) => {
+      if a.author.isEmpty() != b.author.isEmpty() { return !a.author.isEmpty() }
+      let byAuthor = a.author.compare(b.author)
+      if byAuthor != 0 { return byAuthor < 0 }
+      return a.title.compare(b.title) < 0
+    })
+  }
+  var updated: [string: int] = [:]
+  for r in readings { updated[r.id] = r.updated }
+  return books.sorted(by: (a, b) => {
+    let ra = updated[a.id] ?? 0
+    let rb = updated[b.id] ?? 0
+    if ra != rb { return ra > rb }
+    return a.title.compare(b.title) < 0
+  })
+}
+
 /// The colors a page is drawn in: Quire's paper and ink.
 pub struct Palette {
   paper: Color

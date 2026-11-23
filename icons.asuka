@@ -1,18 +1,21 @@
 // 应用里用到的图标，一处一个名字。
 //
-// iOS / macOS 用 SF Symbols；其它平台用 Material Symbols（Linux 的图标表
-// 是 Adwaita + Material，SF 专有的名字在那里画不出来）。所以每个图标
-// 在这里写两套名字，视图只说要哪个图标，不直接写某个平台的名字。
+// iOS / macOS 用 SF Symbols；其它平台的符号表也按 SF 名字索引（Asuka
+// 0.2.12：Linux 的 lx_material_symbols 名字就是 SF 名字，字形来自 Material
+// Symbols / Adwaita；Android、Web 的表也一样）。所以大多数图标两边是同
+// 一个名字。只写 Material 专有的名字（如 "tune"）在 Linux 上会报
+// no symbol named ...，视图只说要哪个图标，不直接写平台名字。
 //
-// 加图标时：先找 Apple 的名字，再确认另一个平台有对应的 Material 名字；
-// 两边都没有的图标不要用。Linux 的映射表在 Asuka 的 symbols_gen.c。
+// 加图标时：先找 Apple 的名字，再拿这个名字到 Asuka 的符号表里确认；
+// 确有不同且目标平台认那个名字时才写两套。Linux 的映射表在 Asuka 的
+// symbols_gen.c。
 //
 // 用法：
 //   Tab("书架") { icon: Icons.shelf }
 //   Symbol(Icons.statistics)
 //   icon: if connected { Icons.cloud } else { Icons.cloudOff }
 
-/// Apple 的 SF Symbol 与其它平台的 Material Symbol：同一个图标，两种名字。
+/// Apple 的 SF Symbol 与其它平台的名字：通常同一个图标、同一个名字。
 fn symbolName(apple: string, material: string) -> string {
   if @platform == .iOS || @platform == .macOS { return apple }
   return material
@@ -36,6 +39,13 @@ struct Icons {
   let reminder = symbolName(apple: "bell.badge", material: "bell")
   let appearance = symbolName(apple: "paintbrush", material: "textformat")
   let about = symbolName(apple: "info.circle", material: "info.circle")
+
+  /// 书架：显示方式与排序。
+  /// 显示方式与排序。Linux / Android / Web 的符号表同样按 SF 名字查表
+  /// （Asuka 0.2.12 的 lx_material_symbols 用的就是 SF 名字），所以两边写
+  /// 同一个名字；Material 的 "tune" 在那边查不到。
+  let display = symbolName(apple: "slider.horizontal.3", material: "slider.horizontal.3")
+  let checkmark = symbolName(apple: "checkmark", material: "checkmark")
 
   /// 首页：继续阅读、今年、之前读过。
   let reading = symbolName(apple: "book", material: "book.closed")
