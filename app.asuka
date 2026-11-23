@@ -11,7 +11,11 @@ component Quire {
   use library: Library
 
   state reading = lib.Book(id: "", title: "", author: "", chapters: [])
-  state readingOpen = false
+  /// The reader's layer is mounted while the engine opens the book, and shown
+  /// once its first page is on screen: the open animation then ends on a page,
+  /// not on paper that fills in after it.
+  state readingMounted = false
+  state readingShown = false
   /// Which tab shows. The shelf is the one the app opens on; 首页 and 搜索
   /// are placeholders for now.
   state tab = 1
@@ -26,10 +30,26 @@ component Quire {
     }
     do {
       reading = try await library.prepare(book)
-      readingOpen = true
+      readingShown = false
+      readingMounted = true
     } catch e {
       snackbar(e.message)
     }
+  }
+
+  /// The reader's first page is there (or it says why there isn't one): it
+  /// rises into the window over the shelf, paper and all.
+  fn revealReader() {
+    if !readingMounted || readingShown { return }
+    animate(Animation(duration: 520ms, curve: .spring)) { readingShown = true }
+  }
+
+  // A book whose first page takes long still gets shown: it says what it's
+  // doing rather than leaving the shelf looking untouched.
+  task("{readingMounted}:{readingShown}") {
+    if !readingMounted || readingShown { return }
+    await sleep(1200ms)
+    revealReader()
   }
 
   // A launch's first steps, in order: rows written by an older build keep
@@ -75,7 +95,7 @@ component Quire {
 
     // The reader is a layer of the app, not a sheet: no presentation
     // container around it, so its own paper is what the window shows.
-    if readingOpen {
+    if readingMounted {
       View {
         absolute: true
         top: 0
@@ -83,8 +103,16 @@ component Quire {
         right: 0
         bottom: 0
         background: paper
+        opacity: if readingShown { 1 } else { 0 }
+        transform: if readingShown { Transform() } else { Transform(y: 12, scale: 0.94) }
         Reader(reading) {
-          on close { readingOpen = false }
+          on ready { revealReader() }
+          // The page settles back before the layer goes: the reader stays
+          // whole for the whole fade, pages and all.
+          on close {
+            await animate(Animation(duration: 240ms, curve: .easeIn)) { readingShown = false }
+            readingMounted = false
+          }
         }
       }
     }

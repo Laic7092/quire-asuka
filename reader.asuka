@@ -439,6 +439,9 @@ component Reader(book: lib.Book) {
 
   /// The reader is done: the app takes its layer away.
   event close
+  /// The first page is on screen (or the book says why it has none): the app
+  /// shows the layer then, so its open animation ends on a page.
+  event ready
 
   state engineId = -1
   state spine = 0
@@ -450,6 +453,8 @@ component Reader(book: lib.Book) {
   state warning = ""
   state fontName = ""
   state opened = false
+  /// `ready` is said once, however many pages follow it.
+  state announced = false
   state shownTitle = book.title
   /// The page count and the title bar on top of the page: hidden while
   /// reading, a tap on the middle of the page brings them back.
@@ -608,7 +613,17 @@ component Reader(book: lib.Book) {
       hereChapter = spine
       herePercent = info.progress
       library.save(book.id, spine, info.progress)
+      announceReady()
     }
+  }
+
+  /// The first page is on screen (or the book has none to put there): said
+  /// once, so the app can end its open animation on the page rather than on
+  /// paper that fills in after it.
+  fn announceReady() {
+    if announced { return }
+    announced = true
+    emit ready
   }
 
   /// The first layout of a new mode: a page's place becomes a chapter's, or
@@ -702,12 +717,14 @@ component Reader(book: lib.Book) {
       // The engine refused the column (a book it can't lay out, a session it
       // dropped): say so instead of pretending the book is empty.
       error = "排版失败：{engine.lastError()}"
+      announceReady()
       return
     }
     if scrollHeight <= 0 {
       tiles = []
       startChapter = -1
       startWithin = 0
+      announceReady()
       return
     }
     var target = 0.0
@@ -877,6 +894,7 @@ component Reader(book: lib.Book) {
       }
     }
     if changed { tiles = next }
+    if next.any(t => !t.path.isEmpty()) { announceReady() }
 
     // Nearest the reader first: the visible screen, then the room around it.
     let content = contentY()
@@ -897,6 +915,7 @@ component Reader(book: lib.Book) {
       if fs.exists(file) {
         next[i] = ScrollTile(key: tile.key, y: tile.y, top: tile.top, height: tile.height, path: file)
         tiles = next
+        announceReady()
       }
     }
   }
@@ -939,11 +958,13 @@ component Reader(book: lib.Book) {
     let file = try await bookFileOf(book)
     if !fs.exists(file) {
       error = "找不到《{book.title}》的文件"
+      announceReady()
       return
     }
     let id = engine.open(file)
     if id <= 0 {
       error = "打不开这本书：{engine.lastError()}"
+      announceReady()
       return
     }
     engineId = id
