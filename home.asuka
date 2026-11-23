@@ -351,10 +351,9 @@ screen Home {
   // 我 sits at the top right of the bar, as the shelf's import button does,
   // not in the page's first line.
   toolbar {
-    Button("") {
+    Button("我") {
       icon: Icons.profile
       variant: .glass
-      label: "我"
       tooltip: "阅读记录、同步与设置"
       on press { present(Profile()) }
     }

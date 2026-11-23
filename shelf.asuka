@@ -182,21 +182,41 @@ component BookCell(book: lib.Book, reading: lib.Reading) {
   event evict
   event record
 
+  // 云端的三件事收进一层：第一眼只有阅读记录、云端与存储、删除。
+  // 只列出这一刻有意义的：本机独有的书先备份；已经在云端的书才谈固定
+  // 和「只留云端」；只在云端的书没有可做的。
+  let cloudItems: [Action] = if !book.backedUp {
+    [.button(title: "备份到云端", icon: Icons.upload, run: () => { emit backup })]
+  } else if book.remote {
+    []
+  } else if pinned {
+    [
+      .button(title: "取消固定", icon: Icons.pin, run: () => { emit pin }),
+      .button(title: "仅保留在云端", icon: Icons.cloud, run: () => { emit evict }),
+    ]
+  } else {
+    [
+      .button(title: "固定在本机", icon: Icons.pin, run: () => { emit pin }),
+      .button(title: "仅保留在云端", icon: Icons.cloud, run: () => { emit evict }),
+    ]
+  }
+
+  let menuActions: [Action] = if book.backedUp && book.remote {
+    [
+      .button(title: "阅读记录", icon: Icons.statistics, run: () => { emit record }),
+      .button(title: "删除", icon: Icons.trash, role: .destructive, run: () => { emit delete }),
+    ]
+  } else {
+    [
+      .button(title: "阅读记录", icon: Icons.statistics, run: () => { emit record }),
+      .submenu(title: "云端与存储", icon: Icons.cloud, items: cloudItems),
+      .button(title: "删除", icon: Icons.trash, role: .destructive, run: () => { emit delete }),
+    ]
+  }
+
   Menu {
     longPress: true
-    actions: [
-      .button(title: "阅读记录", icon: Icons.statistics, run: () => { emit record }),
-      .section(title: "", items: [
-        .button(title: "备份到云端", icon: Icons.upload, disabled: book.backedUp, run: () => { emit backup }),
-        .button(title: "仅保留在云端", icon: Icons.cloud, disabled: book.remote || !book.backedUp, run: () => { emit evict }),
-      ]),
-      .section(title: "", items: [
-        .button(title: if pinned { "取消固定" } else { "固定在本机" }, icon: Icons.pin, run: () => { emit pin }),
-      ]),
-      .section(title: "", items: [
-        .button(title: "删除", icon: Icons.trash, role: .destructive, run: () => { emit delete }),
-      ]),
-    ]
+    actions: menuActions
     if mode == "list" {
       BookRow(book, reading) {
         showCloud: showCloud
@@ -347,10 +367,10 @@ component DisplayOption(title: string, selected: bool) {
   }
 }
 
-/// 显示与排序: what the shelf's top-right button opens. It's a page of the
-/// app rather than the platform's own menu: a toolbar menu on Linux stopped
-/// opening once one of its checked items changed (the bar re-packs its
-/// buttons), and a page also draws the same on every platform.
+/// 显示与排序 on Linux: the platform's own menu can't be a toolbar menu here
+/// (it stops opening once a checked item changes, as the bar re-packs its
+/// buttons), so Linux gets this page instead. The other platforms open the
+/// system's menu from the bar button.
 component ShelfDisplay {
   use library: Library
 
@@ -447,18 +467,41 @@ screen Shelf {
   // import change what it holds, so they keep the rightmost place.
   toolbar {
     if !library.shelf.isEmpty() {
-      Button("") {
-        icon: Icons.display
-        variant: .glass
-        label: "显示"
-        tooltip: "显示方式与排序"
-        on press { present(ShelfDisplay()) }
+      // 显示与排序 is the platform's own menu where it has one: a UIMenu on
+      // iOS, Material's on Android, an NSMenu on a Mac, a pop-up on Windows
+      // and a popover in a browser. Linux keeps the page: its toolbar menu
+      // stops opening once a checked item changes (the bar re-packs its
+      // buttons).
+      if @platform == .linux {
+        Button("显示与排序") {
+          icon: Icons.display
+          variant: .glass
+          tooltip: "显示方式与排序"
+          on press { present(ShelfDisplay()) }
+        }
+      } else {
+        Button("显示与排序") {
+          icon: Icons.display
+          variant: .glass
+          tooltip: "显示方式与排序"
+          menu: [
+            .section(title: "显示", items: [
+              .button(title: "网格", checked: library.shelfLayout == "grid", run: () => { library.shelfLayout = "grid" }),
+              .button(title: "列表", checked: library.shelfLayout == "list", run: () => { library.shelfLayout = "list" }),
+            ]),
+            .section(title: "排序", items: [
+              .button(title: "最近阅读", checked: library.shelfSort == "recent", run: () => { library.shelfSort = "recent" }),
+              .button(title: "书名", checked: library.shelfSort == "title", run: () => { library.shelfSort = "title" }),
+              .button(title: "作者名", checked: library.shelfSort == "author", run: () => { library.shelfSort = "author" }),
+              .button(title: "手动", checked: library.shelfSort == "manual", run: () => { library.shelfSort = "manual" }),
+            ]),
+          ]
+        }
       }
     }
-    Button("") {
+    Button("同步") {
       icon: syncIcon
       variant: .glass
-      label: "同步"
       tooltip: syncTip
       color: if syncFailed {
         .red
@@ -469,10 +512,9 @@ screen Shelf {
       }
       on press { present(SyncSettings()) }
     }
-    Button("") {
+    Button("导入") {
       icon: Icons.add
       variant: .glass
-      label: "导入"
       tooltip: "导入 .txt 或 .epub，可多选"
       on press { await pick() }
     }

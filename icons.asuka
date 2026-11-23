@@ -40,11 +40,15 @@ struct Icons {
   let appearance = symbolName(apple: "paintbrush", material: "textformat")
   let about = symbolName(apple: "info.circle", material: "info.circle")
 
-  /// 书架：显示方式与排序。
-  /// 显示方式与排序。Linux / Android / Web 的符号表同样按 SF 名字查表
-  /// （Asuka 0.2.12 的 lx_material_symbols 用的就是 SF 名字），所以两边写
-  /// 同一个名字；Material 的 "tune" 在那边查不到。
-  let display = symbolName(apple: "slider.horizontal.3", material: "slider.horizontal.3")
+  /// 书架：显示方式与排序。它开的是平台的菜单，所以用系统里表示「更多」
+  /// 的横排三点；外面已经有玻璃圆底，不再套一圈。Asuka 0.2.12 在 Linux 上
+  /// 把 "ellipsis" 对到 Adwaita 的 view-more-symbolic（竖排），所以那里
+  /// 直接给 GTK 横排的那个图标名。
+  let display = if @platform == .linux {
+    "view-more-horizontal-symbolic"
+  } else {
+    symbolName(apple: "ellipsis", material: "ellipsis")
+  }
   let checkmark = symbolName(apple: "checkmark", material: "checkmark")
 
   /// 首页：继续阅读、今年、之前读过。
