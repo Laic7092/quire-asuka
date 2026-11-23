@@ -1,8 +1,9 @@
-// 我 → WebDAV 配置: 坚果云的账号、文件夹与两个动作（测试连接、立即同步）。
-// 地址默认是坚果云的；同一套 WebDAV 也用在别的服务器上。字段边打边存，
-// 没有“保存”按钮可以忘掉，启动时的自动同步也用这里的内容。
+// 我 → 同步：主页面只回答「同步到哪了、现在做什么、云端在哪」。
+// 账号、密码、服务器地址是连接细节，收在「云端位置」里；配置好后
+// 不在主界面占地方。
 
 import platform/device
+import std/fs
 import std/time
 
 /// The status line's time: "6月1日 21:04" for a sync at unix seconds.
@@ -11,25 +12,32 @@ fn syncWhen(at: int) -> string {
   return time.unix(seconds: at).format("M月d日 HH:mm")
 }
 
-component SyncSettings {
+/// 本地缓存的人话大小。
+fn sizeText(bytes: int) -> string {
+  if bytes <= 0 { return "0 MB" }
+  if bytes < 1024 * 1024 { return "{bytes / 1024} KB" }
+  let mb = bytes / (1024 * 1024)
+  if mb < 1024 { return "{mb} MB" }
+  let gb = mb / 1024
+  let rest = mb % 1024
+  if rest == 0 { return "{gb} GB" }
+  return "{gb}.{(rest * 10) / 1024} GB"
+}
+
+/// 连接细节：选服务、填账号、测试连接。这里不出现同步动作和缓存设置。
+component SyncConnection {
   use library: Library
 
-  /// Shown inside 我's own sheet (true), or as a sheet of its own.
-  prop embedded = false
-  /// The back button of the embedded page: 我 shows its list again.
-  event close
+  prop firstRun = false
+  event back
 
-  /// "test" or "sync" while one is running, "" when neither is.
   state busy = ""
-  /// What the last test or sync said, in this sheet: it outranks the store's
-  /// older message until the sheet is opened again.
   state note = ""
 
   // std/http is each platform's own client; Android's allows only the
   // standard methods, and a browser makes a WebDAV server's answer CORS's.
   let supported = @platform != .android && @platform != .web
   let running = busy != "" || library.syncBusy || !supported
-  let last = syncWhen(library.syncLast)
   let secureProblem = if library.passwordProblem.isEmpty() {
     "系统钥匙串不可用"
   } else if library.passwordProblem.contains("unsupported") {
@@ -37,16 +45,7 @@ component SyncSettings {
   } else {
     library.passwordProblem
   }
-  let status = if !note.isEmpty() {
-    note
-  } else if library.syncLast > 0 {
-    if library.syncMessage.isEmpty() { "上次同步 {last}" } else { "{library.syncMessage} · {last}" }
-  } else if !library.syncMessage.isEmpty() {
-    library.syncMessage
-  } else {
-    last
-  }
-  let statusOk = status.hasPrefix("已同步") || status.hasPrefix("连接成功")
+  let statusOk = note.hasPrefix("连接成功")
 
   async fn test() {
     if running { return }
@@ -54,18 +53,6 @@ component SyncSettings {
     note = ""
     do {
       note = try await library.testDav()
-    } catch e {
-      note = e.message
-    }
-    busy = ""
-  }
-
-  async fn syncNow() {
-    if running { return }
-    busy = "sync"
-    note = ""
-    do {
-      note = try await library.syncNow()
     } catch e {
       note = e.message
     }
@@ -82,21 +69,19 @@ component SyncSettings {
       Column {
         grow: 1
         gap: 2
-        Text("同步") {
+        Text(if firstRun { "连接云端" } else { "云端位置" }) {
           font: .title3
         }
-        Text("书架、进度、书签与排版，在两台设备之间") {
+        Text("坚果云或其他 WebDAV") {
           font: .caption2
           color: .secondaryLabel
         }
       }
       Button("") {
-        icon: if embedded { "chevron.left" } else { "xmark" }
+        icon: Icons.back
         variant: .glass
-        label: if embedded { "返回" } else { "关闭" }
-        on press {
-          if embedded { emit close } else { dismiss() }
-        }
+        label: "返回"
+        on press { emit back }
       }
     }
 
@@ -129,7 +114,7 @@ component SyncSettings {
         }
 
         if library.syncProvider == "nutstore" {
-          Text("账号是坚果云的登录邮箱；密码不是登录密码，而是在「账户信息 → 安全选项 → 第三方应用管理」里为 Quire 生成的应用密码。改动即时保存。") {
+          Text("账号是坚果云的登录邮箱；密码是在「账户信息 → 安全选项 → 第三方应用管理」里为 Quire 生成的应用密码。") {
             font: .caption
             color: .secondaryLabel
           }
@@ -138,7 +123,7 @@ component SyncSettings {
             on press { device.openURL("https://www.jianguoyun.com/d/account/safety") }
           }
         } else {
-          Text("任何 WebDAV 服务器都行。Quire 会在上面建一个自己的文件夹，同步不改动文件夹以外的东西。") {
+          Text("Quire 只使用这个文件夹，不改动其它内容。") {
             font: .caption
             color: .secondaryLabel
           }
@@ -207,16 +192,6 @@ component SyncSettings {
             autocorrect: .no
           }
         }
-
-        Toggle {
-          bind on: library.syncAuto
-          title: "启动时自动同步"
-        }
-
-        Text("书与封面会传到这个文件夹；删除的书在下次同步时从云端移除。密码只保存在本机。") {
-          font: .caption2
-          color: .tertiaryLabel
-        }
       }
     }
 
@@ -228,24 +203,274 @@ component SyncSettings {
         disabled: running
         on press { await test() }
       }
-      Button(if busy == "sync" { "同步中…" } else { "立即同步" }) {
-        grow: 1
-        variant: .tinted
-        disabled: running
-        on press { await syncNow() }
-      }
     }
 
-    Text(status) {
+    Text(if !note.isEmpty() { note } else if firstRun { "填好账号密码后返回，点「立即同步」就会开始。" } else { "改完这里，回到同步页再同步。" }) {
       font: .footnote
       color: if statusOk {
         .green
-      } else if library.syncLast == 0 && note.isEmpty() && library.syncMessage.isEmpty() {
+      } else if note.isEmpty() {
         .secondaryLabel
       } else {
         .red
       }
       lines: 3
+    }
+  }
+}
+
+component SyncSettings {
+  use library: Library
+
+  /// Shown inside 我's own sheet (true), or as a sheet of its own.
+  prop embedded = false
+  /// The back button of the embedded page: 我 shows its list again.
+  event close
+
+  /// "main" 是状态和动作，"connection" 是云端位置。
+  state page = if library.davConfigured() { "main" } else { "connection" }
+  /// "sync" while a sync or a backup-all is running, "" when idle.
+  state busy = ""
+  /// What this page just did, outranking the store's older message.
+  state note = ""
+
+  // std/http is each platform's own client; Android's allows only the
+  // standard methods, and a browser makes a WebDAV server's answer CORS's.
+  let supported = @platform != .android && @platform != .web
+  let running = busy != "" || library.syncBusy || !supported
+  let last = syncWhen(library.syncLast)
+  let provider = if library.syncProvider == "nutstore" { "坚果云" } else { "WebDAV" }
+
+  let books = library.books()
+  let localCount = books.count(where: b => !b.path.isEmpty() && fs.exists(b.path))
+  let cloudCount = books.count(where: b => b.backedUp)
+  let pending = books.count(where: b => !b.backedUp && !b.path.isEmpty() && fs.exists(b.path))
+  let pinnedCount = library.pinned.count()
+  let used = library.localBytes()
+
+  let cacheOptions = [1024, 2048, 5120]
+  let cacheSelected = if library.cacheLimitMB <= 1024 { 0 } else if library.cacheLimitMB <= 2048 { 1 } else { 2 }
+  let cacheLimit = if library.cacheLimitMB >= 1024 { "{library.cacheLimitMB / 1024} GB" } else { "{library.cacheLimitMB} MB" }
+
+  let message = if !note.isEmpty() { note } else { library.syncMessage }
+  let status = if message.isEmpty() {
+    if library.syncLast > 0 { "上次同步 {last}" } else { "还没同步过" }
+  } else {
+    message
+  }
+  let detail = if !message.isEmpty() && library.syncLast > 0 { "上次成功 {last}" } else { "" }
+  let statusOk = status.hasPrefix("已同步") || status.hasPrefix("已备份")
+  let statusBad = status.hasPrefix("同步失败") || status.hasPrefix("备份失败")
+
+  async fn syncNow() {
+    if running { return }
+    busy = "sync"
+    note = ""
+    do {
+      note = try await library.syncNow()
+    } catch e {
+      note = e.message
+    }
+    busy = ""
+  }
+
+  async fn backupAll() {
+    if running { return }
+    busy = "sync"
+    note = ""
+    do {
+      note = try await library.backupAll()
+    } catch e {
+      note = e.message
+    }
+    busy = ""
+  }
+
+  if page == "connection" {
+    SyncConnection {
+      firstRun: !library.davConfigured()
+      on back {
+        if library.davConfigured() {
+          page = "main"
+        } else if embedded {
+          emit close
+        } else {
+          dismiss()
+        }
+      }
+    }
+  } else {
+    Column {
+      gap: 14
+      padding: [22, 20, 22, 20]
+
+      Row {
+        gap: 8
+        align: .center
+        Column {
+          grow: 1
+          gap: 2
+          Text("同步") {
+            font: .title3
+          }
+          Text("书架、进度和书签，在两台设备之间") {
+            font: .caption2
+            color: .secondaryLabel
+          }
+        }
+        Button("") {
+          icon: if embedded { Icons.back } else { Icons.close }
+          variant: .glass
+          label: if embedded { "返回" } else { "关闭" }
+          on press {
+            if embedded { emit close } else { dismiss() }
+          }
+        }
+      }
+
+      Scroll {
+        grow: 1
+        Column {
+          gap: 16
+
+          Column {
+            gap: 4
+            padding: 14
+            radius: 14
+            background: .secondaryBackground
+            Text(status) {
+              font: .footnote
+              color: if statusBad { .red } else if statusOk { .green } else { .label }
+              lines: 3
+            }
+            if !detail.isEmpty() {
+              Text(detail) {
+                font: .caption2
+                color: .secondaryLabel
+              }
+            }
+          }
+
+          Row {
+            Button(if busy == "sync" { "同步中…" } else { "立即同步" }) {
+              grow: 1
+              variant: .tinted
+              disabled: running
+              on press { await syncNow() }
+            }
+          }
+
+          if !supported {
+            Text("当前平台暂不支持同步。") {
+              font: .caption
+              color: .orange
+            }
+          }
+
+          Column {
+            gap: 10
+            Row {
+              gap: 12
+              align: .center
+              Text("启动时自动同步") {
+                font: .body
+                grow: 1
+              }
+              Toggle {
+                bind on: library.syncAuto
+              }
+            }
+            Row {
+              gap: 12
+              align: .center
+              Text("自动备份书籍") {
+                font: .body
+                grow: 1
+              }
+              Toggle {
+                bind on: library.backupNew
+              }
+            }
+          }
+
+          Text("书籍文件") {
+            font: .headline
+          }
+
+          Text(if pending > 0 {
+            "本机 {localCount} 本 · 云端 {cloudCount} 本 · 待备份 {pending} 本"
+          } else {
+            "本机 {localCount} 本 · 云端 {cloudCount} 本"
+          }) {
+            font: .footnote
+          }
+
+          Text("正文按需下载，打开云端的书时才下载。关闭自动备份时，书只在「备份全部」时上传。") {
+            font: .caption
+            color: .secondaryLabel
+          }
+
+          Row {
+            Button("备份全部到云端") {
+              grow: 1
+              variant: .bordered
+              disabled: running || pending == 0
+              on press { await backupAll() }
+            }
+          }
+
+          Text("本地缓存") {
+            font: .headline
+          }
+
+          Text("已用 {sizeText(used)} / {cacheLimit}") {
+            font: .footnote
+          }
+
+          Segmented(["1 GB", "2 GB", "5 GB"]) {
+            selected: cacheSelected
+            on change(i) {
+              library.cacheLimitMB = cacheOptions[i]
+              library.evictCache()
+            }
+          }
+
+          if pinnedCount > 0 {
+            Text("{pinnedCount} 本固定在本机，不会被自动清理。") {
+              font: .caption2
+              color: .tertiaryLabel
+            }
+          }
+
+          Row {
+            gap: 12
+            align: .center
+            padding: [13, 4]
+            on press { page = "connection" }
+            Symbol(Icons.cloud) {
+              font: .body
+              color: .accent
+              width: 26
+            }
+            Column {
+              grow: 1
+              gap: 2
+              Text("云端位置") {
+                font: .body
+              }
+              Text("{provider} · {library.davFolder}") {
+                font: .caption2
+                color: .secondaryLabel
+                lines: 1
+              }
+            }
+            Symbol(Icons.disclosure) {
+              font: .caption2
+              color: .tertiaryLabel
+            }
+          }
+        }
+      }
     }
   }
 }

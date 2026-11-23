@@ -20,6 +20,14 @@ pub struct Book {
   cover: string = ""
   /// The original text, for a book imported as text.
   raw: string = ""
+  /// The file's hash, for the content-addressed cloud copy.
+  hash: string = ""
+  /// The file's size in bytes.
+  bytes: int = 0
+  /// The file isn't here but the server has it: opening downloads it first.
+  remote: bool = false
+  /// The server has these bytes, whether or not this device does.
+  backedUp: bool = false
 
   pub fn empty() -> bool = chapters.isEmpty() || chapters.all(c => c.paragraphs.isEmpty())
 
@@ -47,12 +55,23 @@ pub struct Shelf {
   /// written before it was kept. A book put back after being taken off
   /// outranks the note that took it off.
   added: int = 0
+  /// 书文件内容的 SHA-256：云端按它存成 blobs/<hash>.<ext>，同一份内容
+  /// 只传一次；本地没有文件时靠它找回。
+  hash: string = ""
+  /// 文件的大小（字节），给缓存和下载前显示用。
+  bytes: int = 0
 
-  pub fn book() -> Book = Book(id: id, title: title, author: author, chapters: [], path: path, cover: cover)
+  pub fn book() -> Book = Book(
+    id: id, title: title, author: author, chapters: [],
+    path: path, cover: cover, hash: hash, bytes: bytes,
+  )
 }
 
 /// The shelf's row for a book.
-pub fn shelfOf(book: Book) -> Shelf = Shelf(id: book.id, title: book.title, author: book.author, path: book.path, cover: book.cover)
+pub fn shelfOf(book: Book) -> Shelf = Shelf(
+  id: book.id, title: book.title, author: book.author,
+  path: book.path, cover: book.cover, hash: book.hash, bytes: book.bytes,
+)
 
 /// Where a book was left: the chapter, and how far into it (0…1).
 pub struct Reading {

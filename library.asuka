@@ -1,5 +1,5 @@
 // The shelf: books, and where each was left. Kept across launches in each
-// platform's own preferences (std/store), the way Quire keeps state.json.
+// platform's own preferences (std/store), plus the server's catalog and sidecars.
 
 import platform/secure
 import std/crypto
@@ -17,6 +17,30 @@ pub fn coverPath(id: string) -> string = fs.join([fs.appDir(), "covers", "{id}.i
 /// How a row keeps its cover: relative to the app's own directory, not the
 /// container that directory is in this launch.
 pub fn coverName(id: string) -> string = "covers/{id}.img"
+
+/// 书文件的扩展名：云端 blob 用它保留格式，读的时候由引擎按字节判断。
+pub fn bookExt(path: string, id: string) -> string {
+  let name = if path.isEmpty() { id } else { lib.fileName(path) }
+  return if name.lower().hasSuffix(".epub") { ".epub" } else { ".txt" }
+}
+
+/// 一份内容在云端的文件名：`<sha256>.epub`，同一份内容只有一份。
+pub fn blobName(hash: string, path: string, id: string) -> string {
+  if hash.isEmpty() { return "" }
+  return "{hash}{bookExt(path, id)}"
+}
+
+/// 书文件在云端的路径。
+pub fn blobPathOf(hash: string, path: string, id: string) -> string {
+  let name = blobName(hash, path, id)
+  return if name.isEmpty() { "" } else { "blobs/{name}" }
+}
+
+/// 一本书的 sidecar（书签和每日统计）在云端的路径。id 是书名或文件名，
+/// 用 hash 当文件名，省得标题里的空格、斜杠和中文变成 URL 的麻烦。
+pub fn docKey(id: string) -> string = crypto.sha256(id.bytes()).hex()
+
+pub fn docPath(id: string) -> string = "meta/{docKey(id)}.json"
 
 /// A file's name as a row keeps it: relative to the app's own directory. iOS
 /// doesn't promise a container its name across updates (its UUID can change),
@@ -98,6 +122,9 @@ pub store Library {
   /// Whether the samples have been put on the shelf (the first launch did it).
   pub state seeded: bool = store.read("shelf.seeded", false)
   pub state readings: [lib.Reading] = store.read("readings", [])
+  /// 阅读统计：每本书每天读了多久。一本书一天一行，阅读页关闭时与
+  /// 翻页/滚动时写入。
+  pub state readingDays: [lib.ReadingDay] = store.read("stats.days", [])
   /// 书签：一本书里的位置，章内进度加分章，不是页码（换字号也还准）。
   pub state bookmarks: [lib.Bookmark] = store.read("bookmarks", [])
   pub state theme: string = store.read("reader.theme", "paper")
@@ -143,8 +170,31 @@ pub store Library {
   state credentialsLoaded = false
   /// 取下的书，按 id 记下时间：双向合并时不该被另一台设备带回来。
   pub state removedIds: [string: int] = store.read("sync.removed", [:])
+  /// 云端已有的内容 hash：决定一本书是「本机有」还是「云端有」，也是
+  /// 下载前的清单；每次同步用 blobs/ 的列表刷新。
+  pub state cloudHashes: [string] = store.read("sync.blobs", [])
+  /// 每本书的书签/统计文档（meta/<id>.json）在云端的最新版本。
+  pub state docRemote: [string: int] = store.read("sync.docs.remote", [:])
+  /// 这台设备已经合并进来的 sidecar 版本。
+  pub state docKnown: [string: int] = store.read("sync.docs.known", [:])
+  /// 本地改过、还没写回云端的 sidecar：id -> 改动时间。
+  pub state docDirty: [string: int] = store.read("sync.docs.dirty", [:])
+  /// 固定在本机、不被缓存清理掉的书。
+  pub state pinned: [string] = store.read("sync.pinned", [])
+  /// 上次打开的时间，缓存清理按它从最久没读的书开始。
+  pub state lastOpened: [string: int] = store.read("sync.opened", [:])
+  /// 新导入的书是否在同步时自动上传正文。默认关闭：书架和进度先走，
+  /// 书文件按需上传/下载。
+  pub state backupNew: bool = store.read("sync.backupNew", false)
+  /// 本地书文件缓存上限（MB）。0 表示不限制。
+  pub state cacheLimitMB: int = store.read("sync.cacheMB", 2048)
+  /// 一次「备份全部」正在跑时，同步会把这些书都传上去。不落盘。
+  state uploadAll = false
+  /// 封面/正文文件变过：封面组件靠它重新检查那张图是不是已经下下来了。
+  pub state assetsTick = 0
 
   effect { store.write("readings", readings) }
+  effect { store.write("stats.days", readingDays) }
   effect { store.write("bookmarks", bookmarks) }
   effect { store.write("shelf.seeded", seeded) }
   effect { store.write("reader.theme", theme) }
@@ -163,6 +213,14 @@ pub store Library {
   effect { store.write("sync.last", syncLast) }
   effect { store.write("sync.message", syncMessage) }
   effect { store.write("sync.removed", removedIds) }
+  effect { store.write("sync.blobs", cloudHashes) }
+  effect { store.write("sync.docs.remote", docRemote) }
+  effect { store.write("sync.docs.known", docKnown) }
+  effect { store.write("sync.docs.dirty", docDirty) }
+  effect { store.write("sync.pinned", pinned) }
+  effect { store.write("sync.opened", lastOpened) }
+  effect { store.write("sync.backupNew", backupNew) }
+  effect { store.write("sync.cacheMB", cacheLimitMB) }
 
   /// The keychain is read once, before the first sync: the password isn't in
   /// the preferences the other settings are in.
@@ -191,14 +249,31 @@ pub store Library {
   /// where its file is relative to the app's directory; this is where that
   /// is this launch.
   pub fn books() -> [lib.Book] {
+    // 正文文件变过（下载/清理）时，书架要重新判断哪些书在本机。
+    if assetsTick < 0 { return [] }
     var out: [lib.Book] = []
     for kept in shelf {
       var book = kept.book()
       book.path = fileOf(book.path)
       book.cover = fileOf(book.cover)
+      book.backedUp = !book.hash.isEmpty() && cloudHashes.contains(book.hash)
+      // 文件不在本机、云端又有：这本书可以按需下载，不是丢了。
+      book.remote = !book.path.isEmpty() && !fs.exists(book.path) && book.backedUp
       out.push(book)
     }
     return out
+  }
+
+  /// 封面是读的时候才由引擎抽出来的：把它记到书架上，下一次同步才会
+  /// 把这张小图传到云端。
+  pub fn setCover(id: string, cover: string) {
+    if let at = shelf.index(s => s.id == id) {
+      var row = shelf[at]
+      if row.cover == cover { return }
+      row.cover = cover
+      shelf[at] = row
+      keep()
+    }
   }
 
   /// Rewrites rows written before paths were kept relative: an absolute path
@@ -237,6 +312,9 @@ pub store Library {
       var book = sample
       // Kept relative: the directory's name is the system's, not the row's.
       book.path = "books/{name}"
+      let data = raw.bytes()
+      book.hash = crypto.sha256(data).hex()
+      book.bytes = data.count()
       shelf.removeWhere(s => s.id == book.id)
       shelf.push(rowOf(book))
     }
@@ -246,16 +324,47 @@ pub store Library {
     keep()
   }
 
-  /// Takes a book off the shelf: its row, where it was left, and its
-  /// bookmarks. The file stays, so importing it again is free.
+  /// Takes a book off the shelf: its row, where it was left, its bookmarks,
+  /// its statistics, and the local copy of its file and cover when nothing
+  /// else on the shelf uses them. The content may still be on the server;
+  /// the next sync removes that copy too.
   pub fn forget(id: string) {
+    let gone = shelf.find(s => s.id == id)
     shelf.removeWhere(s => s.id == id)
     readings.removeWhere(r => r.id == id)
+    readingDays = readingDays.filter(d => d.book != id)
     bookmarks = bookmarks.filter(b => b.book != id)
+    pinned = pinned.filter(p => p != id)
+    lastOpened.remove(id)
+    docKnown.remove(id)
+    docRemote.remove(id)
+    docDirty.remove(id)
+    if let row = gone {
+      if !row.path.isEmpty() && !shelf.any(s => s.path == row.path) {
+        try? fs.remove(fileOf(row.path))
+      }
+      if !row.cover.isEmpty() && !shelf.any(s => s.cover == row.cover) {
+        try? fs.remove(fileOf(row.cover))
+      }
+    }
     // The note is what keeps a sync (or another device that hasn't synced
-    // yet) from putting the book back. Its file goes on the next sync.
+    // yet) from putting the book back. Its files go on the next sync.
     removedIds[id] = time.now().unix()
     keep()
+  }
+
+  /// 本地 sidecar 变了：书签或阅读时长一改，下一次同步就把这本书的
+  /// meta 文件写回云端。版本必须比已知的云端版本新，哪怕同一秒改了两次。
+  fn touchDoc(id: string) {
+    let now = time.now().unix()
+    var at = if now > 0 { now } else { 1 }
+    if let last = docDirty.get(id) {
+      if at <= last { at = last + 1 }
+    }
+    if let known = docKnown.get(id) {
+      if at <= known { at = known + 1 }
+    }
+    docDirty[id] = at
   }
 
   /// Writes the shelf down now: it changes in two places (an import, and a
@@ -282,9 +391,10 @@ pub store Library {
     try await spawn { try fs.mkdirAll(dir) }
     let target = fs.join([dir, name])
     let data = try await spawn { try fs.read(path) }
+    let stamp = crypto.sha256(data).hex()
     // The same bytes, under the same name or another one, are one book: keep
     // the row it already has (and where it was left) instead of adding one.
-    if let kept = try await rowWithSameBytes(data) {
+    if let kept = try await rowWithSameBytes(data, stamp: stamp) {
       return false
     }
     if path != target {
@@ -299,6 +409,8 @@ pub store Library {
       lib.Book(id: lib.idOf(name), title: lib.titleOf(name), author: "", chapters: [])
     }
     book.path = "books/{name}"
+    book.hash = stamp
+    book.bytes = data.count()
     if isText && book.empty() { throw Error("{name} 里没有可读的文字") }
     if !isText {
       // The engine already knows how to find the cover (EPUB3's
@@ -323,22 +435,34 @@ pub store Library {
     // off: the note that hid it goes, here and on the next sync.
     removedIds.remove(book.id)
     keep()
+    evictCache(keep: book.id)
     return true
   }
 
   /// A row whose file holds the same bytes as `data`, if the shelf has one:
-  /// an import of a book that's already there. Its size is asked first, so
-  /// only a file of the same size is read and hashed.
-  async fn rowWithSameBytes(data: bytes) -> lib.Shelf? {
+  /// an import of a book that's already there. The stored hash answers it
+  /// without reading the file again; a row without one is hashed and the
+  /// answer is kept on the row.
+  async fn rowWithSameBytes(data: bytes, stamp: string) -> lib.Shelf? {
     let size = data.count()
-    let stamp = crypto.sha256(data).hex()
     for row in shelf {
+      if !row.hash.isEmpty() {
+        if row.hash == stamp { return row }
+        continue
+      }
       let file = fileOf(row.path)
       if file.isEmpty() || !fs.exists(file) { continue }
       let info = try? await spawn { try fs.stat(file) }
       if let info = info, info.size != size { continue }
       let other = try? await spawn { try fs.read(file) }
-      if let other = other, crypto.sha256(other).hex() == stamp { return row }
+      if let other = other, crypto.sha256(other).hex() == stamp {
+        var kept = row
+        kept.hash = stamp
+        kept.bytes = size
+        if let at = shelf.index(s => s.id == row.id) { shelf[at] = kept }
+        keep()
+        return kept
+      }
     }
     return none
   }
@@ -367,9 +491,11 @@ pub store Library {
       id: "{book}:{chapter}:{(at * 10000).int()}",
       book: book, chapter: chapter, percent: at,
     ))
+    touchDoc(book)
   }
 
   pub fn removeBookmark(id: string) {
+    if let mark = bookmarks.find(b => b.id == id) { touchDoc(mark.book) }
     bookmarks = bookmarks.filter(b => b.id != id)
   }
 
@@ -382,6 +508,15 @@ pub store Library {
     }
     addBookmark(book, chapter: chapter, percent: percent)
     return true
+  }
+
+  /// 记下一段阅读时间：由阅读页在关闭、翻页或滚动时写入。负数和空
+  /// 片段不记，一本书的一天始终只有一行。
+  pub fn recordReading(book: string, seconds: int) {
+    if book.isEmpty() || seconds <= 0 { return }
+    let now = time.now().unix()
+    readingDays = lib.record(readingDays, book: book, day: lib.dayOf(now), seconds: seconds, at: now)
+    touchDoc(book)
   }
 
   pub fn readingOf(id: string) -> lib.Reading {
@@ -478,20 +613,216 @@ pub store Library {
     }
   }
 
+  /// 一本书的 sidecar 变了没有：书签、阅读时长写在这里，进度在 catalog。
+  async fn pullDocIfNeeded(id: string) {
+    if !davConfigured() { return }
+    let remote = docRemote.get(id) ?? 0
+    let known = docKnown.get(id) ?? 0
+    if remote <= known { return }
+    let text = try? await davReadText(davConfig(), docPath(id))
+    if let text = text, let doc = try? bookDocDecode(text) {
+      let (days, _) = mergedDays(readingDays, doc.days, removedIds)
+      let (marks, _) = mergedBookmarks(bookmarks, doc.bookmarks, removedIds)
+      readingDays = days
+      bookmarks = marks
+      docKnown[id] = doc.updated
+    }
+  }
+
+  /// 统计页要把每本书的记录摊开时才调用：把还没拉过的 sidecar 按需
+  /// 拉下来。平时同步不碰云端书库里的每本书。
+  pub async fn loadAllDocs() {
+    if !davConfigured() { return }
+    for row in shelf {
+      try? await pullDocIfNeeded(row.id)
+    }
+  }
+
+  /// 打开一本云端书：正文不在本机时只下载这一本，校验 hash 后再交给
+  /// 阅读页。这是「书很多、只读一本」的关键路径。
+  pub async fn prepare(book: lib.Book) throws -> lib.Book {
+    var kept = lib.Shelf(id: book.id, title: book.title, author: book.author, path: "")
+    if let row = shelf.find(s => s.id == book.id) { kept = row }
+    let local = fileOf(kept.path)
+    if local.isEmpty() { throw Error("《{book.title}》没有文件路径") }
+
+    if !fs.exists(local) {
+      if kept.hash.isEmpty() || !cloudHashes.contains(kept.hash) {
+        throw Error("《{book.title}》的正文还没备份到云端")
+      }
+      if !davConfigured() { throw SyncError.notConfigured }
+      try await spawn { try fs.mkdirAll(fs.join([fs.appDir(), "books"])) }
+      try await davDownload(davConfig(), blobPathOf(kept.hash, kept.path, kept.id), into: local)
+      let data = try await spawn { try fs.read(local) }
+      if crypto.sha256(data).hex() != kept.hash {
+        try? await spawn { try fs.remove(local) }
+        throw Error("《{book.title}》下载后校验失败")
+      }
+    }
+
+    lastOpened[book.id] = time.now().unix()
+    assetsTick += 1
+    try? await pullDocIfNeeded(book.id)
+    evictCache(keep: book.id)
+
+    var ready = book
+    ready.path = local
+    ready.hash = kept.hash
+    ready.bytes = kept.bytes
+    ready.backedUp = !kept.hash.isEmpty() && cloudHashes.contains(kept.hash)
+    ready.remote = false
+    return ready
+  }
+
+  /// 只把这一本书的正文传到云端（长按「备份到云端」）。书架和进度下次
+  /// 同步时再一起走。
+  pub async fn backupBook(book: lib.Book) throws -> string {
+    if !davConfigured() { throw SyncError.notConfigured }
+    if syncBusy { return syncMessage }
+    await fillHashes()
+    var kept = lib.Shelf(id: book.id, title: book.title, author: book.author, path: "")
+    if let row = shelf.find(s => s.id == book.id) { kept = row }
+    let local = fileOf(kept.path)
+    if local.isEmpty() || !fs.exists(local) {
+      throw Error("《{book.title}》不在本机，无法备份")
+    }
+    if kept.hash.isEmpty() {
+      let data = try await spawn { try fs.read(local) }
+      kept.hash = crypto.sha256(data).hex()
+      kept.bytes = data.count()
+      if let at = shelf.index(s => s.id == kept.id) { shelf[at] = kept }
+      keep()
+    }
+    if cloudHashes.contains(kept.hash) { return "《{book.title}》已经在云端" }
+
+    syncBusy = true
+    defer { syncBusy = false }
+    do {
+      try await davEnsure(davConfig())
+      try await davPutFile(davConfig(), blobPathOf(kept.hash, kept.path, kept.id), local)
+      cloudHashes.push(kept.hash)
+      syncMessage = "已备份《{book.title}》"
+      return syncMessage
+    } catch e {
+      syncMessage = "备份失败：{e.message}"
+      throw e
+    }
+  }
+
+  /// 把本机所有书都传上去；正文很多时这会很慢，所以是一个显式动作。
+  pub async fn backupAll() throws -> string {
+    if !davConfigured() { throw SyncError.notConfigured }
+    if syncBusy { return syncMessage }
+    uploadAll = true
+    defer { uploadAll = false }
+    return try await syncNow()
+  }
+
+  /// 把一本书的正文从本机删掉，云端那份保留：下次打开会重新下载。
+  /// 没有云端备份、或书被固定时不动，返回 false。
+  pub fn removeLocalCopy(id: string) -> bool {
+    if syncBusy { return false }
+    if let row = shelf.find(s => s.id == id) {
+      if pinned.contains(id) { return false }
+      if row.hash.isEmpty() || !cloudHashes.contains(row.hash) { return false }
+      let local = fileOf(row.path)
+      if local.isEmpty() || !fs.exists(local) { return false }
+      try? fs.remove(local)
+      assetsTick += 1
+      return true
+    }
+    return false
+  }
+
+  /// 固定/取消固定一本书：固定的书不会被本地缓存清理掉。
+  pub fn togglePin(id: string) {
+    if pinned.contains(id) {
+      pinned = pinned.filter(p => p != id)
+    } else {
+      pinned.push(id)
+    }
+    evictCache()
+  }
+
+  /// 本机正文一共占了多少字节：同步页显示缓存用。
+  pub fn localBytes() -> int {
+    var total = 0
+    for row in shelf {
+      let local = fileOf(row.path)
+      if local.isEmpty() || !fs.exists(local) { continue }
+      if row.bytes > 0 {
+        total += row.bytes
+      } else if let info = try? fs.stat(local) {
+        total += info.size
+      }
+    }
+    return total
+  }
+
+  /// 本地正文缓存超过上限时，按「最久没打开」删掉未固定的书。封面和
+  /// 页面图片不删：它们小，而且删了书架会变空。
+  pub fn evictCache(keep: string = "") {
+    if cacheLimitMB <= 0 { return }
+    let limit = cacheLimitMB * 1024 * 1024
+    var total = 0
+    for row in shelf {
+      let local = fileOf(row.path)
+      if local.isEmpty() || !fs.exists(local) { continue }
+      if row.bytes > 0 {
+        total += row.bytes
+      } else if let info = try? fs.stat(local) {
+        total += info.size
+      }
+    }
+    if total <= limit { return }
+    // 只清理云端还有一份的书：没有备份的正文删了就没了。
+    let candidates = shelf
+      .filter(row => row.id != keep && !pinned.contains(row.id) && !row.hash.isEmpty() && cloudHashes.contains(row.hash) && !row.path.isEmpty() && fs.exists(fileOf(row.path)))
+      .sorted(key: row => lastOpened.get(row.id) ?? 0)
+    var evicted = false
+    for row in candidates {
+      if total <= limit { break }
+      let local = fileOf(row.path)
+      let size = if row.bytes > 0 { row.bytes } else if let info = try? fs.stat(local) { info.size } else { 0 }
+      try? fs.remove(local)
+      total -= size
+      evicted = true
+    }
+    if evicted { assetsTick += 1 }
+  }
+
+  /// 补上旧行没有的 hash：内容地址是云端文件名，第一次同步前必须知道。
+  async fn fillHashes() {
+    var changed = false
+    var next: [lib.Shelf] = []
+    for row in shelf {
+      var kept = row
+      if kept.hash.isEmpty() && !kept.path.isEmpty() {
+        let local = fileOf(kept.path)
+        if fs.exists(local) {
+          let data = try? await spawn { try fs.read(local) }
+          if let data = data {
+            kept.hash = crypto.sha256(data).hex()
+            kept.bytes = data.count()
+            changed = true
+          }
+        }
+      }
+      next.push(kept)
+    }
+    if changed { shelf = next; keep() }
+  }
+
   async fn runSync(cfg: DavConfig) throws -> SyncReport {
     try await davEnsure(cfg)
+    await fillHashes()
 
-    let serverText = try await davReadText(cfg, "state.json")
+    let serverText = try await davReadText(cfg, "catalog.json")
     var server = SyncSnapshot()
     if let text = serverText {
-      // A file a newer Quire wrote still reads everything this one knows;
-      // anything else isn't ours to destroy, so start from what's here.
       server = (try? syncDecode(text)) ?? SyncSnapshot()
     }
 
-    // Rows written by an older build keep absolute paths; the server's are
-    // taken back to names under books/ and covers/, and a name that would
-    // leave those folders isn't one.
     var serverShelf: [lib.Shelf] = []
     for row in server.shelf {
       var kept = row
@@ -502,67 +833,80 @@ pub store Library {
 
     let removed = mergedRemoved(removedIds, server.removed)
     let (nextShelf, added) = mergedShelf(shelf, serverShelf, removed)
-    // A book put back isn't under its old removal note any more: its places
-    // and bookmarks come with it.
     let live = prunedRemoved(nextShelf, removed)
-    let (nextReadings, places) = mergedReadings(readings, server.readings, live)
-    let (nextBookmarks, marks) = mergedBookmarks(bookmarks, server.bookmarks, live)
+    let (_, places) = mergedReadings(readings, server.readings, live)
 
-    // What the server already has, by name: a file goes one way only, and an
-    // unchanged one never goes over the network at all.
-    let serverBooks: Set<string> = Set((try await davList(cfg, "books/")).filter(e => !e.isDir).map(e => e.name))
-    let serverCovers: Set<string> = Set((try await davList(cfg, "covers/")).filter(e => !e.isDir).map(e => e.name))
+    // 云端已有的正文和封面。正文按 hash 判断，不按文件名：同一本书
+    // 从另一台设备传上来时文件名可能不同，内容却相同。
+    let blobEntries = try await davList(cfg, "blobs/")
+    let coverEntries = try await davList(cfg, "covers/")
+    var serverHashes: [string] = []
+    var serverBlobNames: Set<string> = []
+    for entry in blobEntries {
+      if entry.isDir { continue }
+      serverBlobNames.insert(entry.name)
+      if entry.name.count() >= 64 {
+        let hash = entry.name.slice(0, 64)
+        if !serverHashes.contains(hash) { serverHashes.push(hash) }
+      }
+    }
+    var serverCovers: Set<string> = []
+    for entry in coverEntries {
+      if !entry.isDir { serverCovers.insert(entry.name) }
+    }
 
-    var report = SyncReport(added: added, places: places, bookmarks: marks)
+    var report = SyncReport(added: added, places: places)
 
-    // The files of books taken off the shelf go too, so a device that hasn't
-    // heard doesn't bring the book back with them.
+    // 取下的书：正文、封面和 sidecar 都删；内容可能被另一行共享，先看
+    // 是否还有活着的书用它。
     for row in serverShelf {
       if live.get(row.id) == none { continue }
       if nextShelf.any(kept => kept.id == row.id) { continue }
-      if !row.path.isEmpty() {
-        do {
-          try await davRemove(cfg, row.path)
+      do {
+        if !row.hash.isEmpty() && !nextShelf.any(k => !k.hash.isEmpty() && k.hash == row.hash) {
+          try await davRemove(cfg, blobPathOf(row.hash, row.path, row.id))
           report.deleted += 1
-        } catch { report.failed += 1 }
-      }
-      if !row.cover.isEmpty() {
-        do {
+        }
+        if !row.cover.isEmpty() && !nextShelf.any(k => k.cover == row.cover) {
           try await davRemove(cfg, row.cover)
           report.deleted += 1
-        } catch { report.failed += 1 }
-      }
+        }
+        try await davRemove(cfg, docPath(row.id))
+        report.deleted += 1
+      } catch { report.failed += 1 }
+      docKnown.remove(row.id)
+      docRemote.remove(row.id)
+      docDirty.remove(row.id)
     }
 
-    let booksDir = fs.join([fs.appDir(), "books"])
     let coversDir = fs.join([fs.appDir(), "covers"])
+    let uploadWanted = uploadAll || backupNew
 
     for row in nextShelf {
       if !row.path.isEmpty() {
-        let name = lib.fileName(row.path)
         let local = fileOf(row.path)
-        let here = await spawn { fs.exists(local) }
-        if here && !serverBooks.contains(name) {
+        let here = fs.exists(local)
+        let cloudName = blobName(row.hash, row.path, row.id)
+        if here && uploadWanted && !cloudName.isEmpty() && !serverBlobNames.contains(cloudName) {
           do {
-            try await davPutFile(cfg, row.path, local)
+            try await davPutFile(cfg, blobPathOf(row.hash, row.path, row.id), local)
             report.uploaded += 1
-          } catch { report.failed += 1 }
-        } else if !here && serverBooks.contains(name) {
-          do {
-            try await spawn { try fs.mkdirAll(booksDir) }
-            try await davDownload(cfg, row.path, into: local)
-            report.downloaded += 1
+            serverBlobNames.insert(cloudName)
+            if !serverHashes.contains(row.hash) { serverHashes.push(row.hash) }
           } catch { report.failed += 1 }
         }
       }
+      // 封面始终走：它小，新设备一同步就能看到书架本来的样子。
       if !row.cover.isEmpty() {
-        let name = lib.fileName(row.cover)
         let local = fileOf(row.cover)
-        let here = await spawn { fs.exists(local) }
+        let here = fs.exists(local)
+        let name = lib.fileName(row.cover)
         if here && !serverCovers.contains(name) {
           do {
+            try await spawn { try fs.mkdirAll(coversDir) }
             try await davPutFile(cfg, row.cover, local)
             report.uploaded += 1
+            serverCovers.insert(name)
           } catch { report.failed += 1 }
         } else if !here && serverCovers.contains(name) {
           do {
@@ -574,21 +918,92 @@ pub store Library {
       }
     }
 
-    // A page may have been saved, or a book imported, while the files were
-    // moving: merge again, now, so the state read before the transfer doesn't
-    // overwrite what happened during it.
+    // sidecar：只拉版本变了的，只推本地改过的。bookmarks/days 的合并
+    // 和以前一样按书、按天、按位置，不整包覆盖。
+    var docs = server.docs
+    var known = docKnown
+    var nextDays = readingDays
+    var nextMarks = bookmarks
+    for row in nextShelf {
+      let id = row.id
+      let remoteRev = docs.get(id) ?? 0
+      let knownRev = known.get(id) ?? 0
+      let dirtyAt = docDirty.get(id) ?? 0
+      let dirty = dirtyAt > knownRev
+      // 正文在本机的书才提前拉 sidecar；云端书库里的其它书等到打开
+      // 或进统计页时再拉，书多的时候不拿几千个小文件换一个书架。
+      let here = !row.path.isEmpty() && fs.exists(fileOf(row.path))
+      if remoteRev > knownRev && (here || dirty) {
+        do {
+          let text = try await davReadText(cfg, docPath(id))
+          if let text = text {
+            if let doc = try? bookDocDecode(text) {
+              let (days, _) = mergedDays(nextDays, doc.days, live)
+              let (marks, _) = mergedBookmarks(nextMarks, doc.bookmarks, live)
+              nextDays = days
+              nextMarks = marks
+              if doc.updated > knownRev { known[id] = doc.updated }
+              if doc.updated > (docs.get(id) ?? 0) { docs[id] = doc.updated }
+            }
+          } else {
+            // catalog 说有，文件却没了：不要每次同步都重试同一个 404。
+            known[id] = remoteRev
+          }
+        } catch { report.failed += 1 }
+      }
+      if dirty {
+        var at = dirtyAt
+        if let r = docs.get(id) { if at <= r { at = r + 1 } }
+        if let k = known.get(id) { if at <= k { at = k + 1 } }
+        let now = time.now().unix()
+        if at < now { at = now }
+        let doc = BookDoc(
+          updated: at,
+          id: id,
+          bookmarks: nextMarks.filter(m => m.book == id),
+          days: nextDays.filter(d => d.book == id),
+        )
+        do {
+          try await davPutText(cfg, docPath(id), bookDocEncode(doc))
+          known[id] = at
+          docs[id] = at
+          report.docs += 1
+          if docDirty.get(id) == dirtyAt { docDirty.remove(id) }
+        } catch { report.failed += 1 }
+      }
+    }
+
+    // 同步过程中可能又翻了一页、加了一个书签：最后以本机现在的状态
+    // 为准再合并一次，网络读到的旧快照不会把它盖掉。
     let finalRemoved = mergedRemoved(removedIds, server.removed)
     let (finalShelf, finalAdded) = mergedShelf(shelf, serverShelf, finalRemoved)
     let finalLive = prunedRemoved(finalShelf, finalRemoved)
     let (finalReadings, finalPlaces) = mergedReadings(readings, server.readings, finalLive)
-    let (finalBookmarks, finalMarks) = mergedBookmarks(bookmarks, server.bookmarks, finalLive)
+    let finalDays = lib.merge(readingDays, nextDays)
+    let (finalMarks, _) = mergedBookmarks(bookmarks, nextMarks, finalLive)
+    let beforeMarks = bookmarks.count()
+
     shelf = finalShelf
     readings = finalReadings
-    bookmarks = finalBookmarks
+    readingDays = finalDays
+    bookmarks = finalMarks
     removedIds = finalLive
     report.added = finalAdded
     report.places = finalPlaces
-    report.bookmarks = finalMarks
+    report.bookmarks = if finalMarks.count() > beforeMarks { finalMarks.count() - beforeMarks } else { 0 }
+
+    var finalKnown: [string: int] = [:]
+    var finalRemote: [string: int] = [:]
+    var finalDirty: [string: int] = [:]
+    for row in finalShelf {
+      if let at = known.get(row.id) { finalKnown[row.id] = at }
+      if let at = docs.get(row.id) { finalRemote[row.id] = at }
+      if let at = docDirty.get(row.id) { finalDirty[row.id] = at }
+    }
+    docKnown = finalKnown
+    docRemote = finalRemote
+    docDirty = finalDirty
+    cloudHashes = serverHashes
 
     // A setting still at its default takes the server's, so a new device
     // gets the old one's type on its first sync. A changed one stays.
@@ -603,13 +1018,15 @@ pub store Library {
       if goal == 12 { goal = server.goal }
     }
     keep()
+    assetsTick += 1
+    evictCache()
 
     let written = SyncSnapshot(
       updated: time.now().unix(),
       shelf: shelf,
       readings: readings,
-      bookmarks: bookmarks,
       removed: removedIds,
+      docs: finalRemote,
       theme: theme,
       size: size,
       line: line,
@@ -619,9 +1036,10 @@ pub store Library {
       mode: mode,
       goal: goal,
     )
-    try await davPutText(cfg, "state.json", syncEncode(written))
+    try await davPutText(cfg, "catalog.json", syncEncode(written))
     return report
   }
+
 }
 
 /// A path the server sent, kept only when it is one of the app's own names:

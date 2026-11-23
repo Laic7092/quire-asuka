@@ -22,6 +22,41 @@ test "the shelf shows the sample books" {
   app.expect("野草")
 }
 
+test "a book that is only in the cloud is marked, not missing" {
+  let library = Library()
+  await library.seedSamples()
+  if let row = library.shelf.find(s => s.id == "朱自清·散文選") {
+    library.cloudHashes = [row.hash]
+    try? fs.remove(fileOf(row.path))
+  }
+  let app = mount(Harness(), provide: library)
+  await app.idle()
+  app.expect("云端 · 未开始")
+}
+
+test "an empty shelf offers a way in" {
+  let library = Library()
+  library.shelf = []
+  library.seeded = true
+  let app = mount(Harness(), provide: library)
+  await app.idle()
+  app.expect("书架还是空的")
+  app.expect("导入书籍")
+  app.expect("配置云端")
+  app.expectNo("散文選")
+}
+
+test "an empty shelf offers the cloud once it is set up" {
+  let library = Library()
+  library.shelf = []
+  library.seeded = true
+  library.davAccount = "reader@example.com"
+  library.davPassword = "app-password"
+  let app = mount(Harness(), provide: library)
+  await app.idle()
+  app.expect("同步云端")
+}
+
 test "a book opens as a page the engine laid out" {
   let app = mount(Harness(), provide: Library())
   app.tap("散文選")
@@ -303,6 +338,9 @@ test "a .txt brought in becomes a book on the shelf" {
   // path: iOS may give that directory another name after an update.
   let row = lib.shelf.find(s => s.id == "quire-import-test.txt")
   expect(row?.path == "books/quire-import-test.txt")
+  // 内容 hash 是云端 blob 的名字，导入时就该有。
+  expect(!(row?.hash ?? "").isEmpty())
+  expect((row?.bytes ?? 0) > 0)
   let opened = lib.books().find(b => b.id == "quire-import-test.txt")
   expect(fs.exists(opened?.path ?? ""))
 }
@@ -384,6 +422,66 @@ test "an .epub is kept as a file, not as its text" {
   expect(kept?.chapters.isEmpty() ?? false)
   library.forget(id)
   await app.idle()
+}
+
+test "a book with no local file and no cloud copy says why it can't open" {
+  let library = Library()
+  await library.seedSamples()
+  if let row = library.shelf.find(s => s.id == "朱自清·散文選") {
+    library.cloudHashes = []
+    try? fs.remove(fileOf(row.path))
+  }
+  let book = lib.Book(id: "朱自清·散文選", title: "散文選", author: "", chapters: [])
+  do {
+    let _ = try await library.prepare(book)
+    expect(false)
+  } catch e {
+    expect(e.message.contains("还没备份到云端"))
+  }
+}
+
+test "cache cleanup evicts the least recently opened unpinned book" {
+  let library = Library()
+  library.cacheLimitMB = 1
+  library.cloudHashes = ["ha", "hb"]
+  library.pinned = ["a"]
+  library.lastOpened = ["a": 2, "b": 1]
+  let dir = fs.join([fs.appDir(), "books"])
+  try await spawn {
+    try fs.mkdirAll(dir)
+    try fs.writeText(fs.join([dir, "a.txt"]), text: "a")
+    try fs.writeText(fs.join([dir, "b.txt"]), text: "b")
+  }
+  library.shelf = [
+    lib.Shelf(id: "a", title: "A", author: "", path: "books/a.txt", hash: "ha", bytes: 700000),
+    lib.Shelf(id: "b", title: "B", author: "", path: "books/b.txt", hash: "hb", bytes: 700000),
+  ]
+  library.evictCache()
+  expect(fs.exists(fs.join([dir, "a.txt"])))
+  expect(!fs.exists(fs.join([dir, "b.txt"])))
+}
+
+test "a backed-up book can keep only its cloud copy" {
+  let library = Library()
+  library.cloudHashes = ["hc"]
+  let dir = fs.join([fs.appDir(), "books"])
+  let path = fs.join([dir, "c.txt"])
+  try await spawn {
+    try fs.mkdirAll(dir)
+    try fs.writeText(path, text: "c")
+  }
+  library.shelf = [lib.Shelf(id: "c", title: "C", author: "", path: "books/c.txt", hash: "hc", bytes: 1)]
+  expect(library.removeLocalCopy("c"))
+  expect(!fs.exists(path))
+  expect(library.removeLocalCopy("c") == false)
+}
+
+test "reading and bookmarks mark a book's sidecar for the next sync" {
+  let library = Library()
+  library.recordReading("a", seconds: 60)
+  expect(library.docDirty.get("a") != none)
+  library.addBookmark("b", chapter: 0, percent: 0.1)
+  expect(library.docDirty.get("b") != none)
 }
 
 test "a file that is neither text nor an EPUB is refused" {
@@ -500,25 +598,98 @@ test "the bookmark button's action keeps a place, and takes it back" {
   expect(lib.bookmarksOf("書").isEmpty())
 }
 
-test "the home page has the year's sections" {
+test "the home page hides sections that have nothing in them" {
   let lib = Library()
   let app = mount(Harness(), provide: lib)
   await app.idle()
   app.tap("首页")
   await app.idle()
-  app.expect("继续阅读")
+  // 只有目标这一块有内容；在读和往年读完的书都不显示。
   app.expect("今年")
-  app.expect("之前读过")
-  // The goal is the app's, and the page writes it down as it's stepped.
+  app.expectNo("继续阅读")
+  app.expectNo("之前读过")
+  app.expectNo("还没有翻开的书。去书架挑一本，从第一页开始。")
   lib.goal = 24
   await app.idle()
-  app.expect("目标 24 本 · 还差 24 本")
+  app.expect("今年读完了 0 本")
+}
+
+test "the home page shows the books being read, and the ones read before" {
+  let library = Library()
+  await library.seedSamples()
+  library.readings = [
+    lib.Reading(id: "朱自清·散文選", chapter: 0, percent: 0.4, updated: 1),
+    lib.Reading(id: "魯迅·野草", chapter: 0, percent: 1.0, updated: 1),
+  ]
+  let app = mount(Harness(), provide: library)
+  await app.idle()
+  app.tap("首页")
+  await app.idle()
+  app.expect("继续阅读")
+  app.expect("散文選")
+  app.expect("之前读过")
+  app.expect("野草")
 }
 
 test "a place is kept with the time it was kept" {
   let library = Library()
   library.save("書", chapter: 0, percent: 0.5)
   expect(library.readingOf("書").updated > 0)
+}
+
+test "阅读统计 shows the totals and each book's record" {
+  let library = Library()
+  await library.seedSamples()
+  library.recordReading("朱自清·散文選", seconds: 600)
+  let app = mount(Profile(), provide: library)
+  await app.idle()
+  // 我的入口先把今天读的时长写在入口下面。
+  app.expect("阅读记录统计")
+  app.expect("1 天 · 10 分钟")
+  app.tap("阅读记录统计")
+  await app.idle()
+  app.expect("阅读统计")
+  app.expect("总时长")
+  app.expect("阅读天数")
+  app.expect("连续阅读")
+  app.expect("最近 7 天")
+  app.expect("10 分钟")
+  // 每本书一行，点进去是它自己的记录。
+  app.tap("散文選")
+  await app.idle()
+  app.expect("阅读记录")
+  app.expect("累计时长")
+  app.expect("每天的记录")
+  app.tap("返回")
+  await app.idle()
+  app.expect("阅读统计")
+}
+
+test "阅读统计 still opens before any time is kept" {
+  let library = Library()
+  await library.seedSamples()
+  let app = mount(Profile(), provide: library)
+  await app.idle()
+  app.tap("阅读记录统计")
+  await app.idle()
+  // 以前的进度还在，只是时长从这一版才开始记。
+  app.expect("阅读统计")
+  app.expect("总时长")
+  app.expect("还没有记录阅读时长。翻开一本书读一会儿，这里就会开始记下。")
+  app.expect("散文選")
+}
+
+test "closing the reader keeps the time it was open" {
+  let library = Library()
+  let app = mount(Harness(), provide: library)
+  app.tap("散文選")
+  await app.idle()
+  await sleep(2s)
+  app.tap("返回")
+  await app.idle()
+  let record = lib.ofBook(library.readingDays, "朱自清·散文選")
+  expect(record.seconds >= 1)
+  expect(record.days == 1)
 }
 
 test "我 opens the sync setup, and its fields are kept" {
@@ -528,9 +699,10 @@ test "我 opens the sync setup, and its fields are kept" {
   app.expect("同步与备份")
   app.tap("同步与备份")
   await app.idle()
-  app.expect("同步")
+  // 没配置时直接进连接页，不先给一个空的主界面。
+  app.expect("连接云端")
   app.expect("测试连接")
-  app.expect("立即同步")
+  app.expectNo("立即同步")
   // A field is the store's: typing is what a sync would use, with no Save.
   app.type("reader@example.com", into: "坚果云的登录邮箱")
   await app.idle()
@@ -538,6 +710,32 @@ test "我 opens the sync setup, and its fields are kept" {
   app.tap("返回")
   await app.idle()
   app.expect("同步与备份")
+}
+
+test "配置好之后，同步页只留状态和动作，连接细节在二级页" {
+  let library = Library()
+  library.davAccount = "reader@example.com"
+  library.davPassword = "app-password"
+  let app = mount(Profile(), provide: library)
+  await app.idle()
+  app.tap("同步与备份")
+  await app.idle()
+  app.expect("同步")
+  app.expect("立即同步")
+  app.expect("备份全部到云端")
+  app.expect("云端位置")
+  app.expect("启动时自动同步")
+  app.expect("自动备份书籍")
+  app.expectNo("应用密码")
+  app.expectNo("测试连接")
+  // 连接字段收在「云端位置」里。
+  app.tap("云端位置")
+  await app.idle()
+  app.expect("测试连接")
+  app.expect("应用密码")
+  app.tap("返回")
+  await app.idle()
+  app.expect("立即同步")
 }
 
 test "a password with no keychain is kept beside the app" {

@@ -80,6 +80,15 @@ test "a book taken off isn't brought back by the merge" {
   expect(!rows.any(r => r.id == "gone"))
 }
 
+test "a remote row fills in the content hash of a local row that has none" {
+  let here = [lib.Shelf(id: "a", title: "A", author: "", path: "books/a.txt")]
+  let there = [lib.Shelf(id: "a", title: "A", author: "", path: "books/a.txt", hash: "abc", bytes: 90)]
+  let (rows, _) = mergedShelf(here, there, [:])
+  expect(rows[0].hash == "abc")
+  expect(rows[0].bytes == 90)
+  expect(rows[0].path == "books/a.txt")
+}
+
 test "bookmarks are put together, the same place once" {
   let here = [lib.Bookmark(id: "a:0:100", book: "a", chapter: 0, percent: 0.01)]
   let there = [
@@ -108,13 +117,25 @@ test "a book put back outlives the note that took it off" {
   expect(live.get("a") == none)
 }
 
-test "the state file reads back what it wrote" {
+test "reading days merge by book and day, the later write winning" {
+  let local = [lib.ReadingDay(book: "a", day: "2026-01-01", seconds: 60, updated: 10)]
+  let remote = [
+    lib.ReadingDay(book: "a", day: "2026-01-01", seconds: 90, updated: 20),
+    lib.ReadingDay(book: "a", day: "2026-01-02", seconds: 30, updated: 5),
+  ]
+  let (out, added) = mergedDays(local, remote, [:])
+  expect(out.count() == 2)
+  expect(added == 1)
+  expect(lib.ofBook(out, "a").seconds == 120)
+}
+
+test "the catalog reads back what it wrote" {
   let snap = SyncSnapshot(
     updated: 1700000000,
-    shelf: [lib.Shelf(id: "a", title: "A", author: "", path: "books/a.txt")],
+    shelf: [lib.Shelf(id: "a", title: "A", author: "", path: "books/a.txt", hash: "abc", bytes: 90)],
     readings: [lib.Reading(id: "a", chapter: 2, percent: 0.25, updated: 1700000000)],
-    bookmarks: [lib.Bookmark(id: "a:2:2500", book: "a", chapter: 2, percent: 0.25)],
     removed: ["b": 12],
+    docs: ["a": 1700000000],
     theme: "night",
     size: 22.0,
     goal: 30,
@@ -122,10 +143,25 @@ test "the state file reads back what it wrote" {
   let back = try syncDecode(syncEncode(snap))
   expect(back.shelf.count() == 1)
   expect(back.shelf[0].path == "books/a.txt")
+  expect(back.shelf[0].hash == "abc")
   expect(back.readings[0].chapter == 2)
-  expect(back.bookmarks[0].id == "a:2:2500")
+  expect(back.docs.get("a") == 1700000000)
   expect(back.removed.get("b") == 12)
   expect(back.theme == "night")
   expect(back.size == 22.0)
   expect(back.goal == 30)
+}
+
+test "a book's sidecar reads back its bookmarks and days" {
+  let doc = BookDoc(
+    updated: 1700000000,
+    id: "a",
+    bookmarks: [lib.Bookmark(id: "a:2:2500", book: "a", chapter: 2, percent: 0.25)],
+    days: [lib.ReadingDay(book: "a", day: "2026-01-01", seconds: 90, updated: 1700000000)],
+  )
+  let back = try bookDocDecode(bookDocEncode(doc))
+  expect(back.id == "a")
+  expect(back.updated == 1700000000)
+  expect(back.bookmarks[0].id == "a:2:2500")
+  expect(back.days[0].seconds == 90)
 }

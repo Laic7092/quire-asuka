@@ -1,0 +1,55 @@
+// 阅读统计的合计、连续天数和最近七天，都不依赖界面或存储。
+
+test "a book's days add up, and the same day is one row" {
+  var rows: [ReadingDay] = []
+  rows = record(rows, book: "書", day: "2026-01-01", seconds: 60, at: 1)
+  rows = record(rows, book: "書", day: "2026-01-01", seconds: 120, at: 2)
+  rows = record(rows, book: "書", day: "2026-01-02", seconds: 30, at: 3)
+  expect(rows.count() == 2)
+  let book = ofBook(rows, "書")
+  expect(book.seconds == 210)
+  expect(book.days == 2)
+  expect(book.first == "2026-01-01")
+  expect(book.last == "2026-01-02")
+  expect(total(rows) == 210)
+  expect(daysRead(rows) == 2)
+}
+
+test "a later write wins when two devices' days meet" {
+  let local = [ReadingDay(book: "書", day: "2026-01-01", seconds: 60, updated: 10)]
+  let remote = [
+    ReadingDay(book: "書", day: "2026-01-01", seconds: 90, updated: 20),
+    ReadingDay(book: "書", day: "2026-01-02", seconds: 30, updated: 5),
+  ]
+  let out = merge(local, remote)
+  expect(out.count() == 2)
+  expect(ofBook(out, "書").seconds == 120)
+}
+
+test "a streak is the days in a row up to today" {
+  let rows = [
+    ReadingDay(book: "書", day: "2026-01-03", seconds: 60),
+    ReadingDay(book: "書", day: "2026-01-02", seconds: 60),
+    ReadingDay(book: "書", day: "2026-01-01", seconds: 60),
+  ]
+  expect(streak(rows, "2026-01-03") == 3)
+  // 今天还没读，昨天开始的连续纪录还在。
+  expect(streak(rows, "2026-01-04") == 3)
+  expect(streak(rows, "2026-01-05") == 0)
+}
+
+test "the week is seven days ending today, empty days included" {
+  let rows = [ReadingDay(book: "書", day: "2026-01-01", seconds: 90)]
+  let week = recent(rows, today: "2026-01-02", count: 7)
+  expect(week.count() == 7)
+  expect(week.last()?.day == "2026-01-02")
+  expect(week[5].day == "2026-01-01")
+  expect(week[5].seconds == 90)
+  expect(week[6].seconds == 0)
+}
+
+test "a day key is the reader's local day" {
+  expect(dayOf(0) == "")
+  let day = dayOf(1767225600)
+  expect(day.hasPrefix("2026-01-01") || day.hasPrefix("2025-12-31"))
+}

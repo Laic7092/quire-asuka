@@ -17,6 +17,21 @@ component Quire {
   state tab = 1
 
   let paper = lib.paletteFor(library.theme).paper
+
+  /// 打开一本书：云端书先只下载这一本，校验后再把阅读页放上来。
+  /// 本地书则直接打开，不碰网络。
+  async fn openBook(book: lib.Book) {
+    if book.remote {
+      snackbar("正在从云端下载《{book.title}》…")
+    }
+    do {
+      reading = try await library.prepare(book)
+      readingOpen = true
+    } catch e {
+      snackbar(e.message)
+    }
+  }
+
   // A launch's first steps, in order: rows written by an older build keep
   // their files' whole paths (iOS may have renamed that container since), so
   // they're cut back to names; the samples go on the shelf once; and then,
@@ -37,29 +52,23 @@ component Quire {
       on change(i) { tab = i }
 
       Tab("首页") {
-        icon: "house"
+        icon: Icons.home
         Stack {
           Home() {
-            on open(book) {
-              reading = book
-              readingOpen = true
-            }
+            on open(book) { await openBook(book) }
           }
         }
       }
       Tab("书架") {
-        icon: "books.vertical"
+        icon: Icons.shelf
         Stack {
           Shelf() {
-            on open(book) {
-              reading = book
-              readingOpen = true
-            }
+            on open(book) { await openBook(book) }
           }
         }
       }
       Tab("搜索") {
-        icon: "magnifyingglass"
+        icon: Icons.search
         Stack { Search() }
       }
     }

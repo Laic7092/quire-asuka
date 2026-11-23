@@ -61,7 +61,6 @@ component ReadingBar(value: float) {
 }
 
 component SectionHead(title: string) {
-  prop note = ""
   prop icon = ""
 
   Row {
@@ -77,17 +76,11 @@ component SectionHead(title: string) {
       font: .title3.bold()
       grow: 1
     }
-    if !note.isEmpty() {
-      Text(note) {
-        font: .footnote
-        color: .secondaryLabel
-      }
-    }
   }
 }
 
 component EmptyNote(text: string) {
-  prop icon = "book"
+  prop icon = Icons.emptyBook
 
   Row {
     gap: 10
@@ -170,17 +163,8 @@ component GoalCard(done: int, goal: int, filled: float) {
     }
     Column {
       grow: 1
-      gap: 4
       Text(if goal > 0 && done >= goal { "今年的目标读完了" } else { "今年读完了 {done} 本" }) {
         font: .headline
-      }
-      Text(if goal > 0 {
-        "目标 {goal} 本 · 还差 {max(0, goal - done)} 本"
-      } else {
-        "还没有定下目标"
-      }) {
-        font: .caption
-        color: .secondaryLabel
       }
     }
     Stepper {
@@ -245,16 +229,25 @@ component Profile {
     "已配置 · 尚未同步"
   }
 
+  let readingNote = if library.readingDays.isEmpty() {
+    "读完的书、读过的日子"
+  } else {
+    "{lib.daysRead(library.readingDays)} 天 · {span(lib.total(library.readingDays))}"
+  }
   let entries = [
-    ProfileEntry(icon: "icloud", title: "同步与备份", note: syncNote),
-    ProfileEntry(icon: "chart.bar.doc.horizontal", title: "阅读记录统计", note: "读完的书、读过的日子"),
-    ProfileEntry(icon: "target", title: "阅读目标", note: "今年读几本"),
-    ProfileEntry(icon: "bell.badge", title: "阅读提醒", note: "每天读一点"),
-    ProfileEntry(icon: "paintbrush", title: "外观与排版", note: "纸色、字号、行距"),
-    ProfileEntry(icon: "info.circle", title: "关于 Quire", note: "版本 0.1"),
+    ProfileEntry(icon: Icons.cloud, title: "同步与备份", note: syncNote),
+    ProfileEntry(icon: Icons.statistics, title: "阅读记录统计", note: readingNote),
+    ProfileEntry(icon: Icons.goal, title: "阅读目标", note: "今年读几本"),
+    ProfileEntry(icon: Icons.reminder, title: "阅读提醒", note: "每天读一点"),
+    ProfileEntry(icon: Icons.appearance, title: "外观与排版", note: "纸色、字号、行距"),
+    ProfileEntry(icon: Icons.about, title: "关于 Quire", note: "版本 0.1"),
   ]
 
-  if page == "sync" {
+  if page == "stats" {
+    Stats {
+      on close { page = "" }
+    }
+  } else if page == "sync" {
     SyncSettings {
       embedded: true
       on close { page = "" }
@@ -274,7 +267,7 @@ component Profile {
           align: .center
           justify: .center
           background: .accent
-          Symbol("person.fill") {
+          Symbol(Icons.person) {
             font: .title2
             color: .onAccent
           }
@@ -291,7 +284,7 @@ component Profile {
           }
         }
         Button("") {
-          icon: "xmark"
+          icon: Icons.close
           variant: .glass
           on press { dismiss() }
         }
@@ -307,6 +300,8 @@ component Profile {
             on press {
               if entry.title == "同步与备份" {
                 page = "sync"
+              } else if entry.title == "阅读记录统计" {
+                page = "stats"
               } else {
                 snackbar("「{entry.title}」即将推出")
               }
@@ -327,7 +322,7 @@ component Profile {
                 color: .secondaryLabel
               }
             }
-            Symbol("chevron.right") {
+            Symbol(Icons.disclosure) {
               font: .caption2
               color: .tertiaryLabel
             }
@@ -357,7 +352,7 @@ screen Home {
   // not in the page's first line.
   toolbar {
     Button("") {
-      icon: "person.crop.circle"
+      icon: Icons.profile
       variant: .glass
       label: "我"
       tooltip: "阅读记录、同步与设置"
@@ -378,29 +373,27 @@ screen Home {
     0.0
   }
 
-  // A List, not a Scroll: it is the list a screen with a large title gives its
-  // insets to, so the first row starts under the title, not in the status bar.
-  // A List takes its rows from a for, so the page's sections are its items.
-  let sections = [HomeSection.reading, .year, .done]
+  // 没有内容的板块不占地方：继续阅读只在有在读的书时出现，之前读过只在
+  // 有往年读完的书时出现。
+  let sections = [HomeSection.reading, .year, .done].filter(section => match section {
+    .reading => !reading.isEmpty()
+    .year => true
+    .done => !older.isEmpty()
+  })
 
   List {
     appearance: .bare
-    for section in sections {
+    for section in sections key section {
       match section {
         .reading => Column {
           gap: 12
           padding: [20, 20, 0, 20]
           SectionHead("继续阅读") {
-            icon: "book"
-            note: if reading.isEmpty() { "" } else { "在读 {reading.count()} 本" }
+            icon: Icons.reading
           }
-          if reading.isEmpty() {
-            EmptyNote("还没有翻开的书。去书架挑一本，从第一页开始。") { icon: "book.closed" }
-          } else {
-            if let r = reading.first() {
-              if let b = bookOf(books, r.id) {
-                ContinueCard(b, r) { on open { emit open(b) } }
-              }
+          if let r = reading.first() {
+            if let b = bookOf(books, r.id) {
+              ContinueCard(b, r) { on open { emit open(b) } }
             }
           }
         }
@@ -408,17 +401,14 @@ screen Home {
           gap: 12
           padding: [20, 20, 0, 20]
           SectionHead("今年") {
-            icon: "target"
-            note: if thisYearRows.isEmpty() { "" } else { "{thisYearRows.count()} 本" }
+            icon: Icons.goal
           }
           GoalCard(doneThisYear, library.goal, filled) {
             on goalChange(goal) {
               library.goal = goal
             }
           }
-          if thisYearRows.isEmpty() {
-            EmptyNote("今年还没有读完的书。翻开一本，这里就会记下。") { icon: "sparkles" }
-          } else {
+          if !thisYearRows.isEmpty() {
             Column {
               gap: 0
               for r in thisYearRows.prefix(5) key r.id {
@@ -427,33 +417,21 @@ screen Home {
                 }
               }
             }
-            if thisYearRows.count() > 5 {
-              Text("只列最近 5 本，今年共 {thisYearRows.count()} 本") {
-                font: .caption2
-                color: .tertiaryLabel
-                padding: [0, 4]
-              }
-            }
           }
         }
         .done => Column {
           gap: 12
           padding: [20, 20, 44, 20]
           SectionHead("之前读过") {
-            icon: "checkmark.circle"
-            note: if older.isEmpty() { "" } else { "{older.count()} 本" }
+            icon: Icons.finished
           }
-          if older.isEmpty() {
-            EmptyNote("往年读完的书会留在这里，想再翻一遍时好找。") { icon: "bookmark" }
-          } else {
-            Scroll {
-              horizontal: true
-              Row {
-                gap: 16
-                for r in older key r.id {
-                  if let b = bookOf(books, r.id) {
-                    MiniBook(b) { on open { emit open(b) } }
-                  }
+          Scroll {
+            horizontal: true
+            Row {
+              gap: 16
+              for r in older key r.id {
+                if let b = bookOf(books, r.id) {
+                  MiniBook(b) { on open { emit open(b) } }
                 }
               }
             }

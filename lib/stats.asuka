@@ -1,0 +1,156 @@
+// 阅读统计的纯数据部分：按「书 + 本地日期」记下每天读了多久。
+//
+// 一行是一本书的一天，不是一次阅读：同一本书同一天读了几次都加在同一行，
+// 存储和同步都只需要合并这一行。日期是读者本地的那一天，不是 UTC 的，
+// 所以晚上读到零点后不会被算到「明天」。
+
+import std/time
+
+/// 一本书在某一天读了多久。`day` 是 "2026-06-01" 这样的本地日期；
+/// `updated` 是这一行最后改动的时间（unix 秒），同步时后写的赢。
+pub struct ReadingDay {
+  book: string
+  day: string
+  seconds: int = 0
+  updated: int = 0
+
+  pub fn id() -> string = "{book}@{day}"
+}
+
+/// 某一天所有书加起来的时长，给最近七天的柱状图用。
+pub struct DayTotal {
+  day: string
+  seconds: int = 0
+}
+
+/// 一本书的全部记录，从它的每日行算出来。
+pub struct BookRecord {
+  book: string
+  seconds: int = 0
+  days: int = 0
+  /// 最早和最近读过的日子（"2026-06-01"），没读过时是 ""。
+  first: string = ""
+  last: string = ""
+  /// 最近一次记录的时间（unix 秒），没读过时是 0。
+  updated: int = 0
+}
+
+/// 一个时刻属于哪一天，按本地时区。
+pub fn dayOf(seconds: int) -> string {
+  if seconds <= 0 { return "" }
+  return time.unix(seconds: seconds).format("yyyy-MM-dd")
+}
+
+/// 今天的日期键。
+pub fn today() -> string = time.now().format("yyyy-MM-dd")
+
+/// 把 "2026-06-01" 读回一个时间，用来按天加减。
+pub fn dateOf(day: string) -> time.Time? {
+  let parts = day.split("-")
+  if parts.count() != 3 { return none }
+  let year = parts[0].toInt()
+  let month = parts[1].toInt()
+  let dayOfMonth = parts[2].toInt()
+  if year == none || month == none || dayOfMonth == none { return none }
+  return time.date(year ?? 0, month ?? 1, dayOfMonth ?? 1)
+}
+
+/// 加一段阅读时间：把 seconds 加进 (book, day) 这一行，替掉旧行。
+pub fn record(rows: [ReadingDay], book: string, day: string, seconds: int, at: int) -> [ReadingDay] {
+  if book.isEmpty() || day.isEmpty() || seconds <= 0 { return rows }
+  var out: [ReadingDay] = []
+  var found = false
+  for row in rows {
+    if row.book == book && row.day == day {
+      var next = row
+      next.seconds += seconds
+      if at > next.updated { next.updated = at }
+      out.push(next)
+      found = true
+    } else {
+      out.push(row)
+    }
+  }
+  if !found {
+    out.push(ReadingDay(book: book, day: day, seconds: seconds, updated: at))
+  }
+  return out
+}
+
+/// 两边的每日行放在一起：同一本书同一天是一行，后写的赢；同一秒写的，
+/// 时长多的赢。两个设备各读过一段时间时，较晚的那次记录留下。
+pub fn merge(local: [ReadingDay], remote: [ReadingDay]) -> [ReadingDay] {
+  var out = local
+  for row in remote {
+    if let at = out.index(r => r.book == row.book && r.day == row.day) {
+      if row.updated > out[at].updated || (row.updated == out[at].updated && row.seconds > out[at].seconds) {
+        out[at] = row
+      }
+    } else {
+      out.push(row)
+    }
+  }
+  return out
+}
+
+/// 一本书的全部记录。没有每日行的书是 0。
+pub fn ofBook(rows: [ReadingDay], book: string) -> BookRecord {
+  var out = BookRecord(book: book)
+  var seen: Set<string> = []
+  for row in rows {
+    if row.book != book || row.seconds <= 0 { continue }
+    out.seconds += row.seconds
+    if seen.insert(row.day) { out.days += 1 }
+    if out.first.isEmpty() || row.day < out.first { out.first = row.day }
+    if row.day > out.last { out.last = row.day }
+    if row.updated > out.updated { out.updated = row.updated }
+  }
+  return out
+}
+
+/// 所有书加起来的时长。
+pub fn total(rows: [ReadingDay]) -> int = rows.reduce(0, (n, row) => n + row.seconds)
+
+/// 有阅读记录的天数（不是行数：同一天读几本书是一天）。
+pub fn daysRead(rows: [ReadingDay]) -> int {
+  var days: Set<string> = []
+  for row in rows {
+    if row.seconds > 0 { days.insert(row.day) }
+  }
+  return days.count()
+}
+
+/// 某一天的总时长。
+pub fn totalOn(rows: [ReadingDay], day: string) -> int {
+  return rows.filter(row => row.day == day).reduce(0, (n, row) => n + row.seconds)
+}
+
+/// 连续读了多少天。今天还没读时从昨天数起：一天还没开始不该先把纪录断掉。
+pub fn streak(rows: [ReadingDay], today: string) -> int {
+  var days: Set<string> = []
+  for row in rows {
+    if row.seconds > 0 { days.insert(row.day) }
+  }
+  var at = dateOf(today) ?? time.now()
+  if !days.contains(today) { at = at.addDate(days: -1) }
+  var count = 0
+  while true {
+    let key = at.format("yyyy-MM-dd")
+    if !days.contains(key) { break }
+    count += 1
+    at = at.addDate(days: -1)
+  }
+  return count
+}
+
+/// 最近 count 天每天的合计，从早到晚，最后一个是今天；没读的天是 0。
+pub fn recent(rows: [ReadingDay], today: string, count: int) -> [DayTotal] {
+  var out: [DayTotal] = []
+  if count <= 0 { return out }
+  let end = dateOf(today) ?? time.now()
+  for i in 0..<count {
+    let day = end.addDate(days: -(count - 1 - i)).format("yyyy-MM-dd")
+    out.push(DayTotal(day: day, seconds: totalOn(rows, day)))
+  }
+  return out
+}

@@ -20,12 +20,20 @@ fn spine(title: string) -> Color {
 }
 
 component Cover(book: lib.Book) {
+  use library: Library
+
   // The book's row may predate covers: ask the engine once, then keep the
   // file next to the app's data. Text books have no cover and keep the spine.
-  state cover = book.cover
+  // A cloud-only book has no file to ask the engine about yet.
+  state cover = if !book.cover.isEmpty() && fs.exists(book.cover) { book.cover } else { "" }
 
-  task(book.id) {
-    if !book.cover.isEmpty() && fs.exists(book.cover) { return }
+  task(book.id, book.remote, book.cover, library.assetsTick) {
+    if !book.cover.isEmpty() && fs.exists(book.cover) {
+      cover = book.cover
+      return
+    }
+    cover = ""
+    if book.remote { return }
     if book.path.isEmpty() || !book.path.lower().hasSuffix(".epub") { return }
     let path = coverPath(book.id)
     if !fs.exists(path) {
@@ -36,6 +44,7 @@ component Cover(book: lib.Book) {
       if !wrote { return }
     }
     cover = path
+    library.setCover(book.id, coverName(book.id))
   }
 
   View {
@@ -43,7 +52,7 @@ component Cover(book: lib.Book) {
     radius: 8
     clip: true
     background: spine(book.title)
-    if !cover.isEmpty() {
+    if !cover.isEmpty() && fs.exists(cover) {
       Image(source: cover) {
         grow: 1
         mode: .fill
@@ -69,23 +78,43 @@ component Cover(book: lib.Book) {
 component BookTile(book: lib.Book, reading: lib.Reading) {
   event open
 
-  // A row whose file iOS took with it (a container that was wiped, not just
-  // renamed) says so, rather than looking like a book that won't open.
-  let missing = !book.path.isEmpty() && !fs.exists(book.path)
+  // 文件不在本机：云端有就是「按需下载」，没有才是真的找不到。
+  let missing = !book.remote && !book.path.isEmpty() && !fs.exists(book.path)
 
   Column {
     gap: 6
     align: .center
     padding: [0, 10]
     on press { emit open }
-    Cover(book) { width: 150 }
+    Stack {
+      Cover(book) { width: 150 }
+      if book.remote {
+        View {
+          absolute: true
+          top: 6
+          right: 6
+          width: 26
+          height: 26
+          radius: 999
+          background: #00000088
+          align: .center
+          justify: .center
+          Symbol(Icons.cloud) {
+            font: .caption2
+            color: #ffffff
+          }
+        }
+      }
+    }
     Text(book.title) {
       font: .subheadline
       lines: 1
       textAlign: .center
     }
-    Text(if missing {
-      "文件找不到了"
+    Text(if book.remote {
+      "云端 · {reading.label()}"
+    } else if missing {
+      if book.hash.isEmpty() { "文件找不到了" } else { "未备份到云端" }
     } else if book.author.isEmpty() {
       reading.label()
     } else {
@@ -102,13 +131,86 @@ component BookTile(book: lib.Book, reading: lib.Reading) {
 /// A book on the shelf: long press one for its actions, a sample's as much as
 /// an imported one's.
 component BookCell(book: lib.Book, reading: lib.Reading) {
+  prop pinned = false
   event open
   event delete
+  event backup
+  event pin
+  event evict
 
   Menu {
     longPress: true
-    actions: [.button(title: "删除", role: .destructive, run: () => { emit delete })]
+    actions: [
+      .button(title: if pinned { "取消固定" } else { "固定在本机" }, run: () => { emit pin }),
+      .button(title: "备份到云端", run: () => { emit backup }),
+      .button(title: "仅保留在云端", run: () => { emit evict }),
+      .button(title: "删除", role: .destructive, run: () => { emit delete }),
+    ]
     BookTile(book, reading) { on open { emit open } }
+  }
+}
+
+/// 书架空了：两条能立刻把书放上来的路。这里只放大两个动作，不再写
+/// 一段说明；同步按钮的文案由云端是否配置好决定。
+component EmptyShelf {
+  prop configured = false
+  event chooseFile
+  event cloud
+
+  Column {
+    grow: 1
+    justify: .center
+    align: .center
+    padding: [24, 24, 56, 24]
+    gap: 22
+
+    // 一排立着的书，颜色来自封面用的那组。书下面是一条书架线，
+    // 让空状态仍然是「书架」，不是一张通用的提示卡。
+    Column {
+      gap: 0
+      Row {
+        gap: 6
+        align: .end
+        View { width: 20; height: 50; radius: 3; background: spines[1] }
+        View { width: 24; height: 62; radius: 3; background: spines[2] }
+        View { width: 18; height: 44; radius: 3; background: spines[3] }
+        View { width: 22; height: 56; radius: 3; background: spines[4] }
+      }
+      View {
+        width: 132
+        height: 3
+        radius: 2
+        background: .separator
+      }
+    }
+
+    Column {
+      gap: 6
+      align: .center
+      Text("书架还是空的") {
+        font: .title2.bold()
+      }
+      Text("导入一本 .txt 或 .epub；如果云端已经有书架，连接后也能同步过来。") {
+        font: .footnote
+        color: .secondaryLabel
+        textAlign: .center
+        lines: 3
+      }
+    }
+
+    Row {
+      gap: 10
+      Button("导入书籍") {
+        icon: Icons.add
+        variant: .tinted
+        on press { emit chooseFile }
+      }
+      Button(if configured { "同步云端" } else { "配置云端" }) {
+        icon: Icons.cloud
+        variant: .bordered
+        on press { emit cloud }
+      }
+    }
   }
 }
 
@@ -125,18 +227,17 @@ screen Shelf {
   // cloud says whether the shelf has a copy in the cloud, and tapping it
   // opens the page where the account and the folder are.
   let syncFailed = library.syncMessage.hasPrefix("同步失败")
-  // Symbols every platform draws: Linux has no checkmark.icloud or
-  // exclamationmark.icloud (its icon table is Material + Adwaita), so those
-  // would leave the button blank there. The cloud itself is the state; the
-  // color and the tooltip say which.
+  // Symbols every platform draws: the names live in icons.asuka, which
+  // gives Linux a Material name where a symbol has no SF equivalent. The
+  // cloud itself is the state; the color and the tooltip say which.
   let syncIcon = if !library.davConfigured() {
-    "icloud.slash"
+    Icons.cloudOff
   } else if library.syncBusy {
-    "arrow.triangle.2.circlepath"
+    Icons.syncBusy
   } else if syncFailed {
-    "exclamationmark.circle"
+    Icons.syncFailed
   } else {
-    "icloud"
+    Icons.cloud
   }
   let syncTip = if !library.davConfigured() {
     "同步未配置"
@@ -165,7 +266,7 @@ screen Shelf {
       on press { present(SyncSettings()) }
     }
     Button("") {
-      icon: "plus"
+      icon: Icons.add
       variant: .glass
       label: "导入"
       tooltip: "导入 .txt 或 .epub"
@@ -221,23 +322,79 @@ screen Shelf {
 
   onOpenFiles(paths => { incoming = paths })
 
+  async fn syncFromCloud() {
+    do {
+      snackbar(try await library.syncNow())
+    } catch e {
+      snackbar(e.message)
+    }
+  }
+
   // As many covers in a row as the window has room for, 150 points each.
   let width = environment().width
   let columns = if width > 1180 { 6 } else if width > 980 { 5 } else if width > 780 { 4 } else if width > 560 { 3 } else { 2 }
+  let books = library.books()
 
   View {
     grow: 1
 
-    List {
-      columns: columns
-      gap: 22
-      padding: [22, 20]
-      for b in library.books() key b.id {
-        BookCell(b, library.readingOf(b.id)) {
-          on open { emit open(b) }
-          on delete {
-            library.forget(b.id)
-            snackbar("已删除《{b.title}》")
+    if books.isEmpty() {
+      // 首次启动的样书还没放进来时先留白，免得空状态一闪而过；
+      // 样书放好以后（seeded）再空，就是读者真的把书架清空了。
+      if library.seeded {
+        EmptyShelf {
+          configured: library.davConfigured()
+          on chooseFile { await pick() }
+          on cloud {
+            if library.davConfigured() {
+              await syncFromCloud()
+            } else {
+              present(SyncSettings())
+            }
+          }
+        }
+      } else {
+        View { grow: 1 }
+      }
+    } else {
+      List {
+        columns: columns
+        gap: 22
+        padding: [22, 20]
+        for b in books key "{b.id}:{b.remote}" {
+          BookCell(b, library.readingOf(b.id)) {
+            pinned: library.pinned.contains(b.id)
+            on open { emit open(b) }
+            on backup {
+              if b.remote {
+                snackbar("先打开这本书，下载到本机后再备份")
+              } else {
+                do {
+                  snackbar(try await library.backupBook(b))
+                } catch e {
+                  snackbar(e.message)
+                }
+              }
+            }
+            on pin {
+              library.togglePin(b.id)
+              snackbar(if library.pinned.contains(b.id) { "已固定《{b.title}》" } else { "已取消固定《{b.title}》" })
+            }
+            on evict {
+              if b.remote {
+                snackbar("《{b.title}》已经只在云端")
+              } else if library.removeLocalCopy(b.id) {
+                snackbar("已从本机移除《{b.title}》，云端仍保留")
+              } else if library.pinned.contains(b.id) {
+                snackbar("这本书已固定在本机，先取消固定")
+              } else {
+                snackbar("先备份到云端，才能只保留云端副本")
+              }
+            }
+            on delete {
+              library.forget(b.id)
+              snackbar("已删除《{b.title}》")
+            }
           }
         }
       }

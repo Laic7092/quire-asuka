@@ -7,6 +7,7 @@
 
 import std/embed
 import std/fs
+import std/time
 import platform/device
 import platform/screen
 
@@ -218,7 +219,7 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
         grow: 1
       }
       Button("") {
-        icon: "xmark"
+        icon: Icons.close
         variant: .glass
         on press { dismiss() }
       }
@@ -301,7 +302,7 @@ component Appearance(typeface: string) {
         grow: 1
       }
       Button("") {
-        icon: "xmark"
+        icon: Icons.close
         variant: .glass
         on press { dismiss() }
       }
@@ -498,6 +499,12 @@ component Reader(book: lib.Book) {
   /// Restarts the save task; the place is written after the scroll settles.
   state placeTick = 0
 
+  /// 阅读时长：打开（或重新开始活动）的时刻、最后一次活动的时刻、已经记到
+  /// 哪一刻。空闲超过五分钟就不再算，书页开着过夜不会记成读了一夜。
+  state sessionAt = 0
+  state activeAt = 0
+  state countedTo = 0
+
   let palette = lib.paletteFor(library.theme)
   let barStyle = if library.theme == "night" { screen.BarStyle.light } else { screen.BarStyle.dark }
   let env = environment()
@@ -526,10 +533,40 @@ component Reader(book: lib.Book) {
   cleanup {
     screen.setBars(style: .auto, hideStatus: false, hideNavigation: false)
     if library.mode == "scroll" { savePlace() }
+    flushSession()
     if engineId > 0 {
       engine.close(engineId)
       engineId = -1
     }
+  }
+
+  /// 读了一页、翻了一页、滚动了一下：这一段还算在读。
+  fn touch() {
+    if sessionAt == 0 { return }
+    let now = time.now().unix()
+    if now - activeAt > 300 {
+      flushSession()
+      // 中间的停顿不是阅读：从这一刻重新开始算。
+      if now > countedTo { countedTo = now }
+    } else if now - countedTo >= 60 {
+      // 一分钟左右落一次盘，靠翻页或滚动顺手写，不另开计时器。
+      flushSession()
+    }
+    activeAt = now
+  }
+
+  /// 把从上次记下到现在的阅读时间写进 store。空闲超过五分钟只算到
+  /// 最后一次活动后五分钟；关页和每分钟各写一次。
+  fn flushSession() {
+    if engineId <= 0 || sessionAt == 0 { return }
+    let now = time.now().unix()
+    var until = now
+    if now - activeAt > 300 { until = activeAt + 300 }
+    if until > now { until = now }
+    if until <= countedTo { return }
+    let seconds = until - countedTo
+    countedTo = until
+    library.recordReading(book.id, seconds: seconds)
   }
 
   /// Actually lays the chapter out and rasterizes the page.
@@ -758,6 +795,7 @@ component Reader(book: lib.Book) {
 
   /// Keeps a bookmark at the exact line at the top, not at a band boundary.
   fn toggleBookmark() {
+    touch()
     var chapter = spine
     if library.mode == "scroll" {
       let index = engine.flowSpineAt(engineId, contentY())
@@ -909,6 +947,12 @@ component Reader(book: lib.Book) {
       return
     }
     engineId = id
+    let now = time.now().unix()
+    if sessionAt == 0 {
+      sessionAt = now
+      activeAt = now
+      countedTo = now
+    }
     // The app's own face first: it's what the pages are designed around, and
     // the platform's fonts aren't readable as files everywhere (iOS keeps
     // several in the dyld cache).
@@ -954,12 +998,14 @@ component Reader(book: lib.Book) {
   // After a chapter or a mode change, put the Scroll where the reader was.
 
   fn next() {
+    touch()
     let place = lib.forward(spine, page, pages, engine.chapterCount(engineId))
     spine = place.spine
     page = place.page
   }
 
   fn back() {
+    touch()
     // A turn out of a chapter's first page lands on the last page of the one
     // before it (-1, resolved by show() once that chapter is laid out).
     let place = lib.backward(spine, page, engine.chapterCount(engineId))
@@ -970,6 +1016,7 @@ component Reader(book: lib.Book) {
   /// A table of contents row is a chapter's start. In scroll mode the column
   /// already holds every chapter: this is one scrollTo, never a new layout.
   fn jump(index: int) {
+    touch()
     let count = engine.chapterCount(engineId)
     if index < 0 || index >= count { return }
     if library.mode == "scroll" {
@@ -994,6 +1041,7 @@ component Reader(book: lib.Book) {
   /// A bookmark's place: a chapter, and how far into it. A table of contents
   /// row is a chapter's start; this is anywhere in it.
   fn goTo(chapter: int, percent: float) {
+    touch()
     let count = engine.chapterCount(engineId)
     if count <= 0 || chapter < 0 || chapter >= count { return }
     var at = percent
@@ -1022,6 +1070,7 @@ component Reader(book: lib.Book) {
   /// A link on the page: a URL goes to the app that takes it, a place in the
   /// book to its chapter — and, for a footnote, to its anchor in that chapter.
   fn follow(href: string) {
+    touch()
     if engineId <= 0 || href.isEmpty() { return }
     let target = engine.resolveLink(engineId, href)
     if !target.ok { return }
@@ -1118,6 +1167,7 @@ component Reader(book: lib.Book) {
           grow: 1
           background: palette.paper
           on scroll(x, y) {
+            touch()
             // The native Scroll moves the paper; the app only needs a new
             // window when the reader crosses a tile. The capsule gets its
             // own, much cheaper number.
@@ -1145,6 +1195,7 @@ component Reader(book: lib.Book) {
                   bookpage.BookPage(path: tile.path) {
                     grow: 1
                     on press(x, y) {
+                      touch()
                       // The band's y is the book's flow: a link is found in
                       // the chapter the tap fell in, at its own coordinates.
                       let href = linkAtFlow(x, tile.y + y)
@@ -1181,6 +1232,7 @@ component Reader(book: lib.Book) {
       bookpage.BookPage(path: pagePath) {
         grow: 1
         on press(x, y) {
+          touch()
           // A link is a box on the page: a tap in it goes where it says,
           // rather than turning the page under it.
           let href = engine.linkAt(engineId, page, x, y)
@@ -1211,7 +1263,7 @@ component Reader(book: lib.Book) {
         right: 8
         gap: 4
         Button("") {
-          icon: "chevron.left"
+          icon: Icons.back
           variant: .glass
           label: "返回"
           on press { emit close }
@@ -1219,20 +1271,20 @@ component Reader(book: lib.Book) {
         // 返回 on the left; the other two at the right, where a reader's are.
         View { grow: 1 }
         Button("") {
-          icon: "textformat"
+          icon: Icons.typography
           variant: .glass
           label: "排版"
           on press { present(Appearance(typeface: fontName)) }
         }
         Button("") {
-          icon: if marked != none { "bookmark.fill" } else { "bookmark" }
+          icon: if marked != none { Icons.bookmarkFilled } else { Icons.bookmark }
           variant: .glass
           label: "书签"
           tooltip: "书签"
           on press { toggleBookmark() }
         }
         Button("") {
-          icon: "list.bullet"
+          icon: Icons.contents
           variant: .glass
           label: "目录"
           tooltip: "目录"

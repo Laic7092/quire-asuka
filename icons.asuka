@@ -1,0 +1,54 @@
+// 应用里用到的图标，一处一个名字。
+//
+// iOS / macOS 用 SF Symbols；其它平台用 Material Symbols（Linux 的图标表
+// 是 Adwaita + Material，SF 专有的名字在那里画不出来）。所以每个图标
+// 在这里写两套名字，视图只说要哪个图标，不直接写某个平台的名字。
+//
+// 加图标时：先找 Apple 的名字，再确认另一个平台有对应的 Material 名字；
+// 两边都没有的图标不要用。Linux 的映射表在 Asuka 的 symbols_gen.c。
+//
+// 用法：
+//   Tab("书架") { icon: Icons.shelf }
+//   Symbol(Icons.statistics)
+//   icon: if connected { Icons.cloud } else { Icons.cloudOff }
+
+/// Apple 的 SF Symbol 与其它平台的 Material Symbol：同一个图标，两种名字。
+fn symbolName(apple: string, material: string) -> string {
+  if @platform == .iOS || @platform == .macOS { return apple }
+  return material
+}
+
+struct Icons {
+  /// 三个标签页。
+  let home = symbolName(apple: "house", material: "house")
+  let shelf = symbolName(apple: "books.vertical", material: "book.closed")
+  let search = symbolName(apple: "magnifyingglass", material: "magnifyingglass")
+
+  /// 我：头像与入口。
+  let profile = symbolName(apple: "person.crop.circle", material: "person")
+  let person = symbolName(apple: "person.fill", material: "person")
+  let cloud = symbolName(apple: "icloud", material: "icloud")
+  let cloudOff = symbolName(apple: "icloud.slash", material: "icloud.slash")
+  let syncBusy = symbolName(apple: "arrow.triangle.2.circlepath", material: "arrow.triangle.2.circlepath")
+  let syncFailed = symbolName(apple: "exclamationmark.circle", material: "exclamationmark.circle")
+  let statistics = symbolName(apple: "chart.bar.doc.horizontal", material: "chart.bar")
+  let goal = symbolName(apple: "target", material: "checkmark.circle")
+  let reminder = symbolName(apple: "bell.badge", material: "bell")
+  let appearance = symbolName(apple: "paintbrush", material: "textformat")
+  let about = symbolName(apple: "info.circle", material: "info.circle")
+
+  /// 首页：继续阅读、今年、之前读过。
+  let reading = symbolName(apple: "book", material: "book.closed")
+  let emptyBook = symbolName(apple: "book.closed", material: "book.closed")
+  let finished = symbolName(apple: "checkmark.circle", material: "checkmark.circle")
+  let bookmark = symbolName(apple: "bookmark", material: "bookmark")
+  let bookmarkFilled = symbolName(apple: "bookmark.fill", material: "bookmark.fill")
+
+  /// 阅读器与通用按钮。
+  let back = symbolName(apple: "chevron.left", material: "chevron.left")
+  let close = symbolName(apple: "xmark", material: "xmark")
+  let disclosure = symbolName(apple: "chevron.right", material: "chevron.right")
+  let typography = symbolName(apple: "textformat", material: "textformat")
+  let contents = symbolName(apple: "list.bullet", material: "list.bullet")
+  let add = symbolName(apple: "plus", material: "plus")
+}

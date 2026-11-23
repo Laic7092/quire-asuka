@@ -1,0 +1,387 @@
+// 阅读统计：总时长、天数、连续天数，最近七天，以及每本书自己的记录。
+// 数据是 Library 的每日行（一本书一天一行）；这一页只把它们摊开。
+
+import std/time
+
+import ./lib
+
+/// 时长的说法：秒、分钟、小时，都取整。
+fn span(seconds: int) -> string {
+  if seconds <= 0 { return "0 分钟" }
+  if seconds < 60 { return "{seconds} 秒" }
+  let minutes = seconds / 60
+  if minutes < 60 { return "{minutes} 分钟" }
+  let hours = minutes / 60
+  let rest = minutes % 60
+  if rest == 0 { return "{hours} 小时" }
+  return "{hours} 小时 {rest} 分"
+}
+
+/// 日期键 "2026-06-01" 显示成 "6月1日"。
+fn dayText(day: string) -> string {
+  if day.isEmpty() { return "" }
+  let at = lib.dateOf(day)
+  if at == none { return day }
+  return (at ?? time.now()).format("M月d日")
+}
+
+/// 星期几，给最近七天和每天的记录用。
+fn weekdayText(day: string) -> string {
+  if day.isEmpty() { return "" }
+  let at = lib.dateOf(day)
+  if at == none { return "" }
+  return (at ?? time.now()).format("EEE")
+}
+
+fn bookWithId(books: [lib.Book], id: string) -> lib.Book? {
+  for book in books {
+    if book.id == id { return book }
+  }
+  return none
+}
+
+/// 一个数字，下面一行小字：总时长、天数、连续天数都长这样。
+component StatCell(value: string, label: string) {
+  Column {
+    gap: 3
+    padding: [13, 14]
+    radius: 14
+    background: .secondaryBackground
+    Text(value) {
+      font: .title3.bold()
+      lines: 1
+    }
+    Text(label) {
+      font: .caption2
+      color: .secondaryLabel
+    }
+  }
+}
+
+/// 最近七天：每天一根柱子，今天是强调色。
+component WeekCard(days: [lib.DayTotal], todaySeconds: int) {
+  let peak = days.reduce(0, (n, day) => if day.seconds > n { day.seconds } else { n })
+
+  Column {
+    gap: 9
+    padding: 14
+    radius: 16
+    background: .secondaryBackground
+
+    Row {
+      gap: 8
+      align: .center
+      Text("最近 7 天") {
+        font: .footnote.bold()
+        grow: 1
+      }
+      Text("今天 {span(todaySeconds)}") {
+        font: .caption2
+        color: .secondaryLabel
+      }
+    }
+
+    Row {
+      gap: 6
+      align: .end
+      for day in days key day.day {
+        Column {
+          grow: 1
+          gap: 4
+          align: .center
+          View {
+            width: 20
+            height: 54
+            justify: .end
+            View {
+              width: 20
+              height: (if peak > 0 && day.seconds > 0 { 8 + 46 * float(day.seconds) / float(peak) } else { 5.0 }).int()
+              radius: 4
+              background: if day.seconds > 0 { .accent } else { .separator }
+            }
+          }
+          Text(weekdayText(day.day)) {
+            font: .caption2
+            color: if day.day == lib.today() { .accent } else { .tertiaryLabel }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// 每本书的一行：封面、书名、累计时长，以及读到哪里。没读过的书也在，
+/// 只是写着「还没读过」。
+component BookRecordRow(book: lib.Book, record: lib.BookRecord, reading: lib.Reading) {
+  event open
+
+  Row {
+    gap: 12
+    align: .center
+    padding: [9, 0]
+    on press { emit open }
+    Cover(book) { width: 40 }
+    Column {
+      grow: 1
+      gap: 3
+      Text(book.title) {
+        font: .body
+        lines: 1
+      }
+      Text(if record.seconds > 0 {
+        "{span(record.seconds)} · {record.days} 天"
+      } else if reading.percent > 0.001 {
+        "还没记录时长"
+      } else {
+        "还没读过"
+      }) {
+        font: .caption2
+        color: .secondaryLabel
+      }
+    }
+    Text(reading.label()) {
+      font: .caption2
+      color: if reading.percent >= 0.999 { .green } else { .secondaryLabel }
+    }
+    Symbol(Icons.disclosure) {
+      font: .caption2
+      color: .tertiaryLabel
+    }
+  }
+}
+
+/// 一本书自己的记录：累计、天数、第一次和最近一次，以及每天的明细。
+component BookRecordPage(book: lib.Book) {
+  use library: Library
+
+  event back
+
+  let rows = library.readingDays
+    .filter(row => row.book == book.id)
+    .sorted(key: row => row.day, descending: true)
+  let record = lib.ofBook(library.readingDays, book.id)
+  let reading = library.readingOf(book.id)
+
+  Column {
+    gap: 14
+    padding: [22, 20, 22, 20]
+
+    Row {
+      gap: 8
+      align: .center
+      Column {
+        grow: 1
+        gap: 2
+        Text("阅读记录") {
+          font: .title3
+        }
+        Text(book.title) {
+          font: .caption2
+          color: .secondaryLabel
+          lines: 1
+        }
+      }
+      Button("") {
+        icon: Icons.back
+        variant: .glass
+        label: "返回"
+        on press { emit back }
+      }
+    }
+
+    Scroll {
+      grow: 1
+      Column {
+        gap: 14
+
+        Row {
+          gap: 14
+          align: .center
+          Cover(book) { width: 72 }
+          Column {
+            grow: 1
+            gap: 3
+            Text(book.title) {
+              font: .headline
+              lines: 2
+            }
+            if !book.author.isEmpty() {
+              Text(book.author) {
+                font: .caption
+                color: .secondaryLabel
+              }
+            }
+            Text(reading.label()) {
+              font: .caption
+              color: if reading.percent >= 0.999 { .green } else { .secondaryLabel }
+            }
+            ReadingBar(reading.percent)
+          }
+        }
+
+        Row {
+          gap: 10
+          StatCell(span(record.seconds), "累计时长") { grow: 1 }
+          StatCell("{record.days} 天", "阅读天数") { grow: 1 }
+        }
+
+        Row {
+          gap: 10
+          StatCell(if record.first.isEmpty() { "—" } else { dayText(record.first) }, "第一次读") { grow: 1 }
+          StatCell(if record.last.isEmpty() { "—" } else { dayText(record.last) }, "最近在读") { grow: 1 }
+        }
+
+        Text("每天的记录") {
+          font: .headline
+        }
+
+        if rows.isEmpty() {
+          Text("还没有这本书的阅读时间。翻开读一会儿，关掉阅读页时就会记下。") {
+            font: .caption
+            color: .secondaryLabel
+          }
+        } else {
+          Column {
+            gap: 0
+            for row in rows key row.id() {
+              Row {
+                gap: 10
+                align: .center
+                padding: [10, 2]
+                Text(dayText(row.day)) {
+                  font: .body
+                  width: 74
+                }
+                Text(weekdayText(row.day)) {
+                  font: .caption2
+                  color: .tertiaryLabel
+                  grow: 1
+                }
+                Text(span(row.seconds)) {
+                  font: .caption
+                  color: .secondaryLabel
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// 阅读统计的入口：总体在上，点一本书进它自己的记录。
+component Stats {
+  use library: Library
+
+  event close
+
+  /// 哪本书的记录在显示；"" 是总体。
+  state bookId = ""
+
+  // 统计页要看整个书架：云端书库里没下载过的书，记录在这里按需拉。
+  task { await library.loadAllDocs() }
+
+  let rows = library.readingDays
+  let today = lib.today()
+  let total = lib.total(rows)
+  let dayCount = lib.daysRead(rows)
+  let streak = lib.streak(rows, today)
+  let todaySeconds = lib.totalOn(rows, today)
+  let week = lib.recent(rows, today: today, count: 7)
+  let books = library.books()
+  let records = books
+    .map(book => lib.ofBook(rows, book.id))
+    .sorted(key: record => record.seconds, descending: true)
+  let finished = library.readings.count(where: reading => reading.percent >= 0.999)
+
+  if !bookId.isEmpty() {
+    if let book = bookWithId(books, bookId) {
+      BookRecordPage(book) {
+        on back { bookId = "" }
+      }
+    } else {
+      // 书在别处被删掉了：回总体，别停在一个空的记录页。
+      Text("这本书已经不在书架上了") {
+        font: .caption
+        color: .secondaryLabel
+      }
+    }
+  } else {
+    Column {
+      gap: 14
+      padding: [22, 20, 22, 20]
+
+      Row {
+        gap: 8
+        align: .center
+        Column {
+          grow: 1
+          gap: 2
+          Text("阅读统计") {
+            font: .title3
+          }
+          Text(if books.isEmpty() { "读过的日子会记在这里" } else { "书架 {books.count()} 本 · 读完 {finished} 本" }) {
+            font: .caption2
+            color: .secondaryLabel
+          }
+        }
+        Button("") {
+          icon: Icons.close
+          variant: .glass
+          label: "关闭"
+          on press { emit close }
+        }
+      }
+
+      Scroll {
+        grow: 1
+        Column {
+          gap: 12
+
+          if rows.isEmpty() {
+            EmptyNote("还没有记录阅读时长。翻开一本书读一会儿，这里就会开始记下。") { icon: Icons.statistics }
+          }
+
+          Row {
+            gap: 10
+            StatCell(span(total), "总时长") { grow: 1 }
+            StatCell("{dayCount} 天", "阅读天数") { grow: 1 }
+          }
+          Row {
+            gap: 10
+            StatCell("{streak} 天", "连续阅读") { grow: 1 }
+            StatCell(span(todaySeconds), "今日阅读") { grow: 1 }
+          }
+
+          WeekCard(week, todaySeconds)
+
+          if !records.isEmpty() {
+            Row {
+              gap: 8
+              align: .center
+              Text("每本书") {
+                font: .headline
+                grow: 1
+              }
+              Text("按累计时长排序") {
+                font: .caption2
+                color: .tertiaryLabel
+              }
+            }
+            Column {
+              gap: 0
+              for record in records key record.book {
+                if let book = bookWithId(books, record.book) {
+                  BookRecordRow(book, record, library.readingOf(record.book)) {
+                    on open { bookId = record.book }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

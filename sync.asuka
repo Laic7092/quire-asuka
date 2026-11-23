@@ -1,6 +1,11 @@
-// What a sync moves: one file on the server that names every book on the
-// shelf, where each was left, its bookmarks, and the reader's type, plus the
-// books and covers themselves under books/ and covers/.
+// What a sync moves, in three layers:
+//
+//   catalog.json      the shelf, where each book is left, and the reader's
+//                     settings — small enough to sync on every pass.
+//   meta/<key>.json   one book's bookmarks and reading days, written only
+//                     when that book changes.
+//   blobs/<hash>      the book's bytes, content-addressed and never rewritten;
+//                     downloaded only when the reader opens that book.
 //
 // Merging is what makes it two-way: places and bookmarks the server has
 // newer come down, ones this device has newer stay, and the shelf is a
@@ -21,19 +26,21 @@ pub enum SyncError: Error {
   }
 }
 
-/// The state file, as the server keeps it. Everything here is JSON the
-/// language writes and reads by itself; the defaults are what a device that
+/// catalog.json, as the server keeps it: the shelf, progress, settings and
+/// the revision of each book's sidecar. The defaults are what a device that
 /// has never synced has, so a first sync can tell "the reader changed this"
 /// from "this is still the default".
 pub struct SyncSnapshot {
-  version: int = 1
+  version: int = 2
   /// When this file was written, in unix seconds. 0 for no file yet.
   updated: int = 0
   shelf: [lib.Shelf] = []
   readings: [lib.Reading] = []
-  bookmarks: [lib.Bookmark] = []
   /// Books taken off the shelf, and when: "id" -> unix seconds.
   removed: [string: int] = [:]
+  /// Each book's sidecar revision: "id" -> updated unix seconds. A device
+  /// only fetches meta/<key>.json when this is newer than what it has.
+  docs: [string: int] = [:]
   theme: string = "paper"
   size: float = 19.0
   line: float = 1.6
@@ -58,12 +65,14 @@ pub struct SyncReport {
   places: int = 0
   /// Bookmarks the server had and this device didn't.
   bookmarks: int = 0
+  /// 每本书的 sidecar 写回了几份（书签/统计有变化时）。
+  docs: int = 0
   /// Files that couldn't be moved this time: the sync goes on, the count
   /// says it wasn't all of it.
   failed: int = 0
 
   pub fn text() -> string {
-    if uploaded == 0 && downloaded == 0 && deleted == 0 && added == 0 && places == 0 && bookmarks == 0 && failed == 0 {
+    if uploaded == 0 && downloaded == 0 && deleted == 0 && added == 0 && places == 0 && bookmarks == 0 && docs == 0 && failed == 0 {
       return "已同步 · 没有要改的"
     }
     var parts: [string] = []
@@ -73,6 +82,7 @@ pub struct SyncReport {
     if deleted > 0 { parts.push("删除 {deleted} 个文件") }
     if places > 0 { parts.push("更新 {places} 处进度") }
     if bookmarks > 0 { parts.push("新增 {bookmarks} 个书签") }
+    if docs > 0 { parts.push("更新 {docs} 本书的记录") }
     if failed > 0 { parts.push("{failed} 个文件失败") }
     return "已同步 · " + parts.joined(separator: " · ")
   }
@@ -81,6 +91,21 @@ pub struct SyncReport {
 pub fn syncEncode(s: SyncSnapshot) -> string = json.encode(s, indent: 2)
 
 pub fn syncDecode(text: string) throws -> SyncSnapshot = try json.decode(text)
+
+/// 一本书的 sidecar：书签和每日阅读统计。进度在 catalog 里，因为它要跟着
+/// 书架及时走；这里放的是打开这本书时才需要、会越积越多的部分。
+pub struct BookDoc {
+  version: int = 1
+  /// 这份文档最后改动的时间（unix 秒）。catalog 的 docs[id] 用同一个值。
+  updated: int = 0
+  id: string = ""
+  bookmarks: [lib.Bookmark] = []
+  days: [lib.ReadingDay] = []
+}
+
+pub fn bookDocEncode(doc: BookDoc) -> string = json.encode(doc, indent: 2)
+
+pub fn bookDocDecode(text: string) throws -> BookDoc = try json.decode(text)
 
 /// The shelf, with the server's rows added and this device's kept: a row on
 /// both sides is the same book, and the one here has the path this launch
@@ -91,7 +116,18 @@ pub fn mergedShelf(local: [lib.Shelf], remote: [lib.Shelf], removed: [string: in
   var added = 0
   for row in remote {
     if !kept(row.id, row.added, removed) { continue }
-    if out.any(kept => kept.id == row.id) { continue }
+    if let at = out.index(kept => kept.id == row.id) {
+      // 两边的行是同一本书：路径用本机的，内容 hash 和封面可以取
+      // 服务端的，尤其是本机还没打开过、不知道 hash 的那些。
+      var same = out[at]
+      if same.hash.isEmpty() && !row.hash.isEmpty() {
+        same.hash = row.hash
+        same.bytes = row.bytes
+      }
+      if same.cover.isEmpty() && !row.cover.isEmpty() { same.cover = row.cover }
+      out[at] = same
+      continue
+    }
     out.push(row)
     added += 1
   }
@@ -133,6 +169,16 @@ pub fn mergedBookmarks(local: [lib.Bookmark], remote: [lib.Bookmark], removed: [
     out.push(mark)
     added += 1
   }
+  return (out, added)
+}
+
+/// 阅读时长也是两边的每日行放在一起：同一本书同一天一行，后写的赢。
+/// 一台设备当天读过、另一台也读过时，只有较晚的那次记录留下——宁可少算
+/// 一次，也不因为反复同步把同一段时间越加越多。
+pub fn mergedDays(local: [lib.ReadingDay], remote: [lib.ReadingDay], removed: [string: int]) -> ([lib.ReadingDay], int) {
+  let kept = local.filter(row => removed.get(row.book) == none)
+  var out = lib.merge(kept, remote.filter(row => removed.get(row.book) == none))
+  let added = out.count() - kept.count()
   return (out, added)
 }
 
