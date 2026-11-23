@@ -25,7 +25,7 @@ private final class PageHoldRecognizer: UILongPressGestureRecognizer {
     var down: CGPoint = .zero
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
-        if let touch = touches.first, let view { down = touch.location(in: view) }
+        if let touch = touches.first, let target = view { down = touch.location(in: target) }
         super.touchesBegan(touches, with: event)
     }
 }
