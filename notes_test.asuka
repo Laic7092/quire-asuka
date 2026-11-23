@@ -1,0 +1,72 @@
+// 笔记的保存：一个地方一条，改文字不算新的一条，删掉留墓碑。
+
+import ./lib
+
+test "a note keeps its quote and place" {
+  let library = Library()
+  library.notes = []
+  let id = library.addNote(
+    book: "a", chapter: 1, startLine: 3, startByte: 0, endLine: 3, endByte: 6,
+    percent: 0.25, quote: "背影", text: "想起父亲",
+  )
+  let kept = library.notesOf("a")
+  expect(kept.count() == 1)
+  expect(kept[0].id == id)
+  expect(kept[0].quote == "背影")
+  expect(kept[0].text == "想起父亲")
+  expect(kept[0].percent == 0.25)
+  expect(library.notesInChapter("a", chapter: 1).count() == 1)
+  expect(library.notesInChapter("a", chapter: 2).count() == 0)
+}
+
+test "the same place is the same note" {
+  let library = Library()
+  library.notes = []
+  library.addNote(book: "a", chapter: 0, startLine: 1, startByte: 0, endLine: 1, endByte: 3, percent: 0.1, quote: "背影", text: "一")
+  library.addNote(book: "a", chapter: 0, startLine: 1, startByte: 0, endLine: 1, endByte: 3, percent: 0.1, quote: "背影", text: "二")
+  expect(library.notesOf("a").count() == 1)
+  expect(library.notesOf("a")[0].text == "二")
+}
+
+test "a percent outside the chapter is kept at its edge" {
+  let library = Library()
+  library.notes = []
+  library.addNote(book: "a", chapter: 0, startLine: 0, startByte: 0, endLine: 0, endByte: 3, percent: 2.5, quote: "背影", text: "")
+  expect(library.notesOf("a")[0].percent == 1.0)
+}
+
+test "editing keeps the place and marks the book for sync" {
+  let library = Library()
+  library.notes = []
+  let id = library.addNote(book: "a", chapter: 0, startLine: 1, startByte: 0, endLine: 1, endByte: 3, percent: 0.1, quote: "背影", text: "")
+  library.updateNote(id, text: "后来才懂")
+  expect(library.notesOf("a")[0].text == "后来才懂")
+  expect(library.notesOf("a")[0].startLine == 1)
+  expect(library.docDirty.get("a") != none)
+}
+
+test "a removed note is a tombstone, not a gap" {
+  let library = Library()
+  library.notes = []
+  let id = library.addNote(book: "a", chapter: 0, startLine: 1, startByte: 0, endLine: 1, endByte: 3, percent: 0.1, quote: "背影", text: "x")
+  library.removeNote(id)
+  expect(library.notes.count() == 1)
+  expect(library.notes[0].deleted)
+  expect(library.notesOf("a").isEmpty())
+}
+
+test "taking a book off the shelf takes its notes too" {
+  let library = Library()
+  library.notes = []
+  library.shelf = []
+  library.addNote(book: "a", chapter: 0, startLine: 1, startByte: 0, endLine: 1, endByte: 3, percent: 0.1, quote: "背影", text: "x")
+  library.forget("a")
+  expect(library.notes.isEmpty())
+}
+
+test "a highlight has no words of its own and previews its quote" {
+  let note = lib.Note(id: "a:0:1:0", book: "a", chapter: 0, startLine: 1, startByte: 0,
+    endLine: 1, endByte: 9, quote: "我與父親不相見已二年餘了", text: "")
+  expect(!note.hasText())
+  expect(note.preview().hasPrefix("我與父親"))
+}

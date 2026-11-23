@@ -165,6 +165,16 @@ struct ScrollTile {
   path: string
 }
 
+/// A rectangle drawn over the page: a kept note's highlight, or the live
+/// selection being dragged. Page points, from the engine's selection.
+struct PageMark {
+  key: string
+  x: float
+  y: float
+  w: float
+  h: float
+}
+
 /// One scroll band's file name: a slice of the flow, which may cross a chapter.
 fn slicePath(book: string, y: float, height: float, width: float, viewHeight: float, insetLeft: float, insetRight: float, scale: float, tag: string) -> string {
   return fs.join([
@@ -186,6 +196,7 @@ fn markTitle(mark: lib.Bookmark, items: [engine.TocItem]) -> string {
 enum ContentsRowKind {
   header
   bookmark
+  note
   chapter
 }
 
@@ -198,12 +209,16 @@ struct ContentsRow {
   percent: float
   index: int
   id: string
+  /// A note row's quote and what the reader wrote; "" for other rows.
+  quote: string = ""
+  text: string = ""
 }
 
-/// The contents sheet's rows: the bookmarks under a 书签 heading when there are
-/// any, then the table of contents under its own.
-fn contentsRows(marks: [lib.Bookmark], items: [engine.TocItem]) -> [ContentsRow] {
+/// The contents sheet's rows: the bookmarks under a 书签 heading, the notes
+/// under a 笔记 one, then the table of contents under its own.
+fn contentsRows(marks: [lib.Bookmark], notes: [lib.Note], items: [engine.TocItem]) -> [ContentsRow] {
   var rows: [ContentsRow] = []
+  var sections = false
   if !marks.isEmpty() {
     rows.push(ContentsRow(kind: .header, title: "书签", chapter: 0, percent: 0, index: 0, id: "h.bookmarks"))
     for mark in marks {
@@ -212,6 +227,19 @@ fn contentsRows(marks: [lib.Bookmark], items: [engine.TocItem]) -> [ContentsRow]
         chapter: mark.chapter, percent: mark.percent, index: 0, id: mark.id,
       ))
     }
+    sections = true
+  }
+  if !notes.isEmpty() {
+    rows.push(ContentsRow(kind: .header, title: "笔记", chapter: 0, percent: 0, index: 0, id: "h.notes"))
+    for note in notes {
+      rows.push(ContentsRow(
+        kind: .note, title: note.preview(), chapter: note.chapter, percent: note.percent,
+        index: 0, id: note.id, quote: note.quote, text: note.text,
+      ))
+    }
+    sections = true
+  }
+  if sections {
     rows.push(ContentsRow(kind: .header, title: "目录", chapter: 0, percent: 0, index: 0, id: "h.toc"))
   }
   for (i, item) in items.enumerated() {
@@ -227,9 +255,10 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
   event pick(index: int)
   event goBookmark(chapter: int, percent: float)
   event dropBookmark(id: string)
+  event dropNote(id: string)
   use library: Library
 
-  let rows = contentsRows(library.bookmarksOf(book), items)
+  let rows = contentsRows(library.bookmarksOf(book), library.notesOf(book), items)
   let list = Ref()
 
   // The row for the chapter being read: a spine may be missing from the TOC,
@@ -286,6 +315,48 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
                 grow: 1
                 lines: 1
                 color: .label
+              }
+            }
+          }
+          .note => Menu {
+            longPress: true
+            actions: [
+              .button(title: "编辑", run: () => {
+                present(NoteEditor(quote: row.quote, draft: row.text, existing: true) {
+                  on save(text) {
+                    library.updateNote(row.id, text: text)
+                  }
+                  on remove { emit dropNote(row.id) }
+                })
+              }),
+              .button(title: "删除", role: .destructive, run: () => { emit dropNote(row.id) }),
+            ]
+            Row {
+              padding: [12, 20]
+              gap: 10
+              align: .center
+              on press {
+                emit goBookmark(chapter: row.chapter, percent: row.percent)
+                dismiss()
+              }
+              Column {
+                grow: 1
+                gap: 3
+                Text(row.title) {
+                  lines: 2
+                  color: .label
+                }
+                if !row.text.isEmpty() {
+                  Text(row.text) {
+                    font: .footnote
+                    lines: 1
+                    color: .secondaryLabel
+                  }
+                }
+              }
+              Text("{(row.percent * 100).int()}%") {
+                font: .caption
+                color: .secondaryLabel
               }
             }
           }
@@ -469,6 +540,64 @@ component Appearance(typeface: string) {
   }
 }
 
+/// A note being written: the quote it is about, above the words the reader
+/// has to say. A note already made can be taken off from here too.
+component NoteEditor(quote: string, draft: string, existing: bool) {
+  state text = draft
+
+  event save(text: string)
+  event remove
+
+  Column {
+    padding: [20, 20]
+    gap: 14
+
+    Text(if existing { "编辑笔记" } else { "笔记" }) { font: .title3 }
+
+    Column {
+      padding: [10, 12]
+      gap: 4
+      radius: 10
+      background: .secondaryBackground
+      Text(quote) {
+        font: .footnote
+        color: .secondaryLabel
+        lines: 6
+      }
+    }
+
+    TextField {
+      bind text: text
+      placeholder: "写下你的想法"
+    }
+
+    Row {
+      gap: 8
+      align: .center
+      if existing {
+        Button("删除") {
+          variant: .glass
+          on press {
+            emit remove
+            dismiss()
+          }
+        }
+      }
+      View { grow: 1 }
+      Button("取消") {
+        variant: .glass
+        on press { dismiss() }
+      }
+      Button("保存") {
+        on press {
+          emit save(text)
+          dismiss()
+        }
+      }
+    }
+  }
+}
+
 component Reader(book: lib.Book) {
   use library: Library
 
@@ -543,6 +672,23 @@ component Reader(book: lib.Book) {
   /// Restarts the save task; the place is written after the scroll settles.
   state placeTick = 0
 
+  /// 选区：长按选中一个词，按住拖到哪儿，远的那一端就跟到哪儿。两个端点
+  /// 是规范化之前的（锚点不动，焦点跟手指），保存时用引擎给的顺序。
+  state selOn = false
+  state selAnchorLine = 0
+  state selAnchorByte = 0
+  state selFocusLine = 0
+  state selFocusByte = 0
+  /// 规范化后的起点和终点：存下的笔记按它记，不按手指的方向。
+  state selStartLine = 0
+  state selStartByte = 0
+  state selEndLine = 0
+  state selEndByte = 0
+  state selText = ""
+  /// 选区在当前页上的矩形，和这一页已有的高亮。
+  state selRects: [PageMark] = []
+  state marks: [PageMark] = []
+
   /// 阅读时长：打开（或重新开始活动）的时刻、最后一次活动的时刻、已经记到
   /// 哪一刻。空闲超过五分钟就不再算，书页开着过夜不会记成读了一夜。
   state sessionAt = 0
@@ -558,6 +704,18 @@ component Reader(book: lib.Book) {
   let scrollList = Ref()
 
   let heading = if shownTitle.isEmpty() { book.title } else { shownTitle }
+  /// 选区动作条的位置：在选区上方，顶上放不下就放到下方。
+  let selTop = selRects.first()?.y ?? 0.0
+  let selBottom = (selRects.last()?.y ?? 0.0) + (selRects.last()?.h ?? 0.0)
+  let barTop = if selTop > env.safeTop + 70 {
+    selTop - 52
+  } else if selBottom + 56 < frame.height - env.safeBottom {
+    selBottom + 10
+  } else {
+    selTop - 52
+  }
+  let selectionFill = if library.theme == "night" { #6ea8fe55 } else { #0a84ff33 }
+  let noteFill = if library.theme == "night" { #f5b94244 } else { #f5c54266 }
   /// The bookmark at the place the reader is, if there is one: the button
   /// fills, and pressing it again takes it back. These change once a screen,
   /// not once a scroll event.
@@ -616,6 +774,9 @@ component Reader(book: lib.Book) {
   /// Actually lays the chapter out and rasterizes the page.
   fn show() {
     if engineId <= 0 || frame.width <= 32 || frame.height <= 64 { return }
+    // A new page, size or type: a selection belongs to the layout it was made
+    // in, so it goes before this one is drawn.
+    clearSelection()
     let chapterCount = engine.chapterCount(engineId)
     if spine >= chapterCount { spine = if chapterCount > 0 { chapterCount - 1 } else { 0 } }
     if library.mode != lastMode { switchMode() }
@@ -653,6 +814,7 @@ component Reader(book: lib.Book) {
       herePercent = info.progress
       library.save(book.id, spine, info.progress)
       announceReady()
+      refreshMarks()
     }
   }
 
@@ -669,6 +831,7 @@ component Reader(book: lib.Book) {
   /// the other way around. The first layout after opening keeps the place
   /// openBook took from the saved reading position.
   fn switchMode() {
+    clearSelection()
     if lastMode.isEmpty() {
       columnReady = false
     } else if library.mode == "scroll" {
@@ -868,6 +1031,108 @@ component Reader(book: lib.Book) {
     } else {
       snackbar("已删除书签")
     }
+  }
+
+  /// 长按落点：先选中那里的一个词。引擎给的行号与行内字节是这次排版里的
+  /// 位置，`wordAt` 从那一行的原文里量出词的两端。
+  fn beginSelection(x: float, y: float) {
+    touch()
+    if library.mode != "page" || engineId <= 0 || pages <= 0 { return }
+    let loc = engine.hit(engineId, page, x, y)
+    if loc.page < 0 { return }
+    let line = int(loc.line)
+    let word = lib.wordAt(engine.lineText(engineId, line), int(loc.byte))
+    selAnchorLine = line
+    selAnchorByte = word.start
+    selFocusLine = line
+    selFocusByte = word.end
+    if word.end <= word.start { return }
+    // 选字时把顶上的按钮收起来：它们会压在选区和动作条上。
+    chrome = false
+    updateSelection()
+  }
+
+  /// 按住拖：远的那一端跟到手指下的字。
+  fn extendSelection(x: float, y: float) {
+    if !selOn || engineId <= 0 { return }
+    let loc = engine.hit(engineId, page, x, y)
+    if loc.page < 0 { return }
+    selFocusLine = int(loc.line)
+    selFocusByte = int(loc.byte)
+    updateSelection()
+  }
+
+  /// 两端的引擎选区 → 当前页上要画的矩形和要存的位置。
+  fn updateSelection() {
+    let count = engine.selectLines(engineId, selAnchorLine, selAnchorByte, selFocusLine, selFocusByte)
+    if count <= 0 {
+      clearSelection()
+      return
+    }
+    let start = engine.selectionStart(engineId)
+    let end = engine.selectionEnd(engineId)
+    selStartLine = int(start.line)
+    selStartByte = int(start.byte)
+    selEndLine = int(end.line)
+    selEndByte = int(end.byte)
+    selText = engine.selectionText(engineId)
+    var rects: [PageMark] = []
+    var i = 0
+    for rect in engine.selectionRects(engineId) {
+      if rect.page != page { continue }
+      rects.push(PageMark(key: "s.{i}", x: rect.x, y: rect.y, w: rect.w, h: rect.h))
+      i += 1
+    }
+    selRects = rects
+    selOn = !selText.isEmpty()
+  }
+
+  fn finishSelection() {
+    if selOn && selText.trim().isEmpty() { clearSelection() }
+  }
+
+  fn clearSelection() {
+    if !selOn && selText.isEmpty() && selRects.isEmpty() { return }
+    selOn = false
+    selText = ""
+    selRects = []
+  }
+
+  /// 这一页上已有笔记的高亮。笔记按章和行号存：排版没变时引擎重新选中
+  /// 同一段原文，和存下的引文对得上才画；换了字号或屏幕、行号对不上的，
+  /// 宁可不画，也不把高亮画到别的字上。
+  fn refreshMarks() {
+    if engineId <= 0 || library.mode != "page" || pages <= 0 {
+      marks = []
+      return
+    }
+    var next: [PageMark] = []
+    for note in library.notesInChapter(book.id, chapter: spine) {
+      let count = engine.selectLines(engineId, note.startLine, note.startByte, note.endLine, note.endByte)
+      if count <= 0 { continue }
+      if engine.selectionText(engineId) != note.quote { continue }
+      var i = 0
+      for rect in engine.selectionRects(engineId) {
+        if rect.page != page { continue }
+        next.push(PageMark(key: "m.{note.id}.{i}", x: rect.x, y: rect.y, w: rect.w, h: rect.h))
+        i += 1
+      }
+    }
+    marks = next
+  }
+
+  /// 现在的选区存成一条笔记（`text` 为空时是一条高亮）。
+  fn keepSelection(text: string) {
+    if !selOn || engineId <= 0 { return }
+    let percent = engine.progress(engineId, selStartLine)
+    let _kept = library.addNote(
+      book.id, chapter: spine,
+      startLine: selStartLine, startByte: selStartByte,
+      endLine: selEndLine, endByte: selEndByte,
+      percent: percent, quote: selText, text: text,
+    )
+    clearSelection()
+    refreshMarks()
   }
 
   fn percentAt(y: float) -> int {
@@ -1097,6 +1362,7 @@ component Reader(book: lib.Book) {
 
   fn next() {
     touch()
+    clearSelection()
     let place = lib.forward(spine, page, pages, engine.chapterCount(engineId))
     spine = place.spine
     page = place.page
@@ -1104,6 +1370,7 @@ component Reader(book: lib.Book) {
 
   fn back() {
     touch()
+    clearSelection()
     // A turn out of a chapter's first page lands on the last page of the one
     // before it (-1, resolved by show() once that chapter is laid out).
     let place = lib.backward(spine, page, engine.chapterCount(engineId))
@@ -1115,6 +1382,7 @@ component Reader(book: lib.Book) {
   /// already holds every chapter: this is one scrollTo, never a new layout.
   fn jump(index: int) {
     touch()
+    clearSelection()
     let count = engine.chapterCount(engineId)
     if index < 0 || index >= count { return }
     if library.mode == "scroll" {
@@ -1140,6 +1408,7 @@ component Reader(book: lib.Book) {
   /// row is a chapter's start; this is anywhere in it.
   fn goTo(chapter: int, percent: float) {
     touch()
+    clearSelection()
     let count = engine.chapterCount(engineId)
     if count <= 0 || chapter < 0 || chapter >= count { return }
     var at = percent
@@ -1169,6 +1438,7 @@ component Reader(book: lib.Book) {
   /// book to its chapter — and, for a footnote, to its anchor in that chapter.
   fn follow(href: string) {
     touch()
+    clearSelection()
     if engineId <= 0 || href.isEmpty() { return }
     let target = engine.resolveLink(engineId, href)
     if !target.ok { return }
@@ -1335,6 +1605,12 @@ component Reader(book: lib.Book) {
         grow: 1
         on press(x, y) {
           touch()
+          // A tap drops a selection; the gestures that make one are the
+          // page's hold, drag and release.
+          if selOn {
+            clearSelection()
+            return
+          }
           // A link is a box on the page: a tap in it goes where it says,
           // rather than turning the page under it.
           let href = engine.linkAt(engineId, page, x, y)
@@ -1351,6 +1627,79 @@ component Reader(book: lib.Book) {
             }
           }
           let _where = y
+        }
+        on hold(x, y) { beginSelection(x, y) }
+        on drag(x, y) { extendSelection(x, y) }
+        on release { finishSelection() }
+      }
+    }
+
+    // 选区和高亮画在页面位图上面。Canvas 不接点击（没有事件的画布把点击
+    // 交给下面的 BookPage），所以长按、拖动和翻页照旧。
+    if library.mode == "page" && !pagePath.isEmpty() && (!marks.isEmpty() || !selRects.isEmpty()) {
+      Canvas(g => {
+        if !marks.isEmpty() {
+          let path = g.path()
+          for mark in marks { path.rect(mark.x, mark.y, mark.w, mark.h) }
+          g.fill(path, noteFill)
+        }
+        if !selRects.isEmpty() {
+          let path = g.path()
+          for mark in selRects { path.rect(mark.x, mark.y, mark.w, mark.h) }
+          g.fill(path, selectionFill)
+        }
+      }) {
+        absolute: true
+        top: 0
+        left: 0
+        width: frame.width
+        height: frame.height
+      }
+    }
+
+    // 选区定下来后的一排动作：复制、高亮、写笔记，或者不要这个选区。
+    if selOn {
+      Row {
+        absolute: true
+        top: barTop
+        left: 8
+        right: 8
+        justify: .center
+        gap: 6
+        Button("复制") {
+          variant: .glass
+          font: Font(size: 13)
+          on press {
+            device.copy(selText)
+            snackbar("已复制")
+          }
+        }
+        Button("高亮") {
+          variant: .glass
+          font: Font(size: 13)
+          on press {
+            keepSelection("")
+            snackbar("已高亮")
+          }
+        }
+        Button("笔记") {
+          variant: .glass
+          font: Font(size: 13)
+          on press {
+            present(NoteEditor(quote: selText, draft: "", existing: false) {
+              on save(text) {
+                keepSelection(text)
+                snackbar("已保存笔记")
+              }
+            })
+          }
+        }
+        Button("") {
+          icon: Icons.close
+          variant: .glass
+          label: "取消"
+          tooltip: "取消"
+          on press { clearSelection() }
         }
       }
     }
@@ -1398,6 +1747,10 @@ component Reader(book: lib.Book) {
               }
               on goBookmark(chapter, percent) { goTo(chapter, percent) }
               on dropBookmark(id) { library.removeBookmark(id) }
+              on dropNote(id) {
+                library.removeNote(id)
+                refreshMarks()
+              }
             })
           }
         }

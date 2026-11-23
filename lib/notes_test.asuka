@@ -1,0 +1,41 @@
+// 选中一个词的边界：英文按字母数字，中文一个字，标点选它自己。
+
+test "a word in English takes its whole run of letters" {
+  let line = "The quick brown fox"
+  let at = line.find("quick") ?? 0
+  let word = wordAt(line, at + 2)
+  expect(line.byteSlice(word.start, word.end) == "quick")
+}
+
+test "a word at the end of a line stops there" {
+  let line = "quick"
+  let word = wordAt(line, 4)
+  expect(word.start == 0)
+  expect(word.end == 5)
+}
+
+test "Chinese has no word boundary: one character" {
+  let line = "我與父親不相見"
+  let word = wordAt(line, 6) // the third character, 父
+  expect(line.byteSlice(word.start, word.end) == "父")
+  expect(word.end - word.start == 3)
+}
+
+test "punctuation selects itself" {
+  let line = "你好，世界"
+  let comma = line.find("，") ?? 0
+  let word = wordAt(line, comma)
+  expect(line.byteSlice(word.start, word.end) == "，")
+}
+
+test "a byte in the middle of a character still selects that character" {
+  let line = "背影"
+  let word = wordAt(line, 1)
+  expect(line.byteSlice(word.start, word.end) == "背")
+}
+
+test "an empty line has nothing to select" {
+  let word = wordAt("", 3)
+  expect(word.start == 0)
+  expect(word.end == 0)
+}

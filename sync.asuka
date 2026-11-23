@@ -2,8 +2,8 @@
 //
 //   catalog.json      the shelf, where each book is left, and the reader's
 //                     settings — small enough to sync on every pass.
-//   meta/<key>.json   one book's bookmarks and reading days, written only
-//                     when that book changes.
+//   meta/<key>.json   one book's bookmarks, notes and reading days, written
+//                     only when that book changes.
 //   blobs/<hash>      the book's bytes, content-addressed and never rewritten;
 //                     downloaded only when the reader opens that book.
 //
@@ -65,6 +65,8 @@ pub struct SyncReport {
   places: int = 0
   /// Bookmarks the server had and this device didn't.
   bookmarks: int = 0
+  /// Notes (highlights included) the server had and this device didn't.
+  notes: int = 0
   /// 每本书的 sidecar 写回了几份（书签/统计有变化时）。
   docs: int = 0
   /// Files that couldn't be moved this time: the sync goes on, the count
@@ -72,7 +74,7 @@ pub struct SyncReport {
   failed: int = 0
 
   pub fn text() -> string {
-    if uploaded == 0 && downloaded == 0 && deleted == 0 && added == 0 && places == 0 && bookmarks == 0 && docs == 0 && failed == 0 {
+    if uploaded == 0 && downloaded == 0 && deleted == 0 && added == 0 && places == 0 && bookmarks == 0 && notes == 0 && docs == 0 && failed == 0 {
       return "已同步 · 没有要改的"
     }
     var parts: [string] = []
@@ -82,6 +84,7 @@ pub struct SyncReport {
     if deleted > 0 { parts.push("删除 {deleted} 个文件") }
     if places > 0 { parts.push("更新 {places} 处进度") }
     if bookmarks > 0 { parts.push("新增 {bookmarks} 个书签") }
+    if notes > 0 { parts.push("新增 {notes} 条笔记") }
     if docs > 0 { parts.push("更新 {docs} 本书的记录") }
     if failed > 0 { parts.push("{failed} 个文件失败") }
     return "已同步 · " + parts.joined(separator: " · ")
@@ -92,7 +95,7 @@ pub fn syncEncode(s: SyncSnapshot) -> string = json.encode(s, indent: 2)
 
 pub fn syncDecode(text: string) throws -> SyncSnapshot = try json.decode(text)
 
-/// 一本书的 sidecar：书签和每日阅读统计。进度在 catalog 里，因为它要跟着
+/// 一本书的 sidecar：书签、笔记和每日阅读统计。进度在 catalog 里，因为它要跟着
 /// 书架及时走；这里放的是打开这本书时才需要、会越积越多的部分。
 pub struct BookDoc {
   version: int = 1
@@ -101,6 +104,8 @@ pub struct BookDoc {
   id: string = ""
   bookmarks: [lib.Bookmark] = []
   days: [lib.ReadingDay] = []
+  /// 笔记和高亮：删掉的是墓碑，不是缺失，合并时按 id 与更新时间取新的。
+  notes: [lib.Note] = []
 }
 
 pub fn bookDocEncode(doc: BookDoc) -> string = json.encode(doc, indent: 2)
@@ -170,6 +175,27 @@ pub fn mergedBookmarks(local: [lib.Bookmark], remote: [lib.Bookmark], removed: [
     added += 1
   }
   return (out, added)
+}
+
+/// Notes are values (their text can change), so the same id is one note and the
+/// newer write wins — a tombstone is a write too, and keeps a note the other
+/// device still has from coming back.
+pub fn mergedNotes(local: [lib.Note], remote: [lib.Note], removed: [string: int]) -> ([lib.Note], int) {
+  var out = local.filter(note => removed.get(note.book) == none)
+  var changed = 0
+  for note in remote {
+    if removed.get(note.book) != none { continue }
+    if let at = out.index(kept => kept.id == note.id) {
+      if note.updated > out[at].updated {
+        out[at] = note
+        changed += 1
+      }
+    } else {
+      out.push(note)
+      changed += 1
+    }
+  }
+  return (out, changed)
 }
 
 /// 阅读时长也是两边的每日行放在一起：同一本书同一天一行，后写的赢。

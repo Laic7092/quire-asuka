@@ -40,6 +40,11 @@ private final class PageMapping {
     private var shown = ""
     private var requested = ""
     private var wanted = 0
+    /// A tap before this time is the long press's own: while it is held, and
+    /// for a moment after it lifts. The two recognizers see the same lift, in
+    /// no promised order, so the guard is set when the press begins, not when
+    /// it ends.
+    private var tapBlockedUntil: CFTimeInterval = 0
 
     var view: AsukaPlatformView { picture }
 
@@ -62,9 +67,17 @@ private final class PageMapping {
 #if canImport(UIKit)
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         picture.addGestureRecognizer(tap)
+        // A long press starts a selection; moving while held extends it.
+        let hold = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
+        hold.minimumPressDuration = 0.35
+        hold.allowableMovement = 12
+        picture.addGestureRecognizer(hold)
 #else
         let click = NSClickGestureRecognizer(target: self, action: #selector(handleClick(_:)))
         picture.addGestureRecognizer(click)
+        // A desktop's mouse selects by dragging, as it does in any text.
+        let pan = NSPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        picture.addGestureRecognizer(pan)
 #endif
     }
 
@@ -72,14 +85,55 @@ private final class PageMapping {
     /// A tap, in the page's points: the reader turns the page by its third.
     @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
         guard let target = recognizer.view else { return }
+        if ProcessInfo.processInfo.systemUptime < tapBlockedUntil { return }
         let point = recognizer.location(in: target)
         events.press(x: Double(point.x), y: Double(point.y))
+    }
+
+    @objc private func handleLongPress(_ recognizer: UILongPressGestureRecognizer) {
+        guard let target = recognizer.view else { return }
+        let point = recognizer.location(in: target)
+        switch recognizer.state {
+        case .began:
+            tapBlockedUntil = ProcessInfo.processInfo.systemUptime + 3600
+            events.hold(x: Double(point.x), y: Double(point.y))
+        case .changed:
+            events.drag(x: Double(point.x), y: Double(point.y))
+        case .ended, .cancelled, .failed:
+            tapBlockedUntil = ProcessInfo.processInfo.systemUptime + 0.8
+            events.release()
+        default:
+            break
+        }
     }
 #else
     @objc private func handleClick(_ recognizer: NSClickGestureRecognizer) {
         guard let target = recognizer.view else { return }
+        if ProcessInfo.processInfo.systemUptime < tapBlockedUntil { return }
         let point = recognizer.location(in: target)
         events.press(x: Double(point.x), y: Double(target.bounds.height - point.y))
+    }
+
+    @objc private func handlePan(_ recognizer: NSPanGestureRecognizer) {
+        guard let target = recognizer.view else { return }
+        let point = recognizer.location(in: target)
+        // The drag is recognized after a few points of movement: take the
+        // finger's first place from the translation, so the word selected is
+        // the one the press was on, not the one it had moved to.
+        let offset = recognizer.translation(in: target)
+        let start = NSPoint(x: point.x - offset.x, y: point.y - offset.y)
+        switch recognizer.state {
+        case .began:
+            tapBlockedUntil = ProcessInfo.processInfo.systemUptime + 3600
+            events.hold(x: Double(start.x), y: Double(target.bounds.height - start.y))
+        case .changed:
+            events.drag(x: Double(point.x), y: Double(target.bounds.height - point.y))
+        case .ended, .cancelled:
+            tapBlockedUntil = ProcessInfo.processInfo.systemUptime + 0.8
+            events.release()
+        default:
+            break
+        }
     }
 #endif
 

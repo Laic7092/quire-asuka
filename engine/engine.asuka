@@ -27,6 +27,18 @@ extern struct Loc {
   progress: Float32
 }
 
+/// One rectangle of a selection, in the page's own points.
+extern struct SelectionRect {
+  /// 0: no such rectangle.
+  ok: Int32
+  /// The page it's on.
+  page: UInt32
+  x: Float32
+  y: Float32
+  w: Float32
+  h: Float32
+}
+
 /// A book's link, resolved: a URL outside it, or a place inside it.
 extern struct EbLink {
   ok: Int32
@@ -129,6 +141,15 @@ extern fn eb_plain_scroll_anchor_y(id: Int32, spine: UInt32, fragment: CString) 
 extern fn eb_plain_scroll_progress(id: Int32, y: Float32) -> Float32
 extern fn eb_plain_hit(id: Int32, page: UInt32, x: Float32, y: Float32) -> Loc
 extern fn eb_plain_progress(id: Int32, page: UInt32, line: UInt32, byte: UInt32) -> Float32
+extern fn eb_plain_select(
+  id: Int32, aPage: UInt32, aLine: UInt32, aByte: UInt32,
+  bPage: UInt32, bLine: UInt32, bByte: UInt32,
+) -> Int32
+extern fn eb_plain_selection_rect_count(id: Int32) -> UInt32
+extern fn eb_plain_selection_rect(id: Int32, index: UInt32) -> SelectionRect
+extern fn eb_plain_selection_text(id: Int32) -> CString
+extern fn eb_plain_selection_start(id: Int32) -> Loc
+extern fn eb_plain_selection_end(id: Int32) -> Loc
 extern fn eb_plain_toc_count(id: Int32) -> UInt32
 extern fn eb_plain_toc_title(id: Int32, index: UInt32) -> CString
 extern fn eb_plain_toc_spine(id: Int32, index: UInt32) -> Int32
@@ -314,6 +335,76 @@ pub fn flowProgress(id: int, y: float) -> float = eb_plain_scroll_progress(i32(c
 
 /// Where this point in the page falls in the text.
 pub fn hit(id: int, page: int, x: float, y: float) -> Loc = eb_plain_hit(i32(clamping: id), u32(clamping: page), x, y)
+
+/// One rectangle of a selection, in page points.
+pub struct Rect {
+  page: int
+  x: float
+  y: float
+  w: float
+  h: float
+}
+
+/// Selects from `a` to `b` (a `hit`'s page, line and byte), in either order.
+/// Returns how many rectangles it made; 0 means empty or nothing to select.
+/// The selection is kept on the handle for the readers below, until the next
+/// call.
+pub fn select(id: int, a: Loc, b: Loc) -> int {
+  if id <= 0 { return 0 }
+  let count = eb_plain_select(
+    i32(clamping: id),
+    u32(clamping: a.page), a.line, a.byte,
+    u32(clamping: b.page), b.line, b.byte,
+  )
+  return if count > 0 { int(count) } else { 0 }
+}
+
+/// Selects by line and byte, for places a caller kept rather than hit.
+pub fn selectLines(id: int, aLine: int, aByte: int, bLine: int, bByte: int) -> int {
+  if id <= 0 { return 0 }
+  let count = eb_plain_select(
+    i32(clamping: id), 0, u32(clamping: aLine), u32(clamping: aByte),
+    0, u32(clamping: bLine), u32(clamping: bByte),
+  )
+  return if count > 0 { int(count) } else { 0 }
+}
+
+/// One line of the last laid-out chapter, by its line number (the line a
+/// `hit` gives): "" when there's no such line. It asks for the line as a
+/// selection, so the text is exactly the source the line was set from.
+pub fn lineText(id: int, line: int) -> string {
+  if id <= 0 || line < 0 { return "" }
+  let count = eb_plain_select(
+    i32(clamping: id), 0, u32(clamping: line), 0,
+    0, u32(clamping: line), 0xffffffff,
+  )
+  if count <= 0 { return "" }
+  return eb_plain_selection_text(i32(clamping: id))
+}
+
+/// The last selection's rectangles, in page points.
+pub fn selectionRects(id: int) -> [Rect] {
+  var out: [Rect] = []
+  if id <= 0 { return out }
+  let key = i32(clamping: id)
+  let count = eb_plain_selection_rect_count(key)
+  for i in 0..<int(count) {
+    let rect = eb_plain_selection_rect(key, u32(clamping: i))
+    if rect.ok == 0 { continue }
+    out.push(Rect(page: int(rect.page), x: rect.x, y: rect.y, w: rect.w, h: rect.h))
+  }
+  return out
+}
+
+/// The last selection's text ("" when there's none).
+pub fn selectionText(id: int) -> string {
+  if id <= 0 { return "" }
+  return eb_plain_selection_text(i32(clamping: id))
+}
+
+/// The last selection's normalized start and end.
+pub fn selectionStart(id: int) -> Loc = eb_plain_selection_start(i32(clamping: id))
+pub fn selectionEnd(id: int) -> Loc = eb_plain_selection_end(i32(clamping: id))
 
 /// The link at a point on the last laid-out page: "" when there's none.
 pub fn linkAt(id: int, page: int, x: float, y: float) -> string {

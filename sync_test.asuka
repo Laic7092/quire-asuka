@@ -100,6 +100,37 @@ test "bookmarks are put together, the same place once" {
   expect(rows.count() == 2)
 }
 
+test "notes are put together, the newer write winning" {
+  let here = [
+    lib.Note(id: "a:0:1:0", book: "a", chapter: 0, startLine: 1, startByte: 0,
+      endLine: 1, endByte: 9, quote: "背影", text: "old", updated: 10),
+  ]
+  let there = [
+    lib.Note(id: "a:0:1:0", book: "a", chapter: 0, startLine: 1, startByte: 0,
+      endLine: 1, endByte: 9, quote: "背影", text: "new", updated: 20),
+    lib.Note(id: "b:2:4:0", book: "b", chapter: 2, startLine: 4, startByte: 0,
+      endLine: 4, endByte: 6, quote: "野草", updated: 30),
+  ]
+  let (rows, changed) = mergedNotes(here, there, [:])
+  expect(changed == 2)
+  expect(rows.count() == 2)
+  expect(rows[0].text == "new")
+}
+
+test "a deleted note stays deleted when the server still has it" {
+  let here = [
+    lib.Note(id: "a:0:1:0", book: "a", chapter: 0, startLine: 1, startByte: 0,
+      endLine: 1, endByte: 9, quote: "背影", updated: 20, deleted: true),
+  ]
+  let there = [
+    lib.Note(id: "a:0:1:0", book: "a", chapter: 0, startLine: 1, startByte: 0,
+      endLine: 1, endByte: 9, quote: "背影", updated: 10),
+  ]
+  let (rows, _) = mergedNotes(here, there, [:])
+  expect(rows.count() == 1)
+  expect(rows[0].deleted)
+}
+
 test "removals keep the newer note" {
   let rows = mergedRemoved(["a": 100, "b": 50], ["a": 30, "c": 70])
   expect(rows.get("a") == 100)
@@ -158,10 +189,14 @@ test "a book's sidecar reads back its bookmarks and days" {
     id: "a",
     bookmarks: [lib.Bookmark(id: "a:2:2500", book: "a", chapter: 2, percent: 0.25)],
     days: [lib.ReadingDay(book: "a", day: "2026-01-01", seconds: 90, updated: 1700000000)],
+    notes: [lib.Note(id: "a:2:9:0", book: "a", chapter: 2, startLine: 9, startByte: 0,
+      endLine: 9, endByte: 6, quote: "背影", text: "好", updated: 1700000000)],
   )
   let back = try bookDocDecode(bookDocEncode(doc))
   expect(back.id == "a")
   expect(back.updated == 1700000000)
   expect(back.bookmarks[0].id == "a:2:2500")
   expect(back.days[0].seconds == 90)
+  expect(back.notes[0].quote == "背影")
+  expect(back.notes[0].text == "好")
 }

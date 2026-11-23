@@ -9,6 +9,12 @@
 pub native component BookPage(path: string) {
   /// A tap: where it landed in the page, in points.
   event press(x: float, y: float)
+  /// A long press: where it began, in points. The reader selects from here.
+  event hold(x: float, y: float)
+  /// Moved while held: where the finger is now. It extends the selection.
+  event drag(x: float, y: float)
+  /// Lifted: the selection is where the last drag put it.
+  event release
 }
 
 /// Where this platform keeps a font, by family name: iOS's fonts are inside

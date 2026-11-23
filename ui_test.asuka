@@ -654,6 +654,53 @@ test "the contents sheet lists bookmarks, and drops one" {
   library.removeBookmark(dropped)
 }
 
+test "the contents sheet lists a note, and edits it in place" {
+  let library = Library()
+  library.notes = []
+  library.addNote("散文選", chapter: 1, startLine: 3, startByte: 0, endLine: 3, endByte: 6,
+    percent: 0.3, quote: "背影", text: "")
+  let items = [
+    engine.TocItem(title: "第一章", spine: 0, depth: 0),
+    engine.TocItem(title: "第二章", spine: 1, depth: 0),
+  ]
+  let app = mount(Contents(items, 1, "散文選"), provide: library)
+  await app.idle()
+  app.expect("笔记")
+  app.expect("背影")
+  // A long press opens the note's own menu; the words are written in its
+  // editor, which saves them into the note it was opened from.
+  app.longPress("背影")
+  await app.idle()
+  app.tap("编辑")
+  await app.idle()
+  app.expect("编辑笔记")
+  app.type("后来才懂", into: "写下你的想法")
+  app.tap("保存")
+  await app.idle()
+  expect(library.notesOf("散文選").count() == 1)
+  expect(library.notesOf("散文選")[0].text == "后来才懂")
+  library.removeNote(library.notesOf("散文選")[0].id)
+}
+
+test "a note row's menu can delete it" {
+  let library = Library()
+  library.notes = []
+  library.addNote("散文選", chapter: 1, startLine: 3, startByte: 0, endLine: 3, endByte: 6,
+    percent: 0.3, quote: "背影", text: "")
+  let items = [engine.TocItem(title: "第一章", spine: 0, depth: 0)]
+  var dropped = ""
+  let app = mount(Contents(items, 1, "散文選") {
+    on dropNote(id) { dropped = id }
+  }, provide: library)
+  await app.idle()
+  app.longPress("背影")
+  await app.idle()
+  app.tap("删除")
+  expect(!dropped.isEmpty())
+  library.removeNote(dropped)
+  expect(library.notesOf("散文選").isEmpty())
+}
+
 test "the bookmark button's action keeps a place, and takes it back" {
   let lib = Library()
   for mark in lib.bookmarksOf("書") {

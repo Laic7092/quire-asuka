@@ -119,6 +119,16 @@ async fn savePassword(provider: string, password: string) throws {
   }
 }
 
+/// The next time a row changed, past the one it had: two edits in the same
+/// second still order one after the other.
+fn nextStamp(previous: int) -> int {
+  let now = time.now().unix()
+  return if now > previous { now } else { previous + 1 }
+}
+
+/// Notes that aren't tombstones, across every book.
+fn notesOfAny(all: [lib.Note]) -> int = all.filter(n => !n.deleted).count()
+
 /// A book's row, with the moment it came onto the shelf: a book put back
 /// after being taken off outranks the note that hid it, here and in a sync.
 fn rowOf(book: lib.Book) -> lib.Shelf {
@@ -140,6 +150,9 @@ pub store Library {
   pub state readingDays: [lib.ReadingDay] = store.read("stats.days", [])
   /// 书签：一本书里的位置，章内进度加分章，不是页码（换字号也还准）。
   pub state bookmarks: [lib.Bookmark] = store.read("bookmarks", [])
+  /// 笔记与高亮：一章里选中的一段原文，加上读者写的话。删掉的留一个
+  /// 记号（墓碑），同步时不会从另一台设备上回来。
+  pub state notes: [lib.Note] = store.read("notes", [])
   pub state theme: string = store.read("reader.theme", "paper")
   pub state size: float = store.read("reader.size", 19.0)
   /// 行距，一行的字号的倍数。
@@ -217,6 +230,7 @@ pub store Library {
   effect { store.write("readings", readings) }
   effect { store.write("stats.days", readingDays) }
   effect { store.write("bookmarks", bookmarks) }
+  effect { store.write("notes", notes) }
   effect { store.write("shelf.seeded", seeded) }
   effect { store.write("reader.theme", theme) }
   effect { store.write("reader.size", size) }
@@ -358,6 +372,7 @@ pub store Library {
     readings.removeWhere(r => r.id == id)
     readingDays = readingDays.filter(d => d.book != id)
     bookmarks = bookmarks.filter(b => b.book != id)
+    notes = notes.filter(n => n.book != id)
     pinned = pinned.filter(p => p != id)
     lastOpened.remove(id)
     docKnown.remove(id)
@@ -534,6 +549,79 @@ pub store Library {
     return true
   }
 
+  /// A book's notes (highlights too), in the order they were made.
+  pub fn notesOf(book: string) -> [lib.Note] = notes.filter(n => n.book == book && !n.deleted)
+
+  /// The notes whose place is in one chapter: the reader draws these on a page.
+  pub fn notesInChapter(book: string, chapter: int) -> [lib.Note] {
+    return notesOf(book).filter(n => n.chapter == chapter)
+  }
+
+  /// A note at a place: the same chapter, starting within a fifth of a percent
+  /// of the same fraction (the two modes count a place slightly differently).
+  pub fn noteAt(book: string, chapter: int, percent: float) -> lib.Note? {
+    for note in notesOf(book) {
+      if note.chapter != chapter { continue }
+      if (note.percent - percent).abs() < 0.002 { return note }
+    }
+    return none
+  }
+
+  /// Keeps a selection as a note (or a highlight, with no text). The place
+  /// already kept there is the same note, changed. Returns its id.
+  pub fn addNote(book: string, chapter: int, startLine: int, startByte: int, endLine: int, endByte: int, percent: float, quote: string, text: string) -> string {
+    let id = lib.noteId(book, chapter: chapter, startLine: startLine, startByte: startByte)
+    var at = percent
+    if at < 0 { at = 0 }
+    if at > 1 { at = 1 }
+    if let i = notes.index(n => n.id == id) {
+      var kept = notes[i]
+      kept.startLine = startLine
+      kept.startByte = startByte
+      kept.endLine = endLine
+      kept.endByte = endByte
+      kept.percent = at
+      kept.quote = quote
+      kept.text = text
+      kept.deleted = false
+      kept.updated = nextStamp(kept.updated)
+      notes[i] = kept
+    } else {
+      let now = time.now().unix()
+      notes.push(lib.Note(
+        id: id, book: book, chapter: chapter,
+        startLine: startLine, startByte: startByte, endLine: endLine, endByte: endByte,
+        percent: at, quote: quote, text: text, created: now, updated: now,
+      ))
+    }
+    touchDoc(book)
+    return id
+  }
+
+  /// Rewrites what the note says; its place and quote stay.
+  pub fn updateNote(id: string, text: string) {
+    if let i = notes.index(n => n.id == id) {
+      var note = notes[i]
+      note.text = text
+      note.deleted = false
+      note.updated = nextStamp(note.updated)
+      notes[i] = note
+      touchDoc(note.book)
+    }
+  }
+
+  /// Takes a note off: a tombstone, not a gap, so a sync doesn't put it back.
+  pub fn removeNote(id: string) {
+    if let i = notes.index(n => n.id == id) {
+      var note = notes[i]
+      if note.deleted { return }
+      note.deleted = true
+      note.updated = nextStamp(note.updated)
+      notes[i] = note
+      touchDoc(note.book)
+    }
+  }
+
   /// 记下一段阅读时间：由阅读页在关闭、翻页或滚动时写入。负数和空
   /// 片段不记，一本书的一天始终只有一行。
   pub fn recordReading(book: string, seconds: int) {
@@ -696,8 +784,10 @@ pub store Library {
     if let text = text, let doc = try? bookDocDecode(text) {
       let (days, _) = mergedDays(readingDays, doc.days, removedIds)
       let (marks, _) = mergedBookmarks(bookmarks, doc.bookmarks, removedIds)
+      let (kept, _) = mergedNotes(notes, doc.notes, removedIds)
       readingDays = days
       bookmarks = marks
+      notes = kept
       docKnown[id] = doc.updated
     }
   }
@@ -1002,6 +1092,7 @@ pub store Library {
     var known = docKnown
     var nextDays = readingDays
     var nextMarks = bookmarks
+    var nextNotes = notes
     for row in nextShelf {
       let id = row.id
       let remoteRev = docs.get(id) ?? 0
@@ -1018,8 +1109,10 @@ pub store Library {
             if let doc = try? bookDocDecode(text) {
               let (days, _) = mergedDays(nextDays, doc.days, live)
               let (marks, _) = mergedBookmarks(nextMarks, doc.bookmarks, live)
+              let (scribbles, _) = mergedNotes(nextNotes, doc.notes, live)
               nextDays = days
               nextMarks = marks
+              nextNotes = scribbles
               if doc.updated > knownRev { known[id] = doc.updated }
               if doc.updated > (docs.get(id) ?? 0) { docs[id] = doc.updated }
             }
@@ -1040,6 +1133,7 @@ pub store Library {
           id: id,
           bookmarks: nextMarks.filter(m => m.book == id),
           days: nextDays.filter(d => d.book == id),
+          notes: nextNotes.filter(n => n.book == id),
         )
         do {
           try await davPutText(cfg, docPath(id), bookDocEncode(doc))
@@ -1059,16 +1153,21 @@ pub store Library {
     let (finalReadings, finalPlaces) = mergedReadings(readings, server.readings, finalLive)
     let finalDays = lib.merge(readingDays, nextDays)
     let (finalMarks, _) = mergedBookmarks(bookmarks, nextMarks, finalLive)
+    let (finalNotes, _) = mergedNotes(notes, nextNotes, finalLive)
     let beforeMarks = bookmarks.count()
+    let beforeNotes = notesOfAny(notes)
 
     shelf = finalShelf
     readings = finalReadings
     readingDays = finalDays
     bookmarks = finalMarks
+    notes = finalNotes
     removedIds = finalLive
     report.added = finalAdded
     report.places = finalPlaces
     report.bookmarks = if finalMarks.count() > beforeMarks { finalMarks.count() - beforeMarks } else { 0 }
+    let afterNotes = notesOfAny(finalNotes)
+    report.notes = if afterNotes > beforeNotes { afterNotes - beforeNotes } else { 0 }
 
     var finalKnown: [string: int] = [:]
     var finalRemote: [string: int] = [:]

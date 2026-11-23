@@ -1,0 +1,109 @@
+// 笔记：选中的一段原文，加上读者写的话。位置和书签一样按「章 + 章内比例」
+// 存（换字号也还准），选区端点的行号和字节只用来在当前排版里画出高亮。
+//
+// 这里是纯数据和纯文本的一部分：没有界面，也不碰文件。选中的是哪一个词
+// 由 `wordAt` 从一行的原文和命中的字节偏移算出来，单独可测。
+
+/// 一条笔记：书、章、选区的两个端点、引用原文和读者写的话。
+pub struct Note {
+  /// 由书、章和起点决定：同一个地方只留一条。
+  id: string
+  book: string
+  chapter: int
+  /// 选区起点（全章行号和行内字节）：只对做出这条笔记时的排版有效，
+  /// 用来画高亮；位置本身看 `percent`。
+  startLine: int
+  startByte: int
+  endLine: int
+  endByte: int
+  /// 起点在本章里的进度 0…1：跳转和排序用它，不依赖排版。
+  percent: float = 0
+  /// 选中的原文。
+  quote: string
+  /// 读者写的话；只有高亮没有字时是 ""。
+  text: string = ""
+  created: int = 0
+  /// 最后改动的时间：两边同步时后写的赢。
+  updated: int = 0
+  /// 删掉的笔记留一个记号（墓碑），免得下一次同步又把它带回来。
+  deleted: bool = false
+
+  /// 列表里的一行：有笔记写笔记的头一行，否则是引文的头一行。
+  pub fn preview() -> string {
+    let source = if !text.trim().isEmpty() { text.trim() } else { quote.trim() }
+    let first = source.lines().find(l => !l.trim().isEmpty()) ?? ""
+    let clean = first.trim()
+    return if clean.count() > 42 { "{clean.slice(0, 42)}…" } else { clean }
+  }
+
+  /// 有没有读者写的字（false 表示这只是一条高亮）。
+  pub fn hasText() -> bool = !text.trim().isEmpty()
+}
+
+/// 一条笔记的 id：同一本书、同一章、同一个起点，只有一条。
+pub fn noteId(book: string, chapter: int, startLine: int, startByte: int) -> string =
+  "{book}:{chapter}:{startLine}:{startByte}"
+
+/// 一次选中的区间，行内字节偏移，`end` 不含。
+pub struct WordRange {
+  start: int
+  end: int
+}
+
+/// 一个字符在 UTF-8 里占几个字节。
+pub fn charBytes(c: char) -> int {
+  let n = c.code()
+  if n < 0x80 { return 1 }
+  if n < 0x800 { return 2 }
+  if n < 0x10000 { return 3 }
+  return 4
+}
+
+fn isWord(c: char) -> bool = c.isLetter() || c.isDigit() || c.isNumber()
+
+/// 中文、日文和韩文按字算：它们不用空格分词，一整行都是「字母」，
+/// 连成一片就没有词的边界了。
+fn isIdeograph(c: char) -> bool {
+  let n = c.code()
+  return (n >= 0x3400 && n <= 0x9fff)
+    || (n >= 0xf900 && n <= 0xfaff)
+    || (n >= 0x3040 && n <= 0x30ff)
+    || (n >= 0xac00 && n <= 0xd7af)
+    || (n >= 0x20000 && n <= 0x2fa1f)
+}
+
+/// 长按落在 `byte` 上时选中哪个词：英文的一串字母数字，或者中文的一个字
+/// （中文没有词边界，选中一个字，拖两端再扩）。落在标点上就选标点自己。
+pub fn wordAt(text: string, byte: int) -> WordRange {
+  let chars = text.chars()
+  if chars.isEmpty() { return WordRange(start: 0, end: 0) }
+  // 每个字符的起点，最后加一个总长。
+  var offsets: [int] = []
+  var at = 0
+  for c in chars {
+    offsets.push(at)
+    at += charBytes(c)
+  }
+  offsets.push(at)
+
+  var target = byte
+  if target < 0 { target = 0 }
+  if target >= at { target = at - 1 }
+  // 命中的字节落在哪个字符里。
+  var index = 0
+  for i in 0..<chars.count() {
+    if target >= offsets[i] && target < offsets[i + 1] {
+      index = i
+      break
+    }
+  }
+
+  if !isWord(chars[index]) || isIdeograph(chars[index]) {
+    return WordRange(start: offsets[index], end: offsets[index + 1])
+  }
+  var lo = index
+  while lo > 0 && isWord(chars[lo - 1]) { lo -= 1 }
+  var hi = index + 1
+  while hi < chars.count() && isWord(chars[hi]) { hi += 1 }
+  return WordRange(start: offsets[lo], end: offsets[hi])
+}
