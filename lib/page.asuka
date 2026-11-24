@@ -5,3 +5,11 @@
 // 也用它。iOS 与 macOS 读得宽一点：20 在手机上显得贴边。
 
 pub let pageKeyline: float = if @platform == .iOS || @platform == .macOS { 24 } else { 20 }
+
+/// A sheet's padding: its own, plus the landscape side insets. A sheet isn't
+/// a screen, so nothing pads its content for the notch; without this its rows
+/// run into the side edges when the phone is turned.
+pub fn sheetPad(top: float, bottom: float, side: float) -> Edges {
+  let env = environment()
+  return Edges(top: top, right: side + env.safeRight, bottom: bottom, left: side + env.safeLeft)
+}

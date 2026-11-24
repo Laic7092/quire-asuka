@@ -25,6 +25,11 @@ let shelfGridGap: float = 22
 // the row (a narrow window can still end with narrower ones).
 let shelfTileCover: float = 150
 let shelfTileMax: float = 200
+// 封面在格子里留一点边：整行仍然均分，但封面不顶满格子，整页轻一些。
+let shelfTileFit: float = 0.92
+// 网格里放封面的槽：封面按自己的比例站在槽底，槽高固定，行高才不会
+// 被一张特别高的封面撑开，进度行也始终在同一条线上。
+let shelfCoverSlot: float = 0.62
 let shelfRowCover: float = 44
 let shelfRowGap: float = 12
 
@@ -52,6 +57,8 @@ component Cover(book: lib.Book) {
   /// 封面的宽。书脊上的书名按它缩放：40pt 的列表封面和 150pt 的网格封面
   /// 不能共用一套字号，否则小封面里的字会挤出封面再被裁掉。
   prop size = shelfTileCover
+  /// 网格里让图片按自己的比例（长宽比）显示；列表仍用统一的小框。
+  prop natural = false
 
   // The book's row may predate covers: ask the engine once, then keep the
   // file next to the app's data. Text books have no cover and keep the spine.
@@ -84,34 +91,46 @@ component Cover(book: lib.Book) {
   // 溢出封面。
   let innerWidth = size - 2 * pad
 
-  View {
-    width: size
-    // 封面是固定尺寸：标题再长也不该把它挤窄。
-    shrink: 0
-    aspectRatio: 0.68
-    radius: 8
-    clip: true
-    background: spine(book.title)
-    // 书站在纸上，给它一点影子；iOS 上裁切会把影子一起裁掉，宿主自己
-    // 把子视图裁进另一层再留影子，这里只写一句。
-    shadow: Shadow(color: #0000002e, radius: 6, y: 3)
-    if !cover.isEmpty() && fs.exists(cover) {
-      Image(source: cover) {
-        grow: 1
-        mode: .fill
-      }
-    } else {
-      Column {
-        grow: 1
-        justify: .center
-        align: .center
-        padding: pad
-        Text(book.title) {
-          width: innerWidth
-          font: Font(size: titleSize)
-          color: #f4efe6
-          lines: 3
-          textAlign: .center
+  if natural && !cover.isEmpty() && fs.exists(cover) {
+    // 只定宽，高度交给图片的原始比例；外面那个固定高的槽负责让行整齐。
+    Image(source: cover) {
+      width: size
+      shrink: 0
+      radius: 8
+      clip: true
+      background: spine(book.title)
+      shadow: Shadow(color: #0000002e, radius: 6, y: 3)
+    }
+  } else {
+    View {
+      width: size
+      // 封面是固定尺寸：标题再长也不该把它挤窄。
+      shrink: 0
+      aspectRatio: 0.68
+      radius: 8
+      clip: true
+      background: spine(book.title)
+      // 书站在纸上，给它一点影子；iOS 上裁切会把影子一起裁掉，宿主自己
+      // 把子视图裁进另一层再留影子，这里只写一句。
+      shadow: Shadow(color: #0000002e, radius: 6, y: 3)
+      if !cover.isEmpty() && fs.exists(cover) {
+        Image(source: cover) {
+          grow: 1
+          mode: .fill
+        }
+      } else {
+        Column {
+          grow: 1
+          justify: .center
+          align: .center
+          padding: pad
+          Text(book.title) {
+            width: innerWidth
+            font: Font(size: titleSize)
+            color: #f4efe6
+            lines: 3
+            textAlign: .center
+          }
         }
       }
     }
@@ -125,21 +144,46 @@ component BookTile(book: lib.Book, reading: lib.Reading) {
   /// 一格占的宽：封面与它同宽，格子因此正好填满一行，封面贴在两边的
   /// keyline 上。
   prop cellWidth = shelfTileCover
+  /// 长按时弹出的菜单。只有封面接住它，槽里的空白和下面的进度行不接。
+  prop menu: [Action] = []
   event open
 
   // 文件不在本机：云端有就是「按需下载」，没有才是真的找不到。
   let missing = !book.remote && !book.path.isEmpty() && !fs.exists(book.path)
+  // 封面比格子窄一点，左右各留出一点白；下面那一行也跟着封面收，
+  // 否则进度条会比封面宽，看着像错位。
+  let coverWidth = cellWidth * shelfTileFit
+  let coverSlotHeight = coverWidth / shelfCoverSlot
 
   Column {
     width: cellWidth
     gap: 6
     align: .center
-    on press { emit open }
-    Cover(book) { size: cellWidth }
+    // 固定高的槽：每张封面按自己的比例站在槽底，行高由槽决定，不跟着
+    // 封面长短变。
+    Column {
+      width: cellWidth
+      height: coverSlotHeight
+      justify: .end
+      align: .center
+      Menu {
+        longPress: true
+        actions: menu
+        width: coverWidth
+        View {
+          width: coverWidth
+          on press { emit open }
+          Cover(book) {
+            size: coverWidth
+            natural: true
+          }
+        }
+      }
+    }
     // 网格只给封面和进度：书名在封面上，作者留给列表。文件不在本机时
     // 这一行改成说哪一种不在。云端状态贴在它的右侧。
     Row {
-      width: cellWidth
+      width: coverWidth
       gap: 5
       align: .center
       Text(if missing {
@@ -279,20 +323,22 @@ component BookCell(book: lib.Book, reading: lib.Reading) {
     first + cloudItems + last
   }
 
-  Menu {
-    longPress: true
-    actions: menuActions
-    if mode == "list" {
+  if mode == "list" {
+    // 列表里整行都是书，长按整行；网格只让封面接住长按。
+    Menu {
+      longPress: true
+      actions: menuActions
       BookRow(book, reading) {
         showCloud: showCloud
         on open { emit open }
       }
-    } else {
-      BookTile(book, reading) {
-        showCloud: showCloud
-        cellWidth: cellWidth
-        on open { emit open }
-      }
+    }
+  } else {
+    BookTile(book, reading) {
+      showCloud: showCloud
+      cellWidth: cellWidth
+      menu: menuActions
+      on open { emit open }
     }
   }
 }
@@ -447,7 +493,7 @@ component ShelfDisplay {
 
   Column {
     gap: 16
-    padding: [22, 22, 30, 22]
+    padding: lib.sheetPad(top: 22, bottom: 30, side: 22)
 
     Row {
       gap: 8
@@ -661,6 +707,7 @@ screen Shelf {
   // 网格一行摆几本：窗口宽度算出来的列数，书也按它攒成 List 的行。
   state gridColumns = 2
 
+  let env = environment()
   let books = library.books()
   let listMode = library.shelfLayout == "list"
   let ordered = lib.sortBooks(books, library.readings, library.shelfSort)
@@ -669,9 +716,11 @@ screen Shelf {
   View {
     grow: 1
     // 书架的宽就是这一页的宽（List 和 Scroll 都没有 layout 事件）：
-    // 一行的格宽是它减去 keyline 和格间距后，按列数均分。
+    // 一行的格宽是内容区减去 keyline 和格间距后，按列数均分。
+    // 横屏时页面左右有安全区，列表被收在里面，算列数也得先减掉，
+    // 否则会按整屏宽多算一列，最后一列被截掉。
     on layout(f) {
-      let room = f.width - 2 * lib.pageKeyline
+      let room = f.width - env.safeLeft - env.safeRight - 2 * lib.pageKeyline
       var n = max(1, int((room + shelfGridGap) / (shelfTileCover + shelfGridGap)))
       // 窄窗口（小屏手机、分屏）放不下两本 150pt 的书时，一张封面会
       // 撑满整行：多分一列，书小一点，也不让一行只有一张大封面。
@@ -702,11 +751,12 @@ screen Shelf {
         View { grow: 1 }
       }
     } else if listMode {
-      // 列表模式：行自己留 keyline，滚动条贴着安全区的边；10 是列表
-      // 上下的留白。外面套 SafeArea：iPhone 横屏的左右安全区也要让开，
-      // 否则 List 铺到整屏宽，行会顶出右边。
-      SafeArea {
+      // 只让开横屏的左右安全区。上下不能包 SafeArea：List 自己已经按
+      // 导航栏和 tab 栏调整内容，再让一次会把内容挤到中间，也滚不到
+      // 液态玻璃下面。
+      View {
         grow: 1
+        padding: [0, env.safeLeft, 0, env.safeRight]
         Column {
           grow: 1
           padding: [10, 0]
@@ -724,12 +774,14 @@ screen Shelf {
       }
     } else {
       // 网格：每一行书是 List 的一行。滚动条贴着安全区的边，keyline 放
-      // 进行里；每行上下各留半格，两行合起来就是一个格间距。外面套
-      // SafeArea，和列表一样避开横屏的左右安全区。
-      SafeArea {
+      // 进行里；每行上下各留半格，两行合起来就是一个格间距。左右同样
+      // 只让安全区，上下留给 List 自己处理。
+      View {
         grow: 1
+        padding: [0, env.safeLeft, 0, env.safeRight]
         List {
           grow: 1
+          appearance: .bare
           padding: [11, 0]
           for (i, row) in gridRows.enumerated() key i {
             Row {

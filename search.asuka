@@ -364,7 +364,7 @@ component SourceManager {
   Column {
     grow: 1
     gap: 14
-    padding: [22, 22, 26, 22]
+    padding: lib.sheetPad(top: 22, bottom: 26, side: 22)
 
     Row {
       gap: 8
@@ -493,7 +493,7 @@ component SourceImport {
 
   Column {
     gap: 14
-    padding: [22, 22, 28, 22]
+    padding: lib.sheetPad(top: 22, bottom: 28, side: 22)
 
     Row {
       gap: 8
@@ -571,6 +571,7 @@ screen Search {
   state busy = false
   state results: [Hit] = []
   state note = ""
+  let env = environment()
 
   toolbar {
     Button("书源") {
@@ -630,21 +631,57 @@ screen Search {
     }
   }
 
-  SafeArea {
+  // 上下的安全区不能整页套 SafeArea：结果列表自己会按 tab 栏调整，
+  // 再让一次就滚不到玻璃下面。左右让开，顶部的搜索行自己加 safeTop。
+  View {
     grow: 1
+    padding: [0, env.safeLeft, 0, env.safeRight]
     background: .background
 
     // 搜索框和按钮常驻在第一行，不再依赖右上角的系统搜索按钮。
     Row {
       gap: 8
       align: .center
-      padding: [10, lib.pageKeyline]
-      TextField {
-        bind text: key
+      padding: [env.safeTop + 10, lib.pageKeyline, 10, lib.pageKeyline]
+
+      // iOS 原生搜索框是灰底圆角、带放大镜和清除按钮的 UISearchTextField；
+      // 裸 UITextField 只有一圈旧式圆角边框，看着像拼上去的。这里自己
+      // 做出那层壳，输入本身仍然走原生 TextField。
+      Row {
+        gap: 6
+        align: .center
         grow: 1
-        placeholder: "书名或作者"
-        on submit { await run() }
+        shrink: 1
+        basis: 0
+        height: 36
+        padding: [0, 10]
+        radius: 10
+        background: .secondaryBackground
+        Symbol(Icons.search) {
+          font: .subheadline
+          color: .secondaryLabel
+        }
+        TextField {
+          bind text: key
+          plain: true
+          grow: 1
+          shrink: 1
+          minWidth: 0
+          placeholder: "书名或作者"
+          autocapitalize: .off
+          autocorrect: .no
+          returnKey: .search
+          on submit { await run() }
+        }
+        if !key.isEmpty() {
+          Button("") {
+            icon: Icons.close
+            variant: .plain
+            on press { key = "" }
+          }
+        }
       }
+
       Button("搜索") {
         variant: .tinted
         on press { await run() }
@@ -657,7 +694,7 @@ screen Search {
         justify: .center
         align: .center
         gap: 14
-        padding: [24, 40]
+        padding: [24, 40, env.safeBottom + 24, 40]
         Symbol(Icons.contents) {
           font: .title
           color: .tertiaryLabel
@@ -680,7 +717,7 @@ screen Search {
         justify: .center
         align: .center
         gap: 10
-        padding: [24, 40]
+        padding: [24, 40, env.safeBottom + 24, 40]
         if busy {
           ProgressRing {}
           Text("正在 {allSources.enabledCount()} 个书源里找…") {

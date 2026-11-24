@@ -77,7 +77,7 @@ component SyncConnection {
 
   Column {
     gap: 14
-    padding: [22, 20, 22, 20]
+    padding: lib.sheetPad(top: 22, bottom: 22, side: 20)
     on press { blurFields() }
 
     Row {
@@ -362,7 +362,7 @@ component SyncSettings {
   } else if page == "storage" {
     Column {
       gap: 14
-      padding: [22, 20, 22, 20]
+      padding: lib.sheetPad(top: 22, bottom: 22, side: 20)
 
       Row {
         gap: 8
@@ -440,7 +440,7 @@ component SyncSettings {
   } else {
     Column {
       gap: 14
-      padding: [22, 20, 22, 20]
+      padding: lib.sheetPad(top: 22, bottom: 22, side: 20)
 
       Row {
         gap: 8

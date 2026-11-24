@@ -256,7 +256,7 @@ component Profile {
   } else {
     Column {
       gap: 18
-      padding: [20, 20, 24, 20]
+      padding: lib.sheetPad(top: 20, bottom: 24, side: 20)
 
       Row {
         gap: 14
@@ -346,6 +346,8 @@ screen Home {
   /// A book was chosen: the app opens the reader over everything.
   event open(book: lib.Book)
 
+  state showingProfile = false
+
   title: "首页"
   largeTitle: true
 
@@ -355,10 +357,11 @@ screen Home {
       icon: Icons.profile
       variant: .glass
       tooltip: "阅读记录、同步与设置"
-      on press { present(Profile()) }
+      on press { showingProfile = true }
     }
   }
 
+  let env = environment()
   let books = library.books()
   let rows = library.readings
   let reading = rows.filter(isReading).sorted(key: r => r.updated, descending: true)
@@ -381,9 +384,11 @@ screen Home {
   })
 
   // iPhone 横屏的左右有安全区，List 直接铺满整屏时行会顶出右边；
-  // 让 List 的框落在安全区以内，每一行就都在这块宽里。
-  SafeArea {
+  // 只给左右让出安全区。上下留给 List 自己：它会按导航栏和 tab 栏
+  // 调整内容，还让内容滚到液态玻璃下面；再包 SafeArea 就会挤成两条。
+  View {
     grow: 1
+    padding: [0, env.safeLeft, 0, env.safeRight]
     List {
       grow: 1
       appearance: .bare
@@ -444,6 +449,14 @@ screen Home {
           }
         }
       }
+    }
+    // 我只有头像和三行，默认半屏就够；想大可以拖上去。
+    Sheet {
+      open: showingProfile
+      detents: [.medium, .large]
+      grabber: true
+      on change(open) { showingProfile = open }
+      Profile()
     }
   }
 }

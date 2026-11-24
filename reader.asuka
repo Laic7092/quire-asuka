@@ -304,8 +304,9 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
   }
 
   Column {
+    grow: 1
     gap: 0
-    padding: [16, 0]
+    padding: lib.sheetPad(top: 16, bottom: 0, side: 0)
     background: palette.paper
     Row {
       padding: [8, 20]
@@ -313,11 +314,13 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
       align: .center
       Text("目录") {
         font: .title3
+        color: palette.ink
         grow: 1
       }
       Button("") {
         icon: Icons.close
         variant: .glass
+        color: palette.ink
         on press { dismiss() }
       }
     }
@@ -331,7 +334,7 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
             padding: [12, 20]
             Text(row.title) {
               font: .footnote
-              color: .secondaryLabel
+              color: palette.muted
             }
           }
           .bookmark => Menu {
@@ -348,7 +351,7 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
               Text(row.title) {
                 grow: 1
                 lines: 1
-                color: .label
+                color: palette.ink
               }
             }
           }
@@ -378,19 +381,19 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
                 gap: 3
                 Text(row.title) {
                   lines: 2
-                  color: .label
+                  color: palette.ink
                 }
                 if !row.text.isEmpty() {
                   Text(row.text) {
                     font: .footnote
                     lines: 1
-                    color: .secondaryLabel
+                    color: palette.muted
                   }
                 }
               }
               Text("{(row.percent * 100).int()}%") {
                 font: .caption
-                color: .secondaryLabel
+                color: palette.muted
               }
             }
           }
@@ -406,11 +409,11 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
               grow: 1
               lines: 2
               font: if row.chapter == at { .body.bold() } else { .body }
-              color: if row.chapter == at { .accent } else { .label }
+              color: if row.chapter == at { .accent } else { palette.ink }
             }
             Text("{row.chapter + 1}") {
               font: .caption
-              color: .secondaryLabel
+              color: palette.muted
             }
           }
         }
@@ -455,7 +458,8 @@ component Appearance(typeface: string) {
   state word = norm(peek(library.word), -0.2, 0.2)
 
   Column {
-    padding: [24, 24]
+    grow: 1
+    padding: lib.sheetPad(top: 24, bottom: 24, side: 24)
     gap: 16
     background: palette.paper
 
@@ -464,16 +468,21 @@ component Appearance(typeface: string) {
       align: .center
       Text("阅读设置") {
         font: .title3
+        color: palette.ink
         grow: 1
       }
       Button("") {
         icon: Icons.close
         variant: .glass
+        color: palette.ink
         on press { dismiss() }
       }
     }
 
-    Text("翻页方式") { font: .headline }
+    Text("翻页方式") {
+      font: .headline
+      color: palette.ink
+    }
     Segmented(["分页", "滚动"]) {
       selected: if library.mode == "scroll" { 1 } else { 0 }
       on change(i) { library.mode = if i == 1 { "scroll" } else { "page" } }
@@ -484,6 +493,7 @@ component Appearance(typeface: string) {
       align: .center
       Text("字号") {
         font: .subheadline
+        color: palette.ink
         width: 42
       }
       Slider {
@@ -498,7 +508,7 @@ component Appearance(typeface: string) {
       }
       Text("{denorm(size, 14, 30).rounded().int()} 点") {
         font: .footnote
-        color: .secondaryLabel
+        color: palette.muted
         width: 44
         textAlign: .end
       }
@@ -509,6 +519,7 @@ component Appearance(typeface: string) {
       align: .center
       Text("行距") {
         font: .subheadline
+        color: palette.ink
         width: 42
       }
       Slider {
@@ -523,7 +534,7 @@ component Appearance(typeface: string) {
       }
       Text("{denorm(line, 0.8, 2.5).fixed(1)} 倍") {
         font: .footnote
-        color: .secondaryLabel
+        color: palette.muted
         width: 44
         textAlign: .end
       }
@@ -535,6 +546,7 @@ component Appearance(typeface: string) {
       align: .center
       Text("边距") {
         font: .subheadline
+        color: palette.ink
         width: 42
       }
       Slider {
@@ -549,7 +561,7 @@ component Appearance(typeface: string) {
       }
       Text(signedPercent(denorm(margins, -0.1, 0.1))) {
         font: .footnote
-        color: .secondaryLabel
+        color: palette.muted
         width: 44
         textAlign: .end
       }
@@ -560,6 +572,7 @@ component Appearance(typeface: string) {
       align: .center
       Text("字距") {
         font: .subheadline
+        color: palette.ink
         width: 42
       }
       Slider {
@@ -574,7 +587,7 @@ component Appearance(typeface: string) {
       }
       Text(signedPercent(denorm(letter, -0.1, 0.1))) {
         font: .footnote
-        color: .secondaryLabel
+        color: palette.muted
         width: 44
         textAlign: .end
       }
@@ -585,6 +598,7 @@ component Appearance(typeface: string) {
       align: .center
       Text("词距") {
         font: .subheadline
+        color: palette.ink
         width: 42
       }
       Slider {
@@ -599,13 +613,16 @@ component Appearance(typeface: string) {
       }
       Text(signedPercent(denorm(word, -0.2, 0.2))) {
         font: .footnote
-        color: .secondaryLabel
+        color: palette.muted
         width: 44
         textAlign: .end
       }
     }
 
-    Text("纸色") { font: .headline }
+    Text("纸色") {
+      font: .headline
+      color: palette.ink
+    }
     Segmented(papers.map(p => p[1])) {
       selected: papers.index(p => p[0] == library.theme) ?? 0
       on change(i) { library.theme = papers[i][0] }
@@ -613,7 +630,7 @@ component Appearance(typeface: string) {
     if !typeface.isEmpty() {
       Text("字体：{typeface}") {
         font: .footnote
-        color: .secondaryLabel
+        color: palette.muted
       }
     }
   }
@@ -631,26 +648,35 @@ component NoteEditor(quote: string, draft: string, existing: bool) {
   event remove
 
   Column {
-    padding: [20, 20]
+    grow: 1
+    padding: lib.sheetPad(top: 20, bottom: 20, side: 20)
     gap: 14
     background: palette.paper
 
-    Text(if existing { "编辑笔记" } else { "笔记" }) { font: .title3 }
+    Text(if existing { "编辑笔记" } else { "笔记" }) {
+      font: .title3
+      color: palette.ink
+    }
 
     Column {
       padding: [10, 12]
       gap: 4
       radius: 10
-      background: .secondaryBackground
+      background: palette.rule
       Text(quote) {
         font: .footnote
-        color: .secondaryLabel
+        color: palette.muted
         lines: 6
       }
     }
 
     TextField {
       bind text: text
+      plain: true
+      color: palette.ink
+      background: palette.rule
+      radius: 10
+      padding: [8, 10]
       placeholder: "写下你的想法"
     }
 
