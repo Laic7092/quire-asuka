@@ -25,6 +25,16 @@ WebDAV 同步走 `std/http`：iOS / macOS 的 URLSession、Linux 的 libsoup 与
 
 同步密码优先存系统钥匙串（`platform/secure`）。没有钥匙串的桌面（例如没装或没运行 Secret Service 的 Linux）会退回到应用目录里一个仅本人可读（`0600`）的 `sync-password` 文件，并在同步页提示；这样每次启动不用重输。
 
+## Windows 构建（暂停）
+
+`.github/workflows/windows.yml` 先停在手动触发（`workflow_dispatch`）。在 Linux 上用 Zig 0.14.1 能跑出 `dist/windows-amd64/Quire/Quire.exe` 与 `.zip`，但产物还不能用，原因不在这个仓库：
+
+1. **引擎库得是 mingw 的**。`ebook-engine` 的 release 只出 `x86_64-pc-windows-msvc` 的 `ebook_abi.lib`，而 asuka 的 Windows 构建用 zig 的 mingw（`x86_64-windows-gnu`）链接：两套 CRT 混着链，`lld-link` 会报 `duplicate symbol .weak.__udivti3.default` 和一堆 MSVC 符号（`__chkstk`、`_fltused`、`WaitOnAddress`、`type_info::vftable`）。本地是拿引擎源码 `cargo build --target x86_64-pc-windows-gnu` 补的，`asuka.toml` 现在指向 mingw 版；release 补上这个目标（或流水线就地编）才能回 CI。
+2. **asuka 0.2.12 的 Windows host 要裸名 `swprintf` / `swscanf`**，而 zig 的 mingw 是纯 UCRT，导入库里只有 `__stdio_common_vswprintf/vswscanf`（`msvcrt` 导入库干脆不存在）。`c/windows-legacy-stdio.c` 是把这两个名字转发过去的垫片，等 asuka 把 host 编成 mingw 那套就能删。
+3. **exe 是 console 子系统**（`Subsystem = 3`，会闪黑框）：zig 的 `zig cc` 对 COFF 忽略 `-mwindows`，也不转发任何链接参数（`-Wl,/force:multiple`、`--subsystem` 一律 `unsupported linker arg`，0.14.1 与 0.17.1 都一样），asuka 没有能写链接参数的口子。
+
+`[c.windows] libraries` 里的 `unwind`、`api-ms-win-crt-stdio-l1-1-0`、`api-ms-win-core-synch-l1-2-0` 是给 Rust 的 std 和上面那个垫片用的，换成 MSVC 的引擎库就没意义了。
+
 ## 架构
 
 ```text

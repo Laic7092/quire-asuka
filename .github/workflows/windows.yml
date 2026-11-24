@@ -8,14 +8,12 @@ name: Windows
 # with Zig", and one Ubuntu runner is the cheaper of the two. The font and
 # the engine come from the same scripts as the iOS workflow.
 
+# Paused: the build stops on symbols asuka's own Windows host and Zig's
+# mingw disagree on (swprintf, swscanf), and on a console subsystem that
+# -mwindows doesn't set, so what it produced wasn't shippable anyway. See
+# "Windows 构建" in README.md; run it by hand once those are settled.
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    # Docs don't change the app or its engine: a README edit doesn't need a
-    # runner. (Workflow changes themselves still run.)
-    paths-ignore:
-      - '**/*.md'
 
 permissions:
   contents: read
