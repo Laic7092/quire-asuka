@@ -1,4 +1,3 @@
-
 test "a window keeps one chapter per heading" {
   var meta = Meta(sourceId: "x", bookUrl: "https://x/1", chapterCount: 2)
   meta.toc.push(TocEntry(title: "第一章 起", url: "https://x/1"))

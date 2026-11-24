@@ -53,6 +53,10 @@ component ResultRow(hit: Hit) {
     }
     Column {
       grow: 1
+      // 标题再长也不挤封面：这一列从零开始拿剩下的宽。
+      shrink: 1
+      basis: 0
+      minWidth: 0
       gap: 4
       Text(hit.book.name) {
         font: .headline
@@ -82,6 +86,8 @@ component RemoteCover(url: string) {
   View {
     width: width
     height: height
+    // 封面是固定尺寸：标题再长也不该把它挤窄。
+    shrink: 0
     radius: 7
     clip: true
     background: .secondaryBackground
@@ -155,7 +161,7 @@ screen SearchBook(hit: Hit) {
     adding = false
   }
 
-  View {
+  SafeArea {
     grow: 1
     match detail {
       .pending => Column {
@@ -198,6 +204,10 @@ screen SearchBook(hit: Hit) {
             }
             Column {
               grow: 1
+              // 标题再长也不挤封面：这一列从零开始拿剩下的宽。
+              shrink: 1
+              basis: 0
+              minWidth: 0
               gap: 5
               Text(d.info.book.name) {
                 font: .title3.bold()
@@ -294,7 +304,7 @@ screen SearchChapter(hit: Hit, chapter: sources.Chapter) {
     throw Error("这个书源已经不在列表里了")
   }
 
-  View {
+  SafeArea {
     grow: 1
     background: .background
     match body {
@@ -352,6 +362,7 @@ component SourceManager {
   use allSources: sources.Sources
 
   Column {
+    grow: 1
     gap: 14
     padding: [22, 22, 26, 22]
 
@@ -361,11 +372,6 @@ component SourceManager {
       Text("书源") {
         font: .title3
         grow: 1
-      }
-      Button("导入") {
-        icon: Icons.add
-        variant: .glass
-        on press { present(SourceImport()) }
       }
       Button("") {
         icon: Icons.close
@@ -393,8 +399,8 @@ component SourceManager {
       }
     } else {
       List {
+        grow: 1
         appearance: .plain
-        height: 360
         for e in allSources.list() key e.id {
           Row {
             gap: 10
@@ -416,6 +422,9 @@ component SourceManager {
             Toggle {
               on: e.enabled
               checkbox: true
+              // iOS 的 checkbox 是自己画的圆形符号，默认的开关高度比符号矮，
+              // 上下会被裁掉；给它够高的框。
+              height: 32
               on change(v) { allSources.setEnabled(e.id, v) }
             }
             Button("") {
@@ -557,9 +566,6 @@ screen Search {
 
   title: "搜索"
   largeTitle: true
-  bind search: key
-  searchPlaceholder: "书名或作者"
-  searchButton: true
 
   state key = ""
   state busy = false
@@ -579,10 +585,6 @@ screen Search {
       tooltip: "导入书源"
       on press { present(SourceImport()) }
     }
-  }
-
-  on searchSubmit {
-    await run()
   }
 
   async fn searchOne(e: sources.Entry, q: string) -> Outcome {
@@ -628,9 +630,26 @@ screen Search {
     }
   }
 
-  View {
+  SafeArea {
     grow: 1
     background: .background
+
+    // 搜索框和按钮常驻在第一行，不再依赖右上角的系统搜索按钮。
+    Row {
+      gap: 8
+      align: .center
+      padding: [10, lib.pageKeyline]
+      TextField {
+        bind text: key
+        grow: 1
+        placeholder: "书名或作者"
+        on submit { await run() }
+      }
+      Button("搜索") {
+        variant: .tinted
+        on press { await run() }
+      }
+    }
 
     if allSources.isEmpty() {
       Column {

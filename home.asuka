@@ -117,6 +117,10 @@ component ContinueCard(book: lib.Book, reading: lib.Reading) {
     Cover(book) { size: 64 }
     Column {
       grow: 1
+      // 标题再长也不挤封面：这一列从零开始拿剩下的宽。
+      shrink: 1
+      basis: 0
+      minWidth: 0
       gap: 9
       Text(book.title) {
         font: .headline
@@ -376,57 +380,64 @@ screen Home {
     .done => !older.isEmpty()
   })
 
-  List {
-    appearance: .bare
-    for section in sections key section {
-      match section {
-        .reading => Column {
-          gap: 12
-          padding: [20, lib.pageKeyline, 0, lib.pageKeyline]
-          SectionHead("继续阅读") {
-            icon: Icons.reading
-          }
-          if let r = reading.first() {
-            if let b = bookOf(books, r.id) {
-              ContinueCard(b, r) { on open { emit open(b) } }
+  // iPhone 横屏的左右有安全区，List 直接铺满整屏时行会顶出右边；
+  // 让 List 的框落在安全区以内，每一行就都在这块宽里。
+  SafeArea {
+    grow: 1
+    List {
+      grow: 1
+      appearance: .bare
+      for section in sections key section {
+        match section {
+          .reading => Column {
+            gap: 12
+            padding: [20, lib.pageKeyline, 0, lib.pageKeyline]
+            SectionHead("继续阅读") {
+              icon: Icons.reading
+            }
+            if let r = reading.first() {
+              if let b = bookOf(books, r.id) {
+                ContinueCard(b, r) { on open { emit open(b) } }
+              }
             }
           }
-        }
-        .year => Column {
-          gap: 12
-          padding: [20, lib.pageKeyline, 0, lib.pageKeyline]
-          SectionHead("今年") {
-            icon: Icons.goal
-          }
-          GoalCard(doneThisYear, library.goal, filled) {
-            on goalChange(goal) {
-              library.goal = goal
+          .year => Column {
+            gap: 12
+            padding: [20, lib.pageKeyline, 0, lib.pageKeyline]
+            SectionHead("今年") {
+              icon: Icons.goal
             }
-          }
-          if !thisYearRows.isEmpty() {
-            Column {
-              gap: 0
-              for r in thisYearRows.prefix(5) key r.id {
-                if let b = bookOf(books, r.id) {
-                  YearRow(b, r) { on open { emit open(b) } }
+            GoalCard(doneThisYear, library.goal, filled) {
+              on goalChange(goal) {
+                library.goal = goal
+              }
+            }
+            if !thisYearRows.isEmpty() {
+              Column {
+                gap: 0
+                for r in thisYearRows.prefix(5) key r.id {
+                  if let b = bookOf(books, r.id) {
+                    YearRow(b, r) { on open { emit open(b) } }
+                  }
                 }
               }
             }
           }
-        }
-        .done => Column {
-          gap: 12
-          padding: [20, lib.pageKeyline, 44, lib.pageKeyline]
-          SectionHead("之前读过") {
-            icon: Icons.finished
-          }
-          Scroll {
-            horizontal: true
-            Row {
-              gap: 16
-              for r in older key r.id {
-                if let b = bookOf(books, r.id) {
-                  MiniBook(b) { on open { emit open(b) } }
+          .done => Column {
+            gap: 12
+            padding: [20, lib.pageKeyline, 44, lib.pageKeyline]
+            SectionHead("之前读过") {
+              icon: Icons.finished
+            }
+            Scroll {
+              width: 100%
+              horizontal: true
+              Row {
+                gap: 16
+                for r in older key r.id {
+                  if let b = bookOf(books, r.id) {
+                    MiniBook(b) { on open { emit open(b) } }
+                  }
                 }
               }
             }

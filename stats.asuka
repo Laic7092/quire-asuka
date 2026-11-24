@@ -123,10 +123,14 @@ component BookRecordRow(book: lib.Book, record: lib.BookRecord, reading: lib.Rea
     Cover(book) { size: 40 }
     Column {
       grow: 1
+      // 标题再长也不挤封面：这一列从零开始拿剩下的宽。
+      shrink: 1
+      basis: 0
+      minWidth: 0
       gap: 3
       Text(book.title) {
         font: .body
-        lines: 1
+        lines: 2
       }
       Text(if record.seconds > 0 {
         "{span(record.seconds)} · {record.days} 天"
@@ -203,6 +207,10 @@ component BookRecordPage(book: lib.Book) {
           Cover(book) { size: 72 }
           Column {
             grow: 1
+            // 标题再长也不挤封面：这一列从零开始拿剩下的宽。
+            shrink: 1
+            basis: 0
+            minWidth: 0
             gap: 3
             Text(book.title) {
               font: .headline

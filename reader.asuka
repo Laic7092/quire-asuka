@@ -291,6 +291,7 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
 
   let rows = contentsRows(library.bookmarksOf(book), library.notesOf(book), items)
   let list = Ref()
+  let palette = lib.paletteFor(library.theme)
 
   // The row for the chapter being read: a spine may be missing from the TOC,
   // and nested entries mean the row isn't the spine.
@@ -305,6 +306,7 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
   Column {
     gap: 0
     padding: [16, 0]
+    background: palette.paper
     Row {
       padding: [8, 20]
       gap: 8
@@ -322,6 +324,7 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
     List {
       ref: list
       grow: 1
+      appearance: .bare
       for row in rows key row.id {
         match row.kind {
           .header => Row {
@@ -435,6 +438,7 @@ fn denorm(f: float, lo: float, hi: float) -> float = lo + f * (hi - lo)
 component Appearance(typeface: string) {
   use library: Library
 
+  let palette = lib.paletteFor(library.theme)
   let papers = [
     ["paper", "纸白"],
     ["sepia", "米黄"],
@@ -453,6 +457,7 @@ component Appearance(typeface: string) {
   Column {
     padding: [24, 24]
     gap: 16
+    background: palette.paper
 
     Row {
       gap: 8
@@ -617,6 +622,9 @@ component Appearance(typeface: string) {
 /// A note being written: the quote it is about, above the words the reader
 /// has to say. A note already made can be taken off from here too.
 component NoteEditor(quote: string, draft: string, existing: bool) {
+  use library: Library
+
+  let palette = lib.paletteFor(library.theme)
   state text = draft
 
   event save(text: string)
@@ -625,6 +633,7 @@ component NoteEditor(quote: string, draft: string, existing: bool) {
   Column {
     padding: [20, 20]
     gap: 14
+    background: palette.paper
 
     Text(if existing { "编辑笔记" } else { "笔记" }) { font: .title3 }
 
