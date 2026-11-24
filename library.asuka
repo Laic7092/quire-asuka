@@ -432,6 +432,17 @@ pub store Library {
   ///
   /// A book already there isn't added twice: the same bytes are one book,
   /// whatever the file is called. True when the shelf got a new row.
+  ///
+  /// 大书（300MB 的 EPUB）现在会卡住，而卡的是这条路径，不是引擎：
+  /// 这里整本 fs.read、在主线程 sha256，再 fs.write 一份；engine.open 又读
+  /// 一遍（它的 C ABI 只收 bytes，会再拷一次）。要改先改宿主：
+  ///   1. stat + fs.copy（流式，不整本进 Asuka 内存）；
+  ///   2. sha256 与 engine.open 放进 spawn，不占主线程；
+  ///   3. 大 EPUB 导入时先不解析元数据，第一次打开再取书名/封面；
+  ///   4. 大文件的 hash 可以先用 size + mtime 占位，同步前再补真 hash
+  ///      （std/crypto 还没有流式 sha256）。
+  /// 目标形态见 G-26 的另一端：书是章节流，不是一个 blob。
+  /// 暂不做。
   pub async fn importFile(path: string) throws -> bool {
     let name = lib.fileName(path)
     let lower = name.lower()
