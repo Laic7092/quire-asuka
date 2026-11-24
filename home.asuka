@@ -114,7 +114,7 @@ component ContinueCard(book: lib.Book, reading: lib.Reading) {
     radius: 18
     background: .secondaryBackground
     on press { emit open }
-    Cover(book) { width: 64 }
+    Cover(book) { size: 64 }
     Column {
       grow: 1
       gap: 9
@@ -137,7 +137,7 @@ component MiniBook(book: lib.Book) {
     gap: 6
     align: .center
     on press { emit open }
-    Cover(book) { width: 104 }
+    Cover(book) { size: 104 }
     Text(book.title) {
       font: .subheadline
       lines: 1
@@ -213,8 +213,8 @@ component YearRow(book: lib.Book, reading: lib.Reading) {
   }
 }
 
-/// 我：the avatar's page. 同步与备份 is the one entry with a screen behind it;
-/// the rest are placeholders for now.
+/// 我：the avatar's page. 同步与备份 and 阅读记录统计 have screens behind
+/// them; 关于 Quire is the one entry without a page yet.
 component Profile {
   use library: Library
 
@@ -237,9 +237,6 @@ component Profile {
   let entries = [
     ProfileEntry(icon: Icons.cloud, title: "同步与备份", note: syncNote),
     ProfileEntry(icon: Icons.statistics, title: "阅读记录统计", note: readingNote),
-    ProfileEntry(icon: Icons.goal, title: "阅读目标", note: "今年读几本"),
-    ProfileEntry(icon: Icons.reminder, title: "阅读提醒", note: "每天读一点"),
-    ProfileEntry(icon: Icons.appearance, title: "外观与排版", note: "纸色、字号、行距"),
     ProfileEntry(icon: Icons.about, title: "关于 Quire", note: "版本 0.1"),
   ]
 
@@ -339,11 +336,24 @@ struct ProfileEntry {
   note: string
 }
 
-component Home {
+screen Home {
   use library: Library
 
   /// A book was chosen: the app opens the reader over everything.
   event open(book: lib.Book)
+
+  title: "首页"
+  largeTitle: true
+
+  // 我 sits at the top right of the bar, not in the page's first line.
+  toolbar {
+    Button("我") {
+      icon: Icons.profile
+      variant: .glass
+      tooltip: "阅读记录、同步与设置"
+      on press { present(Profile()) }
+    }
+  }
 
   let books = library.books()
   let rows = library.readings
@@ -366,107 +376,57 @@ component Home {
     .done => !older.isEmpty()
   })
 
-  // 首页滚过页头底下：大标题消失，页头只剩右边那个按钮。只在跨过那条
-  // 线时写它，滚动的每一帧不重建什么。
-  state scrolled = false
-
-  // 横屏时系统给的是紧凑的高度类，它自己的栏也收成一行：大标题只在
-  // 竖屏，横屏换成 headline，页头也降到 44，不占掉一屏高度的七分之一。
-  let env = environment()
-  let compact = env.heightClass == .compact
-
-  View {
-    grow: 1
-    SafeArea {
-      grow: 1
-      gap: 0
-
-      // 页头自绘：标题与右上角的按钮同一行，左边与下面的内容同一条
-      // keyline；系统状态栏在上方，三者的左边缘于是对齐。滚下去以后
-      // 标题让位，页头上只剩那个按钮。
-      Row {
-        // 页头的高度不随标题变：列表的框在滚动中间不动。minHeight 而
-        // 不是 height：用户放大字时页头跟着长，不把标题裁掉。
-        minHeight: if compact { 44 } else { 56 }
-        padding: [0, lib.pageKeyline]
-        gap: 8
-        align: .center
-        // 标题不增删，只淡出：滚动后新插一个 View 在 iOS 上会带一层底色，
-        // 在页头留下一块白挡着下面的列表。
-        Text("首页") {
-          font: if compact { .headline } else { .largeTitle.bold() }
-          lines: 1
-          grow: 1
-          opacity: if scrolled { 0 } else { 1 }
-          a11yHidden: scrolled
+  List {
+    appearance: .bare
+    for section in sections key section {
+      match section {
+        .reading => Column {
+          gap: 12
+          padding: [20, lib.pageKeyline, 0, lib.pageKeyline]
+          SectionHead("继续阅读") {
+            icon: Icons.reading
+          }
+          if let r = reading.first() {
+            if let b = bookOf(books, r.id) {
+              ContinueCard(b, r) { on open { emit open(b) } }
+            }
+          }
         }
-        Button("") {
-          icon: Icons.profile
-          variant: .glass
-          label: "我"
-          tooltip: "阅读记录、同步与设置"
-          on press { present(Profile()) }
-        }
-      }
-
-      List {
-        grow: 1
-        appearance: .bare
-        on scroll(x, y) {
-          let past = y > 12
-          if past != scrolled { scrolled = past }
-        }
-        for section in sections key section {
-          match section {
-            .reading => Column {
-              gap: 12
-              padding: [20, lib.pageKeyline, 0, lib.pageKeyline]
-              SectionHead("继续阅读") {
-                icon: Icons.reading
-              }
-              if let r = reading.first() {
+        .year => Column {
+          gap: 12
+          padding: [20, lib.pageKeyline, 0, lib.pageKeyline]
+          SectionHead("今年") {
+            icon: Icons.goal
+          }
+          GoalCard(doneThisYear, library.goal, filled) {
+            on goalChange(goal) {
+              library.goal = goal
+            }
+          }
+          if !thisYearRows.isEmpty() {
+            Column {
+              gap: 0
+              for r in thisYearRows.prefix(5) key r.id {
                 if let b = bookOf(books, r.id) {
-                  ContinueCard(b, r) { on open { emit open(b) } }
+                  YearRow(b, r) { on open { emit open(b) } }
                 }
               }
             }
-            .year => Column {
-              gap: 12
-              padding: [20, lib.pageKeyline, 0, lib.pageKeyline]
-              SectionHead("今年") {
-                icon: Icons.goal
-              }
-              GoalCard(doneThisYear, library.goal, filled) {
-                on goalChange(goal) {
-                  library.goal = goal
-                }
-              }
-              if !thisYearRows.isEmpty() {
-                Column {
-                  gap: 0
-                  for r in thisYearRows.prefix(5) key r.id {
-                    if let b = bookOf(books, r.id) {
-                      YearRow(b, r) { on open { emit open(b) } }
-                    }
-                  }
-                }
-              }
-            }
-            .done => Column {
-              gap: 12
-              padding: [20, lib.pageKeyline, 44, lib.pageKeyline]
-              SectionHead("之前读过") {
-                icon: Icons.finished
-              }
-              Scroll {
-                horizontal: true
-                Row {
-                  gap: 16
-                  for r in older key r.id {
-                    if let b = bookOf(books, r.id) {
-                      MiniBook(b) { on open { emit open(b) } }
-                    }
-                  }
+          }
+        }
+        .done => Column {
+          gap: 12
+          padding: [20, lib.pageKeyline, 44, lib.pageKeyline]
+          SectionHead("之前读过") {
+            icon: Icons.finished
+          }
+          Scroll {
+            horizontal: true
+            Row {
+              gap: 16
+              for r in older key r.id {
+                if let b = bookOf(books, r.id) {
+                  MiniBook(b) { on open { emit open(b) } }
                 }
               }
             }

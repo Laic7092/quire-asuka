@@ -73,14 +73,18 @@ component Quire {
 
       Tab("首页") {
         icon: Icons.home
-        Home() {
-          on open(book) { await openBook(book) }
+        Stack {
+          Home() {
+            on open(book) { await openBook(book) }
+          }
         }
       }
       Tab("书架") {
         icon: Icons.shelf
-        Shelf() {
-          on open(book) { await openBook(book) }
+        Stack {
+          Shelf() {
+            on open(book) { await openBook(book) }
+          }
         }
       }
       Tab("搜索") {

@@ -120,7 +120,7 @@ component BookRecordRow(book: lib.Book, record: lib.BookRecord, reading: lib.Rea
     align: .center
     padding: [9, 0]
     on press { emit open }
-    Cover(book) { width: 40 }
+    Cover(book) { size: 40 }
     Column {
       grow: 1
       gap: 3
@@ -200,7 +200,7 @@ component BookRecordPage(book: lib.Book) {
         Row {
           gap: 14
           align: .center
-          Cover(book) { width: 72 }
+          Cover(book) { size: 72 }
           Column {
             grow: 1
             gap: 3

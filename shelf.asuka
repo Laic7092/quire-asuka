@@ -16,7 +16,7 @@ let spines = [#2b2b2f, #3d5143, #4a3f63, #7a5b33, #2c5560]
 // second line, one cover and one gap to the right, so the eye has two stable
 // axes.
 //
-// The grid's gap is one number: the wrapping Row's, and the one the header's
+// The grid's gap is one number: the wrapping Row's, and the one the page's
 // measure counts cells with. They must agree, so neither is written twice.
 let shelfGridGap: float = 22
 // As many covers of this width as a row has room for; a cell wider than
@@ -48,6 +48,10 @@ fn authorLine(book: lib.Book) -> string {
 component Cover(book: lib.Book) {
   use library: Library
 
+  /// 封面的宽。书脊上的书名按它缩放：40pt 的列表封面和 150pt 的网格封面
+  /// 不能共用一套字号，否则小封面里的字会挤出封面再被裁掉。
+  prop size = shelfTileCover
+
   // The book's row may predate covers: ask the engine once, then keep the
   // file next to the app's data. Text books have no cover and keep the spine.
   // A cloud-only book has no file to ask the engine about yet.
@@ -73,7 +77,14 @@ component Cover(book: lib.Book) {
     library.setCover(book.id, coverName(book.id))
   }
 
+  let titleSize = max(9, min(17, size * 0.11))
+  let pad = max(3, min(12, size * 0.07))
+  // 书名在封面内换行，最多三行：长书名因此是省略，不是横着或竖着
+  // 溢出封面。
+  let innerWidth = size - 2 * pad
+
   View {
+    width: size
     aspectRatio: 0.68
     radius: 8
     clip: true
@@ -91,9 +102,10 @@ component Cover(book: lib.Book) {
         grow: 1
         justify: .center
         align: .center
-        padding: 10
+        padding: pad
         Text(book.title) {
-          font: .headline
+          width: innerWidth
+          font: Font(size: titleSize)
           color: #f4efe6
           lines: 3
           textAlign: .center
@@ -120,7 +132,7 @@ component BookTile(book: lib.Book, reading: lib.Reading) {
     gap: 6
     align: .center
     on press { emit open }
-    Cover(book) { width: cellWidth }
+    Cover(book) { size: cellWidth }
     // 网格只给封面和进度：书名在封面上，作者留给列表。文件不在本机时
     // 这一行改成说哪一种不在。云端状态贴在它的右侧。
     Row {
@@ -158,9 +170,11 @@ component BookRow(book: lib.Book, reading: lib.Reading) {
   Row {
     gap: shelfRowGap
     align: .center
-    padding: [9, 0]
+    // keyline 放在行里，不放 List 上：滚动条因此贴着屏幕边，不跟着
+    // 内容一起缩进。
+    padding: [9, lib.pageKeyline]
     on press { emit open }
-    Cover(book) { width: shelfRowCover }
+    Cover(book) { size: shelfRowCover }
     Column {
       grow: 1
       gap: 6
@@ -457,11 +471,14 @@ component ShelfDisplay {
   }
 }
 
-component Shelf {
+screen Shelf {
   use library: Library
 
   /// A book was chosen: the app opens the reader over the shelf.
   event open(book: lib.Book)
+
+  title: "书架"
+  largeTitle: true
 
   // 同步 is a state of this shelf, not a feature buried in settings: the
   // cloud says whether the shelf has a copy in the cloud, and tapping it
@@ -487,6 +504,67 @@ component Shelf {
     "上次同步失败"
   } else {
     "同步"
+  }
+
+  // Import and sync sit at the top right of the bar, not as floating actions.
+  // 显示 comes first: it only changes how the shelf looks, while sync and
+  // import change what it holds, so they keep the rightmost place.
+  toolbar {
+    if !library.shelf.isEmpty() {
+      // 显示与排序 is the platform's own menu where it has one: a UIMenu on
+      // iOS, Material's on Android, an NSMenu on a Mac, a pop-up on Windows
+      // and a popover in a browser. Linux keeps the page: its menu stops
+      // opening once a checked item changes.
+      if @platform == .linux {
+        Button("显示与排序") {
+          icon: Icons.display
+          variant: .glass
+          tooltip: "显示方式与排序"
+          on press { present(ShelfDisplay()) }
+        }
+      } else {
+        Button("显示与排序") {
+          icon: Icons.display
+          variant: .glass
+          tooltip: "显示方式与排序"
+          menu: [
+            .section(title: "显示", items: [
+              .button(title: "网格", checked: library.shelfLayout == "grid", run: () => { library.shelfLayout = "grid" }),
+              .button(title: "列表", checked: library.shelfLayout == "list", run: () => { library.shelfLayout = "list" }),
+            ]),
+            .section(title: "排序", items: [
+              .button(title: "最近阅读", checked: library.shelfSort == "recent", run: () => { library.shelfSort = "recent" }),
+              .button(title: "书名", checked: library.shelfSort == "title", run: () => { library.shelfSort = "title" }),
+              .button(title: "作者名", checked: library.shelfSort == "author", run: () => { library.shelfSort = "author" }),
+              .button(title: "手动", checked: library.shelfSort == "manual", run: () => { library.shelfSort = "manual" }),
+            ]),
+          ]
+        }
+      }
+    }
+    // 正常状态（已配置、不在同步、上次没失败）不占位置：同步是背景
+    // 动作，不是常驻入口。未配置、正在同步、上次失败时才出现。
+    if !library.davConfigured() || library.syncBusy || syncFailed {
+      Button("同步") {
+        icon: syncIcon
+        variant: .glass
+        tooltip: syncTip
+        color: if syncFailed {
+          .red
+        } else if !library.davConfigured() {
+          .secondaryLabel
+        } else {
+          .accent
+        }
+        on press { present(SyncSettings()) }
+      }
+    }
+    Button("导入") {
+      icon: Icons.add
+      variant: .glass
+      tooltip: "导入 .txt 或 .epub，可多选"
+      on press { await pick() }
+    }
   }
 
   // Runs the import, and says so when it can't.
@@ -546,17 +624,9 @@ component Shelf {
     }
   }
 
-  // 书架滚过页头底下：大标题消失，页头只剩右边那几个按钮。只在跨过
-  // 那条线时写它，滚动的每一帧不重建什么。
-  state scrolled = false
-  // 一格占的宽：页头量出一行摆几个封面，封面就占满一格，边缘因此压在
-  // 两边的 keyline 上。
+  // 一格占的宽：按书架的宽算出一行摆几个封面，封面就占满一格，边缘
+  // 因此压在两边的 keyline 上。
   state cellWidth = shelfTileCover
-
-  // 横屏时系统给的是紧凑的高度类，它自己的栏也收成一行：大标题只在
-  // 竖屏，横屏换成 headline，页头也降到 44，不占掉一屏高度的七分之一。
-  let env = environment()
-  let compact = env.heightClass == .compact
 
   let books = library.books()
   let listMode = library.shelfLayout == "list"
@@ -564,161 +634,71 @@ component Shelf {
 
   View {
     grow: 1
-    SafeArea {
-      grow: 1
-      gap: 0
-
-      // 页头自绘：标题与右上角的按钮在同一行，左边与下面的封面同一条
-      // keyline；系统状态栏在上方，三者的左边缘于是对齐。滚下去以后
-      // 标题让位，页头上只剩那排按钮。
-      Row {
-        // 页头的高度不随标题变：列表的框在滚动中间不动。minHeight 而
-        // 不是 height：用户放大字时页头跟着长，不把标题裁掉。
-        minHeight: if compact { 44 } else { 56 }
-        padding: [0, lib.pageKeyline]
-        gap: 8
-        align: .center
-        // 页头和下面的书架在同一个 SafeArea 里，一样宽：量它就是量书架
-        // 的宽（List 和 Scroll 都没有 layout 事件）。一行的格宽就是这个
-        // 宽减去 keyline 和格间距后，按列数均分。
-        on layout(f) {
-          let room = f.width - 2 * lib.pageKeyline
-          var n = max(1, int((room + shelfGridGap) / (shelfTileCover + shelfGridGap)))
-          // 窄窗口（小屏手机、分屏）放不下两本 150pt 的书时，一张封面会
-          // 撑满整行：多分一列，书小一点，也不让一行只有一张大封面。
-          while n < 4 && (room - shelfGridGap * float(n - 1)) / float(n) > shelfTileMax {
-            n += 1
-          }
-          let w = (room - shelfGridGap * float(n - 1)) / float(n)
-          if w != cellWidth { cellWidth = w }
-        }
-        // 标题不增删，只淡出：滚动后新插一个 View 在 iOS 上会带一层底色，
-        // 在页头留下一块白挡着下面的列表。
-        Text("书架") {
-          font: if compact { .headline } else { .largeTitle.bold() }
-          lines: 1
-          grow: 1
-          opacity: if scrolled { 0 } else { 1 }
-          a11yHidden: scrolled
-        }
-        // 按钮只有图标：图标加一行字会把标题挤出屏幕，而名字读屏要
-        // （label），指针要（tooltip）。
-        if !library.shelf.isEmpty() {
-          // 显示与排序 is the platform's own menu where it has one: a UIMenu
-          // on iOS, Material's on Android, an NSMenu on a Mac, a pop-up on
-          // Windows and a popover in a browser. Linux keeps the page: its
-          // menu stops opening once a checked item changes.
-          if @platform == .linux {
-            Button("") {
-              icon: Icons.display
-              variant: .glass
-              label: "显示与排序"
-              tooltip: "显示方式与排序"
-              on press { present(ShelfDisplay()) }
-            }
-          } else {
-            Button("") {
-              icon: Icons.display
-              variant: .glass
-              label: "显示与排序"
-              tooltip: "显示方式与排序"
-              menu: [
-                .section(title: "显示", items: [
-                  .button(title: "网格", checked: library.shelfLayout == "grid", run: () => { library.shelfLayout = "grid" }),
-                  .button(title: "列表", checked: library.shelfLayout == "list", run: () => { library.shelfLayout = "list" }),
-                ]),
-                .section(title: "排序", items: [
-                  .button(title: "最近阅读", checked: library.shelfSort == "recent", run: () => { library.shelfSort = "recent" }),
-                  .button(title: "书名", checked: library.shelfSort == "title", run: () => { library.shelfSort = "title" }),
-                  .button(title: "作者名", checked: library.shelfSort == "author", run: () => { library.shelfSort = "author" }),
-                  .button(title: "手动", checked: library.shelfSort == "manual", run: () => { library.shelfSort = "manual" }),
-                ]),
-              ]
-            }
-          }
-        }
-        Button("") {
-          icon: syncIcon
-          variant: .glass
-          label: "同步"
-          tooltip: syncTip
-          color: if syncFailed {
-            .red
-          } else if !library.davConfigured() {
-            .secondaryLabel
-          } else {
-            .label
-          }
-          on press { present(SyncSettings()) }
-        }
-        Button("") {
-          icon: Icons.add
-          variant: .glass
-          label: "导入"
-          tooltip: "导入 .txt 或 .epub，可多选"
-          on press { await pick() }
-        }
+    // 书架的宽就是这一页的宽（List 和 Scroll 都没有 layout 事件）：
+    // 一行的格宽是它减去 keyline 和格间距后，按列数均分。
+    on layout(f) {
+      let room = f.width - 2 * lib.pageKeyline
+      var n = max(1, int((room + shelfGridGap) / (shelfTileCover + shelfGridGap)))
+      // 窄窗口（小屏手机、分屏）放不下两本 150pt 的书时，一张封面会
+      // 撑满整行：多分一列，书小一点，也不让一行只有一张大封面。
+      while n < 4 && (room - shelfGridGap * float(n - 1)) / float(n) > shelfTileMax {
+        n += 1
       }
+      let w = (room - shelfGridGap * float(n - 1)) / float(n)
+      if w != cellWidth { cellWidth = w }
+    }
 
-      if books.isEmpty() {
-        // 首次启动的样书还没放进来时先留白，免得空状态一闪而过；
-        // 样书放好以后（seeded）再空，就是读者真的把书架清空了。
-        if library.seeded {
-          EmptyShelf {
-            configured: library.davConfigured()
-            on chooseFile { await pick() }
-            on cloud {
-              if library.davConfigured() {
-                await syncFromCloud()
-              } else {
-                present(SyncSettings())
-              }
-            }
-          }
-        } else {
-          View { grow: 1 }
-        }
-      } else if listMode {
-        // 列表模式：keyline 给外面的 Column。List 自己的 padding 在
-        // Linux 上不缩进它的行，分隔线还在。
-        Column {
-          grow: 1
-          padding: [10, lib.pageKeyline]
-          List {
-            grow: 1
-            on scroll(x, y) {
-              let past = y > 12
-              if past != scrolled { scrolled = past }
-            }
-            for b in ordered key b.id {
-              ShelfBook(b, library.readingOf(b.id)) {
-                mode: "list"
-                showCloud: library.davConfigured()
-                on open { emit open(b) }
-              }
+    if books.isEmpty() {
+      // 首次启动的样书还没放进来时先留白，免得空状态一闪而过；
+      // 样书放好以后（seeded）再空，就是读者真的把书架清空了。
+      if library.seeded {
+        EmptyShelf {
+          configured: library.davConfigured()
+          on chooseFile { await pick() }
+          on cloud {
+            if library.davConfigured() {
+              await syncFromCloud()
+            } else {
+              present(SyncSettings())
             }
           }
         }
       } else {
-        // 网格：不数列数。窗口多宽就摆几个封面，满了由 Row 的 wrap
-        // 换行——换行是布局自己算的，不读窗口宽度，也不靠 List 的网格。
-        Scroll {
+        View { grow: 1 }
+      }
+    } else if listMode {
+      // 列表模式：List 占满整页宽，keyline 由每一行自己留，滚动条因此
+      // 贴着屏幕边；10 是列表上下的留白。
+      Column {
+        grow: 1
+        padding: [10, 0]
+        List {
           grow: 1
-          padding: [22, lib.pageKeyline]
-          on scroll(x, y) {
-            let past = y > 12
-            if past != scrolled { scrolled = past }
+          for b in ordered key b.id {
+            ShelfBook(b, library.readingOf(b.id)) {
+              mode: "list"
+              showCloud: library.davConfigured()
+              on open { emit open(b) }
+            }
           }
-          Row {
-            wrap: true
-            gap: shelfGridGap
-            for b in ordered key b.id {
-              ShelfBook(b, library.readingOf(b.id)) {
-                mode: "grid"
-                showCloud: library.davConfigured()
-                cellWidth: cellWidth
-                on open { emit open(b) }
-              }
+        }
+      }
+    } else {
+      // 网格：不数列数。窗口多宽就摆几个封面，满了由 Row 的 wrap
+      // 换行——换行是布局自己算的，不读窗口宽度，也不靠 List 的网格。
+      // keyline 放在 Row 上，Scroll 本身不留边：滚动条贴着屏幕边。
+      Scroll {
+        grow: 1
+        Row {
+          padding: [22, lib.pageKeyline]
+          wrap: true
+          gap: shelfGridGap
+          for b in ordered key b.id {
+            ShelfBook(b, library.readingOf(b.id)) {
+              mode: "grid"
+              showCloud: library.davConfigured()
+              cellWidth: cellWidth
+              on open { emit open(b) }
             }
           }
         }
