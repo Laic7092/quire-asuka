@@ -11,6 +11,14 @@ import ./lib
 /// Cover colors from Quire's icon sheet: ink, cloth, dusk.
 let spines = [#2b2b2f, #3d5143, #4a3f63, #7a5b33, #2c5560]
 
+// The page is drawn on one left keyline: the status bar's time, the title
+// and every cover start there. A list row's text takes the second line,
+// one cover and one gap to the right, so the eye has two stable axes.
+let shelfKeyline: float = 20
+let shelfRowCover: float = 44
+let shelfRowGap: float = 12
+let shelfTileCover: float = 150
+
 /// A title's cover color, the same every launch.
 fn spine(title: string) -> Color {
   var h = 0
@@ -86,12 +94,11 @@ component BookTile(book: lib.Book, reading: lib.Reading) {
   Column {
     gap: 6
     align: .start
-    padding: [0, 10]
     on press { emit open }
-    Cover(book) { width: 150 }
+    Cover(book) { width: shelfTileCover }
     // 标题和进度左对齐，和封面左边齐；云端状态贴在标题行的右侧。
     Row {
-      width: 150
+      width: shelfTileCover
       gap: 5
       align: .center
       Text(book.title) {
@@ -113,6 +120,7 @@ component BookTile(book: lib.Book, reading: lib.Reading) {
     } else {
       "{book.author} · {reading.label()}"
     }) {
+      width: shelfTileCover
       font: .caption
       color: if missing { .red } else { .secondaryLabel }
       lines: 1
@@ -131,11 +139,11 @@ component BookRow(book: lib.Book, reading: lib.Reading) {
   let missing = !book.remote && !book.path.isEmpty() && !fs.exists(book.path)
 
   Row {
-    gap: 12
+    gap: shelfRowGap
     align: .center
-    padding: [9, 4]
+    padding: [9, 0]
     on press { emit open }
-    Cover(book) { width: 42 }
+    Cover(book) { width: shelfRowCover }
     Column {
       grow: 1
       gap: 3
@@ -609,7 +617,7 @@ screen Shelf {
       List {
         columns: if listMode { 1 } else { columns }
         gap: if listMode { 0 } else { 22 }
-        padding: if listMode { [10, 20] } else { [22, 20] }
+        padding: if listMode { [10, shelfKeyline] } else { [22, shelfKeyline] }
         for b in ordered key b.id {
           ShelfBook(b, library.readingOf(b.id)) {
             mode: library.shelfLayout
