@@ -1,19 +1,19 @@
 name: Windows
 
-# A Windows build of the app: asuka compiles the Asuka to C and links the
-# engine (ebook-engine's Windows static library) into dist/windows-amd64/ —
+# A Windows build of the app, from Linux with Zig: asuka compiles the Asuka
+# to C, links ebook-engine's Windows library, and writes dist/windows-amd64/ —
 # the .exe with its icon and version, its assets, and the .zip around them.
 #
-# The tests run in the iOS workflow's Linux job; this one is the build itself.
-# The font and the engine come from the same scripts as there, and neither
-# needs anything installed (the font is one download, the engine one archive).
+# Shipping says a Windows app builds "on Windows with clang, or any system
+# with Zig", and one Ubuntu runner is the cheaper of the two. The font and
+# the engine come from the same scripts as the iOS workflow.
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
     # Docs don't change the app or its engine: a README edit doesn't need a
-    # Windows runner. (Workflow changes themselves still run.)
+    # runner. (Workflow changes themselves still run.)
     paths-ignore:
       - '**/*.md'
 
@@ -24,11 +24,6 @@ env:
   # The engine release to build against: github.com/Laic7092/ebook-engine.
   # `latest` follows the newest non-prerelease; a tag pins one.
   ENGINE_VERSION: latest
-  # windows-latest's `cc` is a MinGW GCC built against MSVCRT, whose printf
-  # has no %zu — and asuka compiles its core with -Werror, so every "%zu"
-  # in it is an error. Clang (the runner's LLVM, on MSVC's headers and its
-  # printf, which does have %zu) is the compiler asuka expects on Windows.
-  ASUKA_CC: clang
 
 # A newer push on the same branch cancels the run before it.
 concurrency:
@@ -38,29 +33,38 @@ concurrency:
 jobs:
   build:
     name: Windows amd64
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
+      # Zig's release, fetched here rather than with setup-zig: the runner's
+      # actions run on Node 24 now, and a Node 20 action would put the
+      # deprecation warning back.
+      - name: Install Zig
+        run: |
+          version=0.14.1
+          curl -fsSL -o "$RUNNER_TEMP/zig.tar.xz" \
+            "https://ziglang.org/download/$version/zig-x86_64-linux-$version.tar.xz"
+          tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/zig-x86_64-linux-$version" >> "$GITHUB_PATH"
+
       # reader.asuka embeds the font, and the repository doesn't carry it:
-      # the script downloads the pinned WOFF. Git Bash has curl and sha256sum.
+      # the script downloads the pinned WOFF.
       - name: Fetch the font
-        shell: bash
         run: bash .github/scripts/fetch-font.sh
 
-      # Windows' library is a .lib (fetch-engine.sh knows the name by target).
+      # The target's library, not this runner's: it's the Windows app.
       - name: Fetch the engine
-        shell: bash
         run: bash .github/scripts/fetch-engine.sh windows-x64
 
       - name: Install the asuka CLI
-        shell: pwsh
         run: |
-          irm https://asuka.egoist.dev/install.ps1 | iex
-          "$env:LOCALAPPDATA\Programs\asuka\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+          curl -fsSL https://asuka.egoist.dev/install.sh | sh
+          echo "$HOME/.asuka/bin" >> "$GITHUB_PATH"
 
       - name: Check
         run: |
+          zig version
           asuka version
           asuka check -p windows
 

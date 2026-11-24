@@ -339,25 +339,11 @@ struct ProfileEntry {
   note: string
 }
 
-screen Home {
+component Home {
   use library: Library
 
   /// A book was chosen: the app opens the reader over everything.
   event open(book: lib.Book)
-
-  title: "首页"
-  largeTitle: true
-
-  // 我 sits at the top right of the bar, as the shelf's import button does,
-  // not in the page's first line.
-  toolbar {
-    Button("我") {
-      icon: Icons.profile
-      variant: .glass
-      tooltip: "阅读记录、同步与设置"
-      on press { present(Profile()) }
-    }
-  }
 
   let books = library.books()
   let rows = library.readings
@@ -380,57 +366,85 @@ screen Home {
     .done => !older.isEmpty()
   })
 
-  List {
-    appearance: .bare
-    for section in sections key section {
-      match section {
-        .reading => Column {
-          gap: 12
-          padding: [20, 20, 0, 20]
-          SectionHead("继续阅读") {
-            icon: Icons.reading
-          }
-          if let r = reading.first() {
-            if let b = bookOf(books, r.id) {
-              ContinueCard(b, r) { on open { emit open(b) } }
-            }
-          }
+  View {
+    grow: 1
+    SafeArea {
+      grow: 1
+      gap: 0
+
+      // 页头自绘：标题与右上角的按钮同一行，左边与下面的内容同一条
+      // keyline；系统状态栏在上方，三者的左边缘于是对齐。
+      Row {
+        padding: [8, pageKeyline]
+        gap: 8
+        align: .center
+        Text("首页") {
+          font: .largeTitle.bold()
+          lines: 1
+          grow: 1
         }
-        .year => Column {
-          gap: 12
-          padding: [20, 20, 0, 20]
-          SectionHead("今年") {
-            icon: Icons.goal
-          }
-          GoalCard(doneThisYear, library.goal, filled) {
-            on goalChange(goal) {
-              library.goal = goal
-            }
-          }
-          if !thisYearRows.isEmpty() {
-            Column {
-              gap: 0
-              for r in thisYearRows.prefix(5) key r.id {
+        Button("我") {
+          icon: Icons.profile
+          variant: .glass
+          tooltip: "阅读记录、同步与设置"
+          on press { present(Profile()) }
+        }
+      }
+
+      List {
+        grow: 1
+        appearance: .bare
+        for section in sections key section {
+          match section {
+            .reading => Column {
+              gap: 12
+              padding: [20, pageKeyline, 0, pageKeyline]
+              SectionHead("继续阅读") {
+                icon: Icons.reading
+              }
+              if let r = reading.first() {
                 if let b = bookOf(books, r.id) {
-                  YearRow(b, r) { on open { emit open(b) } }
+                  ContinueCard(b, r) { on open { emit open(b) } }
                 }
               }
             }
-          }
-        }
-        .done => Column {
-          gap: 12
-          padding: [20, 20, 44, 20]
-          SectionHead("之前读过") {
-            icon: Icons.finished
-          }
-          Scroll {
-            horizontal: true
-            Row {
-              gap: 16
-              for r in older key r.id {
-                if let b = bookOf(books, r.id) {
-                  MiniBook(b) { on open { emit open(b) } }
+            .year => Column {
+              gap: 12
+              padding: [20, pageKeyline, 0, pageKeyline]
+              SectionHead("今年") {
+                icon: Icons.goal
+              }
+              GoalCard(doneThisYear, library.goal, filled) {
+                on goalChange(goal) {
+                  library.goal = goal
+                }
+              }
+              if !thisYearRows.isEmpty() {
+                Column {
+                  gap: 0
+                  for r in thisYearRows.prefix(5) key r.id {
+                    if let b = bookOf(books, r.id) {
+                      YearRow(b, r) { on open { emit open(b) } }
+                    }
+                  }
+                }
+              }
+            }
+            .done => Column {
+              gap: 12
+              padding: [20, pageKeyline, 44, pageKeyline]
+              SectionHead("之前读过") {
+                icon: Icons.finished
+              }
+              Scroll {
+                horizontal: true
+                Row {
+                  gap: 16
+                  for r in older key r.id {
+                    if let b = bookOf(books, r.id) {
+                      MiniBook(b) { on open { emit open(b) } }
+                    }
+                  }
                 }
               }
             }
