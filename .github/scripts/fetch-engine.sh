@@ -60,9 +60,13 @@ for target in "$@"; do
 
   mkdir -p "$app_dir/lib/$target"
   tar -xzf "$tmp/$file" -C "$app_dir/lib/$target"
-  if [ ! -f "$app_dir/lib/$target/libebook_abi.a" ]; then
-    echo "fetch-engine: $file has no libebook_abi.a" >&2
+  # Unix's is an archive of .o; Windows' is MSVC's, and ebook-engine names it
+  # without the lib prefix.
+  lib="libebook_abi.a"
+  case "$target" in windows-*) lib="ebook_abi.lib" ;; esac
+  if [ ! -f "$app_dir/lib/$target/$lib" ]; then
+    echo "fetch-engine: $file has no $lib" >&2
     exit 1
   fi
-  echo "fetch-engine: lib/$target/libebook_abi.a ($(du -h "$app_dir/lib/$target/libebook_abi.a" | cut -f1))"
+  echo "fetch-engine: lib/$target/$lib ($(du -h "$app_dir/lib/$target/$lib" | cut -f1))"
 done

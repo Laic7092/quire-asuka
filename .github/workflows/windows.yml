@@ -1,0 +1,70 @@
+name: Windows
+
+# A Windows build of the app: asuka compiles the Asuka to C and links the
+# engine (ebook-engine's Windows static library) into dist/windows-amd64/ —
+# the .exe with its icon and version, its assets, and the .zip around them.
+#
+# The tests run in the iOS workflow's Linux job; this one is the build itself.
+# The font and the engine come from the same scripts as there, and neither
+# needs anything installed (the font is one download, the engine one archive).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    # Docs don't change the app or its engine: a README edit doesn't need a
+    # Windows runner. (Workflow changes themselves still run.)
+    paths-ignore:
+      - '**/*.md'
+
+permissions:
+  contents: read
+
+env:
+  # The engine release to build against: github.com/Laic7092/ebook-engine.
+  # `latest` follows the newest non-prerelease; a tag pins one.
+  ENGINE_VERSION: latest
+
+# A newer push on the same branch cancels the run before it.
+concurrency:
+  group: windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Windows amd64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # reader.asuka embeds the font, and the repository doesn't carry it:
+      # the script downloads the pinned WOFF. Git Bash has curl and sha256sum.
+      - name: Fetch the font
+        shell: bash
+        run: bash .github/scripts/fetch-font.sh
+
+      # Windows' library is a .lib (fetch-engine.sh knows the name by target).
+      - name: Fetch the engine
+        shell: bash
+        run: bash .github/scripts/fetch-engine.sh windows-x64
+
+      - name: Install the asuka CLI
+        shell: pwsh
+        run: |
+          irm https://asuka.egoist.dev/install.ps1 | iex
+          "$env:LOCALAPPDATA\Programs\asuka\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Check
+        run: |
+          asuka version
+          asuka check -p windows
+
+      - name: Build
+        run: asuka build -p windows --arch amd64
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: windows-amd64
+          path: dist/windows-amd64/*.zip
+          if-no-files-found: error
+          retention-days: 14

@@ -44,6 +44,13 @@ fn fontCandidates() -> [string] {
       "/System/Library/Fonts/Supplemental/STIXTwoText.ttf",
     ]
   }
+  if @platform == .windows {
+    return [
+      "C:/Windows/Fonts/simsun.ttc",
+      "C:/Windows/Fonts/msyh.ttc",
+      "C:/Windows/Fonts/segoeui.ttf",
+    ]
+  }
   return [
     "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
     "/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",

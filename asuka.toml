@@ -44,10 +44,17 @@ macos-x64 = "lib/macos-x64/libebook_abi.a"
 ios-arm64 = "lib/ios-arm64/libebook_abi.a"
 ios-simulator-arm64 = "lib/ios-simulator-arm64/libebook_abi.a"
 ios-simulator-x64 = "lib/ios-simulator-x64/libebook_abi.a"
+# Windows' is a .lib (MSVC's archive), as ebook-engine's release names it.
+windows-x64 = "lib/windows-x64/ebook_abi.lib"
 
 # Rust's std needs these on the desktops; Apple's SDK brings its own.
 [c.linux]
 libraries = ["pthread", "dl", "m"]
+
+# The engine is Rust, so its std pays for Windows' own: the host links
+# kernel32 and the GUI's libraries already.
+[c.windows]
+libraries = ["bcrypt", "ntdll", "userenv", "ws2_32"]
 
 [c.android]
 libraries = ["dl", "log", "m"]

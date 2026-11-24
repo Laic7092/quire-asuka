@@ -46,7 +46,7 @@ jobs:
     name: Tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # reader.asuka embeds the font, and the repository doesn't carry it:
       # the script downloads the pinned WOFF.
@@ -59,7 +59,7 @@ jobs:
 
       # Asuka's prebuilt libraries and the C it compiles: the same between
       # runs, so the test step doesn't download and build them again.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.cache/asuka
           key: asuka-${{ runner.os }}-${{ hashFiles('asuka.lock') }}
@@ -84,7 +84,7 @@ jobs:
     name: Unsigned IPA
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # reader.asuka embeds the font, and the repository doesn't carry it:
       # the script downloads the pinned WOFF.
@@ -116,7 +116,7 @@ jobs:
           fi
           xcrun --sdk iphoneos --show-sdk-version
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.cache/asuka
           key: asuka-${{ runner.os }}-${{ hashFiles('asuka.lock') }}
@@ -138,7 +138,7 @@ jobs:
       # GitHub's artifact service times out now and then ("Failed to
       # CreateArtifact"): one more try, and the job says so if both fail.
       - id: upload
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         continue-on-error: true
         with:
           name: ios-unsigned-ipa
@@ -146,7 +146,7 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: steps.upload.outcome == 'failure'
         with:
           name: ios-unsigned-ipa
