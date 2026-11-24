@@ -37,6 +37,10 @@ nonExemptEncryption = "no"
 [dependencies]
 bookpage = "file:bookpage"
 
+[c]
+# swprintf/swscanf for asuka's own Windows host: see the C file's comment.
+sources = ["c/windows-legacy-stdio.c"]
+
 [c.prebuilt]
 linux-x64 = "lib/linux-x64/libebook_abi.a"
 macos-arm64 = "lib/macos-arm64/libebook_abi.a"
@@ -44,23 +48,30 @@ macos-x64 = "lib/macos-x64/libebook_abi.a"
 ios-arm64 = "lib/ios-arm64/libebook_abi.a"
 ios-simulator-arm64 = "lib/ios-simulator-arm64/libebook_abi.a"
 ios-simulator-x64 = "lib/ios-simulator-x64/libebook_abi.a"
-# Windows' is a .lib (MSVC's archive), as ebook-engine's release names it.
-windows-x64 = "lib/windows-x64/ebook_abi.lib"
+# Built for mingw (x86_64-pc-windows-gnu), the target asuka's Windows
+# build links with (see the note below); the release's is MSVC's .lib.
+windows-x64 = "lib/windows-x64/libebook_abi.a"
 
 # Rust's std needs these on the desktops; Apple's SDK brings its own.
 [c.linux]
 libraries = ["pthread", "dl", "m"]
 
 # The engine is Rust, so its std pays for Windows' own: the host links
-# kernel32 and the GUI's libraries already.
+# kernel32 and the GUI's libraries already. Rust's std also unwinds through
+# libgcc's, which Zig has as libunwind (_Unwind_*, _GCC_specific_handler),
+# and the host prints wide with swprintf, which here is the UCRT's.
 [c.windows]
-libraries = ["bcrypt", "ntdll", "userenv", "ws2_32"]
-# Its static library carries Rust's compiler_builtins, and Zig links its
-# own compiler_rt: lld-link sees __udivti3 twice (both weak) and stops.
-# MSVC's link takes the first; /force:multiple tells lld the same. The
-# other flag is so the -Wl, doesn't count as unused on the C compiles,
-# which are -Werror.
-flags = ["-Wl,/force:multiple", "-Wno-unused-command-line-argument"]
+libraries = [
+  "bcrypt",
+  "ntdll",
+  "userenv",
+  "ws2_32",
+  "unwind",
+  # swprintf/swscanf (UCRT) and the ones Rust's std waits with. Zig builds
+  # mingw's import libraries, whose names are the API set's.
+  "api-ms-win-crt-stdio-l1-1-0",
+  "api-ms-win-core-synch-l1-2-0",
+]
 
 [c.android]
 libraries = ["dl", "log", "m"]
