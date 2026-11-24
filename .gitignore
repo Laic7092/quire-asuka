@@ -10,8 +10,8 @@
 /lib/**/libebook_abi.a
 /lib/**/ebook_abi.h
 
-# The app embeds the WOFF2, but the repository doesn't carry it: 8 MB, and
-# .github/scripts/fetch-font.sh rebuilds it from the pinned upstream OTF
-# (fonts/README.md). An OTF here is a local source for that same script.
+# The app embeds the WOFF, but the repository doesn't carry it: 8 MB, and
+# .github/scripts/fetch-font.sh downloads it from the pinned CDN
+# (fonts/README.md).
+/fonts/*.woff
 /fonts/*.woff2
-/fonts/*.otf

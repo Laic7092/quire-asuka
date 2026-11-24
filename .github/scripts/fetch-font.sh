@@ -1,30 +1,26 @@
 #!/usr/bin/env bash
 #
-# Builds the WOFF2 the app embeds (fonts/NotoSerifSC-Regular.woff2) from the
-# upstream OTF. The face is 8 MB and the same on every machine, so the
-# repository doesn't carry it: this script makes it, and checks that what it
-# made is the face the pages were set in.
+# Fetches the font the app embeds (fonts/NotoSerifSC-Regular.woff). The face
+# is 8 MB and the same on every machine, so the repository doesn't carry it:
+# this script downloads it, and checks that what it got is the face the pages
+# were set in.
 #
 #   .github/scripts/fetch-font.sh
 #
-# Noto Serif CJK lives at github.com/notofonts/noto-cjk; the OTF is pinned by
-# tag and checked by hash, and woff2_compress is deterministic, so the WOFF2
-# comes out byte for byte the font the app shipped with. Needs woff2_compress:
+# Noto Serif SC 2.003, SIL OFL (fonts/OFL.txt). @openfonts republishes Google
+# Fonts' build as one file per weight, and jsDelivr serves it by version; the
+# hash below pins the exact bytes. The engine's FontBook reads WOFF as well as
+# WOFF2, so there is nothing to install and nothing to convert.
 #
-#   apt-get install woff2        # Debian, Ubuntu
-#   brew install woff2           # macOS
-#
-# FONT_OTF overrides where the OTF comes from (a mirror, or path/file://), and
-# WOFF2_COMPRESS where woff2_compress is.
+# FONT_WOFF overrides where the font comes from (a mirror, or path/file://).
 
 set -euo pipefail
 
-otf="${FONT_OTF:-https://cdn.jsdelivr.net/gh/notofonts/noto-cjk@Serif2.003/Serif/SubsetOTF/SC/NotoSerifSC-Regular.otf}"
-otf_sha256="e8f396decc1f0963a016a989c3d8852e863d1350996f573860a80767c83a1cd3"
-woff2_sha256="62f910a39108a552c0f88b14f7f14e58bbcad35b1d41e524b73fcde783c7dd67"
+woff="${FONT_WOFF:-https://cdn.jsdelivr.net/npm/@openfonts/noto-serif-sc_all@1.44.1/files/noto-serif-sc-all-400.woff}"
+woff_sha256="e4c8addfaeedfca9cd3b805590336314786ebe9c356b2ff9a3963d53e53038ce"
 
 app_dir="$(cd "$(dirname "$0")/../.." && pwd)"
-out="$app_dir/fonts/NotoSerifSC-Regular.woff2"
+out="$app_dir/fonts/NotoSerifSC-Regular.woff"
 
 # shasum is macOS's; sha256sum is everyone else's.
 sum() {
@@ -35,45 +31,26 @@ sum() {
   fi
 }
 
-if [ -f "$out" ] && [ "$(sum "$out")" = "$woff2_sha256" ]; then
-  echo "fetch-font: fonts/NotoSerifSC-Regular.woff2 is here ($(du -h "$out" | cut -f1))"
+if [ -f "$out" ] && [ "$(sum "$out")" = "$woff_sha256" ]; then
+  echo "fetch-font: fonts/NotoSerifSC-Regular.woff is here ($(du -h "$out" | cut -f1))"
   exit 0
-fi
-
-compress="${WOFF2_COMPRESS:-$(command -v woff2_compress || true)}"
-if [ -z "$compress" ] || [ ! -x "$compress" ]; then
-  echo "fetch-font: no woff2_compress (apt-get install woff2, or brew install woff2)" >&2
-  exit 1
 fi
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
-fetch() {
-  local url="$1" dest="$2"
-  if [ -e "$url" ]; then
-    cp "$url" "$dest"
-  else
-    curl -fsSL --retry 3 --retry-delay 2 -o "$dest" "$url"
-  fi
-}
-
-echo "fetch-font: the OTF ($(printf '%s' "$otf" | sed 's/.*@//'))"
-fetch "$otf" "$tmp/NotoSerifSC-Regular.otf"
-got="$(sum "$tmp/NotoSerifSC-Regular.otf")"
-if [ "$got" != "$otf_sha256" ]; then
-  echo "fetch-font: the OTF is not the one pinned ($got, not $otf_sha256)" >&2
-  exit 1
+echo "fetch-font: the WOFF ($(printf '%s' "$woff" | sed 's/.*@//; s#/files/.*##'))"
+if [ -e "$woff" ]; then
+  cp "$woff" "$tmp/font.woff"
+else
+  curl -fsSL --retry 3 --retry-delay 2 -o "$tmp/font.woff" "$woff"
 fi
-
-echo "fetch-font: woff2_compress"
-"$compress" "$tmp/NotoSerifSC-Regular.otf" >/dev/null
-got="$(sum "$tmp/NotoSerifSC-Regular.woff2")"
-if [ "$got" != "$woff2_sha256" ]; then
-  echo "fetch-font: the WOFF2 is not the face the app ships ($got, not $woff2_sha256)" >&2
+got="$(sum "$tmp/font.woff")"
+if [ "$got" != "$woff_sha256" ]; then
+  echo "fetch-font: the WOFF is not the face the app ships ($got, not $woff_sha256)" >&2
   exit 1
 fi
 
 mkdir -p "$app_dir/fonts"
-install -m 644 "$tmp/NotoSerifSC-Regular.woff2" "$out"
-echo "fetch-font: fonts/NotoSerifSC-Regular.woff2 ($(du -h "$out" | cut -f1))"
+install -m 644 "$tmp/font.woff" "$out"
+echo "fetch-font: fonts/NotoSerifSC-Regular.woff ($(du -h "$out" | cut -f1))"

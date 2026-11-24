@@ -28,7 +28,7 @@ var scrollAt = 0.0
 /// The face the pages are set in: a serif the app ships, so every device and
 /// every test lays the same book out the same way (and Chinese always has
 /// glyphs). SIL Open Font License; see fonts/OFL.txt.
-let bundledFace = embed.bytes("fonts/NotoSerifSC-Regular.woff2")
+let bundledFace = embed.bytes("fonts/NotoSerifSC-Regular.woff")
 
 /// The families to ask the platform for, in order. iOS's font files aren't
 /// where a reader would guess (and some live in the dyld cache), so the
