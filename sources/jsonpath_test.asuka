@@ -1,0 +1,27 @@
+// JSONPath over the JSON a source's API answers.
+
+import std/json
+
+test "members, indexes and the wildcard" {
+  let v = try json.parse(r#"{"data":{"list":[{"name":"a"},{"name":"b"}],"total":2}}"#)
+  expect(query(v, "$.data.list[*].name").count() == 2)
+  expect(asText(query(v, "$.data.list[0].name")[0]) == "a")
+  expect(asText(query(v, "$.data.list[-1].name")[0]) == "b")
+  expect(asText(query(v, "$.data.total")[0]) == "2")
+  expect(query(v, "data.list").count() == 1)
+}
+
+test "the descent finds every member" {
+  let v = try json.parse(r#"{"a":{"name":"x","b":{"name":"y"}}}"#)
+  let names = query(v, "$..name").map(n => asText(n))
+  expect(names == ["x", "y"])
+}
+
+test "a filter keeps what it accepts" {
+  let v = try json.parse(r#"[{"kind":"epub","id":1},{"kind":"pdf","id":2}]"#)
+  let epubs = query(v, "$[?(@.kind=='epub')]")
+  expect(epubs.count() == 1)
+  expect(asText(epubs[0].get("id") ?? .null) == "1")
+  expect(query(v, "$[?(@.id > 1)]").count() == 1)
+  expect(query(v, "$[?(@.kind =~ /pd/)]").count() == 1)
+}

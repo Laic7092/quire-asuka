@@ -1,0 +1,155 @@
+// 导入的书源，以及它们开关的保存。
+//
+// 一本书源按它原来的 JSON 存下来：这里不认识的那些字段（登录、评论、
+// 发现页）因此一个也不丢，读的时候才按 legado.asuka 的结构解释。同一个
+// 地址只存一份，重复导入算「跳过」。
+
+import std/crypto
+import std/json
+import std/store
+import std/time
+
+pub struct Entry {
+  id: string
+  name: string
+  group: string = ""
+  url: string
+  enabled: bool = true
+  /// 导入时那段书源 JSON，原样保存。
+  json: string
+  added: int = 0
+}
+
+pub struct ImportReport {
+  added: int = 0
+  skipped: int = 0
+  failed: int = 0
+  names: [string] = []
+
+  pub fn text() -> string {
+    var parts: [string] = []
+    if added > 0 { parts.push("导入 {added} 个书源") }
+    if skipped > 0 { parts.push("已有 {skipped} 个") }
+    if failed > 0 { parts.push("{failed} 个读不出来") }
+    if parts.isEmpty() { return "没有可导入的书源" }
+    return parts.joined(separator: " · ")
+  }
+}
+
+pub store Sources {
+  pub state entries: [Entry] = store.read("sources.entries", [])
+
+  effect { store.write("sources.entries", entries) }
+
+  pub fn list() -> [Entry] = entries
+
+  /// 一条书源，按 id。
+  pub fn find(id: string) -> Entry? = entries.find(e => e.id == id)
+
+  /// 一条书源，按 id 或书源地址。书架上的在线书记的是地址（同一份书源
+  /// 重新导入时 id 不变，但地址才是书自己认得的东西）。
+  pub fn entryOf(key: string) -> Entry? = entries.find(e => e.id == key || e.url == key)
+
+  /// 一个 id（或地址）的书源规则；书源不在了、或者那段 JSON 读不出来时没有。
+  pub fn definitionOf(key: string) -> BookSource? {
+    if let e = entryOf(key) { return definition(e) }
+    return none
+  }
+
+  /// 同步回来的一批：同 id 的以本机的为准，其余补进来。返回补了几条。
+  pub fn merge(remote: [Entry]) -> int {
+    var added = 0
+    var next = entries
+    for e in remote {
+      if next.any(k => k.id == e.id) { continue }
+      next.push(e)
+      added += 1
+    }
+    if added > 0 { entries = next }
+    return added
+  }
+
+  pub fn enabled() -> [Entry] = entries.filter(e => e.enabled)
+
+  pub fn count() -> int = entries.count()
+
+  pub fn isEmpty() -> bool = entries.isEmpty()
+
+  pub fn enabledCount() -> int = entries.count(where: e => e.enabled)
+
+  pub fn has(url: string) -> bool = entries.any(e => e.url == url)
+
+  pub fn setEnabled(id: string, on: bool) {
+    var next: [Entry] = []
+    for e in entries {
+      var row = e
+      if e.id == id { row.enabled = on }
+      next.push(row)
+    }
+    entries = next
+  }
+
+  pub fn setGroup(id: string, group: string) {
+    var next: [Entry] = []
+    for e in entries {
+      var row = e
+      if e.id == id { row.group = group }
+      next.push(row)
+    }
+    entries = next
+  }
+
+  pub fn remove(id: string) {
+    entries.removeWhere(e => e.id == id)
+  }
+
+  pub fn clear() {
+    entries = []
+  }
+
+  /// 一段书源 JSON（单个或一份合集）导进来。读不出来的条目只计数，不停
+  /// 下整份导入。
+  pub fn importText(text: string) throws -> ImportReport {
+    let values = try parseList(text)
+    var report = ImportReport()
+    for v in values {
+      let url = urlOf(v)
+      if url.isEmpty() {
+        report.failed += 1
+        continue
+      }
+      if entries.any(e => e.url == url) {
+        report.skipped += 1
+        continue
+      }
+      let name = nameOf(v)
+      let def = try? decodeSource(v)
+      entries.push(Entry(
+        id: crypto.sha256(url.bytes()).hex(),
+        name: name,
+        group: def?.bookSourceGroup ?? "",
+        url: url,
+        enabled: def?.enabled ?? true,
+        json: "{v}",
+        added: time.now().unix(),
+      ))
+      report.added += 1
+      report.names.push(name)
+    }
+    return report
+  }
+
+  /// 从一段地址导入：书源合集常放在一个 raw 链接里。
+  pub async fn importUrl(address: string) throws -> ImportReport {
+    let page = try await get(address.trim(), [:])
+    return try importText(page.text)
+  }
+
+  /// 一条书源的结构；读不出来时没有。
+  pub fn definition(e: Entry) -> BookSource? {
+    if let v = try? json.parse(e.json) {
+      return try? decodeSource(v)
+    }
+    return none
+  }
+}

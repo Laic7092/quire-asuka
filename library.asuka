@@ -8,6 +8,15 @@ import std/store
 import std/time
 import ./engine
 import ./lib
+import ./remote
+import ./sources
+
+/// 在线书的 id：书源 + 书页，跟书名无关（书名会改）。同一本书在两个源
+/// 上是两本，各自有进度，这也对。
+pub fn onlineId(sourceId: string, bookUrl: string) -> string {
+  let data = "{sourceId}\n{bookUrl}".bytes()
+  return "online-" + crypto.sha256(data).hex().slice(0, 16)
+}
 
 /// Where a book's cover image lives: the engine writes its original bytes
 /// here, and the shelf shows it. `.img` because the bytes keep their own
@@ -386,6 +395,9 @@ pub store Library {
       if !row.cover.isEmpty() && !shelf.any(s => s.cover == row.cover) {
         try? fs.remove(fileOf(row.cover))
       }
+      if !row.sourceId.isEmpty() {
+        try? fs.removeAll(remote.dirOf(id))
+      }
     }
     // The note is what keeps a sync (or another device that hasn't synced
     // yet) from putting the book back. Its files go on the next sync.
@@ -751,24 +763,25 @@ pub store Library {
   }
 
   /// The launch task: a sync only when the reader asked for one.
-  pub async fn syncIfAuto() {
-    if !syncAuto || !davConfigured() { return }
-    try? await syncNow()
+  pub async fn syncIfAuto(entries: [sources.Entry]) -> [sources.Entry] {
+    if !syncAuto || !davConfigured() { return entries }
+    let (_, merged) = (try? await syncNow(entries)) ?? (syncMessage, entries)
+    return merged
   }
 
   /// A full two-way sync: files, then the state that names them. The message
   /// is what the 我 page and the sheet show; the error is thrown as well, so
   /// a sheet that asked can say what happened.
-  pub async fn syncNow() throws -> string {
+  pub async fn syncNow(entries: [sources.Entry]) throws -> (string, [sources.Entry]) {
     if !davConfigured() { throw SyncError.notConfigured }
-    if syncBusy { return syncMessage }
+    if syncBusy { return (syncMessage, entries) }
     syncBusy = true
     defer { syncBusy = false }
     do {
-      let report = try await runSync(davConfig())
+      let (report, merged) = try await runSync(davConfig(), entries)
       syncLast = time.now().unix()
       syncMessage = report.text()
-      return syncMessage
+      return (syncMessage, merged)
     } catch e {
       syncMessage = "同步失败：{e.message}"
       throw e
@@ -807,11 +820,42 @@ pub store Library {
     }
   }
 
+  /// 在线书入架：只记指针，一个字的正文都不下。meta.json 由调用方先
+  /// 写好（加入书架时取了一次详情 + 目录）。
+  pub fn addOnline(meta: remote.Meta, cover: string) -> lib.Book {
+    let id = onlineId(meta.sourceId, meta.bookUrl)
+    let book = lib.Book(
+      id: id, title: meta.name, author: meta.author, chapters: [],
+      cover: cover, sourceId: meta.sourceId, bookUrl: meta.bookUrl, tocUrl: meta.tocUrl,
+    )
+    var row = lib.shelfOf(book)
+    row.added = time.now().unix()
+    shelf.removeWhere(s => s.id == id)
+    shelf.push(row)
+    removedIds.remove(id)
+    keep()
+    return book
+  }
+
   /// 打开一本云端书：正文不在本机时只下载这一本，校验 hash 后再交给
   /// 阅读页。这是「书很多、只读一本」的关键路径。
   pub async fn prepare(book: lib.Book) throws -> lib.Book {
     var kept = lib.Shelf(id: book.id, title: book.title, author: book.author, path: "")
     if let row = shelf.find(s => s.id == book.id) { kept = row }
+    // 在线书没有文件可准备：目录和窗口由阅读页按书源去取。
+    if !kept.sourceId.isEmpty() {
+      lastOpened[book.id] = time.now().unix()
+      assetsTick += 1
+      try? await pullDocIfNeeded(book.id)
+      evictCache(keep: book.id)
+      var ready = book
+      ready.sourceId = kept.sourceId
+      ready.bookUrl = kept.bookUrl
+      ready.tocUrl = kept.tocUrl
+      ready.remote = false
+      ready.backedUp = false
+      return ready
+    }
     let local = fileOf(kept.path)
     if local.isEmpty() { throw Error("《{book.title}》没有文件路径") }
 
@@ -879,12 +923,12 @@ pub store Library {
   }
 
   /// 把本机所有书都传上去；正文很多时这会很慢，所以是一个显式动作。
-  pub async fn backupAll() throws -> string {
+  pub async fn backupAll(entries: [sources.Entry]) throws -> (string, [sources.Entry]) {
     if !davConfigured() { throw SyncError.notConfigured }
-    if syncBusy { return syncMessage }
+    if syncBusy { return (syncMessage, entries) }
     uploadAll = true
     defer { uploadAll = false }
-    return try await syncNow()
+    return try await syncNow(entries)
   }
 
   /// 把一本书的正文从本机删掉，云端那份保留：下次打开会重新下载。
@@ -925,6 +969,10 @@ pub store Library {
         total += info.size
       }
     }
+    for row in shelf {
+      if row.sourceId.isEmpty() { continue }
+      total += remote.bytesOf(row.id)
+    }
     return total
   }
 
@@ -935,6 +983,10 @@ pub store Library {
     let limit = cacheLimitMB * 1024 * 1024
     var total = 0
     for row in shelf {
+      if !row.sourceId.isEmpty() {
+        total += remote.bytesOf(row.id)
+        continue
+      }
       let local = fileOf(row.path)
       if local.isEmpty() || !fs.exists(local) { continue }
       if row.bytes > 0 {
@@ -954,6 +1006,18 @@ pub store Library {
       let local = fileOf(row.path)
       let size = if row.bytes > 0 { row.bytes } else if let info = try? fs.stat(local) { info.size } else { 0 }
       try? fs.remove(local)
+      total -= size
+      evicted = true
+    }
+    // 在线书的正文也是缓存：删了下次打开再取，目录和进度都还在。
+    let online = shelf
+      .filter(row => row.id != keep && !pinned.contains(row.id) && !row.sourceId.isEmpty())
+      .sorted(key: row => lastOpened.get(row.id) ?? 0)
+    for row in online {
+      if total <= limit { break }
+      let size = remote.bytesOf(row.id)
+      if size <= 0 { continue }
+      remote.dropChapters(row.id)
       total -= size
       evicted = true
     }
@@ -982,7 +1046,7 @@ pub store Library {
     if changed { shelf = next; keep() }
   }
 
-  async fn runSync(cfg: DavConfig) throws -> SyncReport {
+  async fn runSync(cfg: DavConfig, entries: [sources.Entry]) throws -> (SyncReport, [sources.Entry]) {
     try await davEnsure(cfg)
     await fillHashes()
 
@@ -1000,6 +1064,7 @@ pub store Library {
       serverShelf.push(kept)
     }
 
+    let allSources = syncSources(entries, server.sources)
     let removed = mergedRemoved(removedIds, server.removed)
     let (nextShelf, added) = mergedShelf(shelf, serverShelf, removed)
     let live = prunedRemoved(nextShelf, removed)
@@ -1205,6 +1270,7 @@ pub store Library {
       readings: readings,
       removed: removedIds,
       docs: finalRemote,
+      sources: allSources,
       theme: theme,
       size: size,
       line: line,
@@ -1215,7 +1281,7 @@ pub store Library {
       goal: goal,
     )
     try await davPutText(cfg, "catalog.json", syncEncode(written))
-    return report
+    return (report, allSources)
   }
 }
 

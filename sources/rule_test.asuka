@@ -1,0 +1,58 @@
+// Rules: steps, suffixes, rewrites, and the templates a search address is
+// built from.
+
+test "a rule reads rows and their fields" {
+  let doc = open("<div class='list'><div class='row'><a href='/b/1'>One</a><em>Ana</em></div></div>", "http://x/")
+  let env = Env(base: "http://x")
+  let rows = eval(doc, "div.row", env)
+  expect(rows.docs.count() == 1)
+  expect(rows.docs[0].node > 0)
+  expect(readOne(rows.docs[0], "a@href", env) == "/b/1")
+  expect(readOne(rows.docs[0], "em@text", env) == "Ana")
+  expect(readOne(rows.docs[0], "a", env) == "One")
+}
+
+test "alternatives and rewrites" {
+  let doc = open("<div id='x'>  hello  world </div>", "")
+  let env = Env()
+  expect(readOne(doc, "div#none || div#x", env) == "hello world")
+  expect(readOne(doc, "div#x@text##hello##bye", env) == "bye world")
+}
+
+test "a json rule walks members" {
+  let doc = open(r#"{"data":{"list":[{"name":"a","url":"/1"},{"name":"b","url":"/2"}]}}"#, "http://x/")
+  let env = Env(base: "http://x")
+  let rows = eval(doc, "$.data.list[*]", env)
+  expect(rows.docs.count() == 2)
+  expect(readOne(rows.docs[1], "$.name", env) == "b")
+  expect(readOne(rows.docs[0], "$.url", env) == "/1")
+}
+
+test "an xpath rule reads elements and attributes" {
+  let doc = open("<div id='c'><p>one</p><p>two</p></div>", "")
+  let env = Env()
+  expect(eval(doc, "//div[@id='c']/p", env).values.count() == 2)
+  expect(eval(doc, "//p[2]/text()", env).first() == "two")
+  expect(eval(doc, "//div[@id='c']/@id", env).first() == "c")
+}
+
+test "templates fill a search address" {
+  let env = Env(base: "https://x", key: "a b", page: 2, vars: ["host": "h"])
+  expect(expand(r"/search?q={{key}}&p={{page}}", env) == "/search?q=a b&p=2")
+  expect(expand(r"{{java.encodeURI(key)}}", env) == "a%20b")
+  expect(expand(r"@get:{host}/list", env) == "h/list")
+  expect(expand(r"{{(page - 1) * 10}}", env) == "10")
+}
+
+test "a body rule reads paragraphs" {
+  let doc = open("<div id='c'><p>one</p><p>two<br>three</p><script>x</script></div>", "")
+  let env = Env()
+  expect(readPlain(doc, "div#c", env) == "one\ntwo\nthree")
+}
+
+test "javascript rules answer nothing rather than guessing" {
+  let doc = open("<div id='c'>text</div>", "")
+  let env = Env()
+  expect(eval(doc, "div#c@text##x##y", env).empty() == false)
+  expect(eval(doc, "@js:result.split('\\n')", env).empty())
+}

@@ -1,0 +1,167 @@
+// 阅读3.0（Legado）的书源格式：一段 JSON 描述一个站点的搜索、详情、
+// 目录和正文，每个字段一条规则。这里只读应用会用到的字段，名字与导出的
+// JSON 一致；其余字段（登录、评论、回调）随原来的 JSON 一起保存，读的
+// 时候不解释。
+//
+// 规则本身在 rule.asuka 里执行；这个文件只把 JSON 读成结构，并回答书源
+// 的地址、请求头和它自己的变量。
+
+import std/json
+
+pub struct SearchRule {
+  bookList: string = ""
+  name: string = ""
+  author: string = ""
+  kind: string = ""
+  wordCount: string = ""
+  lastChapter: string = ""
+  intro: string = ""
+  coverUrl: string = ""
+  bookUrl: string = ""
+}
+
+pub struct BookInfoRule {
+  init: string = ""
+  name: string = ""
+  author: string = ""
+  kind: string = ""
+  wordCount: string = ""
+  lastChapter: string = ""
+  intro: string = ""
+  coverUrl: string = ""
+  tocUrl: string = ""
+}
+
+pub struct TocRule {
+  chapterList: string = ""
+  chapterName: string = ""
+  chapterUrl: string = ""
+  isVip: string = ""
+  updateTime: string = ""
+  nextTocUrl: string = ""
+}
+
+pub struct ContentRule {
+  content: string = ""
+  nextContentUrl: string = ""
+  /// 正文的逐行替换：每行 `正则##替换`。
+  replaceRegex: string = ""
+  sourceRegex: string = ""
+  webJs: string = ""
+}
+
+pub struct BookSource {
+  bookSourceName: string = ""
+  bookSourceUrl: string = ""
+  bookSourceGroup: string = ""
+  bookSourceComment: string = ""
+  bookSourceType: int = 0
+  enabled: bool = true
+  header: string = ""
+  jsLib: string = ""
+  searchUrl: string = ""
+  exploreUrl: string = ""
+  variable: string = ""
+  concurrentRate: string = ""
+  /// 有些书源没有某一组规则（没有详情页、没有目录）：缺的那组是空的，
+  /// 不是读不出来。
+  ruleSearch: SearchRule? = none
+  ruleBookInfo: BookInfoRule? = none
+  ruleToc: TocRule? = none
+  ruleContent: ContentRule? = none
+
+  pub fn searchRules() -> SearchRule = ruleSearch ?? SearchRule()
+
+  pub fn infoRules() -> BookInfoRule = ruleBookInfo ?? BookInfoRule()
+
+  pub fn tocRules() -> TocRule = ruleToc ?? TocRule()
+
+  pub fn contentRules() -> ContentRule = ruleContent ?? ContentRule()
+}
+
+/// 一段书源 JSON 里的每一个书源：数组是导出的合集，对象是单个书源。
+/// 没有地址的条目（不是书源）会被跳过；一个都不剩时抛错。
+pub fn parseList(text: string) throws -> [json.Value] {
+  let t = text.trim()
+  if t.isEmpty() { throw Error("书源是空的") }
+  let v = try json.parse(t)
+  var out: [json.Value] = []
+  if let arr = v.asArray() {
+    for item in arr {
+      if !urlOf(item).isEmpty() { out.push(item) }
+    }
+  } else if v.asObject() != none {
+    if !urlOf(v).isEmpty() { out.push(v) }
+  }
+  if out.isEmpty() { throw Error("这里面没有书源") }
+  return out
+}
+
+pub fn urlOf(v: json.Value) -> string = v.get("bookSourceUrl")?.asString()?.trim() ?? ""
+
+pub fn nameOf(v: json.Value) -> string {
+  let name = v.get("bookSourceName")?.asString()?.trim() ?? ""
+  if !name.isEmpty() { return name }
+  let url = urlOf(v)
+  if url.isEmpty() { return "未命名书源" }
+  return url
+}
+
+/// 一段书源 JSON 读成结构。读不出来时抛错，说哪个字段不对。
+pub fn decodeSource(v: json.Value) throws -> BookSource {
+  return try json.decode<BookSource>("{v}")
+}
+
+pub fn groupsOf(s: BookSource) -> [string] = s.bookSourceGroup.split(",").map(g => g.trim()).filter(g => !g.isEmpty())
+
+/// 请求头写在 header 字段里，是一段 JSON 字符串。proxy 是连接设置，不是
+/// 一个请求头，不带上。
+pub fn headersOf(s: BookSource) -> [string: string] {
+  let raw = s.header.trim()
+  if !raw.hasPrefix(r"{") { return [:] }
+  var out: [string: string] = [:]
+  if let v = try? json.parse(raw) {
+    if let o = v.asObject() {
+      for (k, val) in o {
+        if k.lower() == "proxy" { continue }
+        out[k] = stringOf(val)
+      }
+    }
+  }
+  return out
+}
+
+/// 书源自己的变量（variable 字段）：规则里的 @get:{key} 读它们。
+pub fn varsOf(s: BookSource) -> [string: string] {
+  let raw = s.variable.trim()
+  if !raw.hasPrefix(r"{") { return [:] }
+  var out: [string: string] = [:]
+  if let v = try? json.parse(raw) {
+    if let o = v.asObject() {
+      for (k, val) in o {
+        out[k] = stringOf(val)
+      }
+    }
+  }
+  return out
+}
+
+/// 书源自己的地址：相对链接按它解析，{{baseUrl}} 是它。
+pub fn baseUrlOf(s: BookSource) -> string {
+  var u = s.bookSourceUrl.trim()
+  if u.isEmpty() { return "" }
+  if !u.contains("://") { u = "http://{u}" }
+  while u.hasSuffix("/") {
+    u = u.slice(0, u.count() - 1)
+  }
+  return u
+}
+
+fn stringOf(v: json.Value) -> string = match v {
+  .null => ""
+  .string(s) => s
+  .bool(b) => if b { "true" } else { "false" }
+  .int(n) => "{n}"
+  .float(f) => "{f}"
+  _ => "{v}"
+}

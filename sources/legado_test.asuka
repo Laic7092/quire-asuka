@@ -1,0 +1,36 @@
+// 书源 JSON 的读法：合集、单个、请求头、变量和地址。
+
+let sample = r##"[{"bookSourceName":"示例","bookSourceUrl":"https://x.test","bookSourceGroup":"小说, 完本","header":"{\"User-Agent\":\"UA\"}","variable":"{\"host\":\"h\"}","enabled":true,"searchUrl":"/search?q={{key}}&p={{page}}","ruleSearch":{"bookList":".row","name":".name@text","bookUrl":"a@href"},"ruleToc":{"chapterList":"#list a","chapterName":"text","chapterUrl":"href"},"ruleContent":{"content":"#content"}},{"bookSourceUrl":""}]"##
+
+test "a collection reads its sources and skips what has no address" {
+  let list = try parseList(sample)
+  expect(list.count() == 1)
+  let def = try decodeSource(list[0])
+  expect(def.bookSourceName == "示例")
+  expect(def.bookSourceUrl == "https://x.test")
+  expect(groupsOf(def) == ["小说", "完本"])
+  expect(def.tocRules().chapterList == "#list a")
+}
+
+test "a single source reads too" {
+  let one = r#"{"bookSourceName":"一个","bookSourceUrl":"x.test","searchUrl":"/s?q={{key}}"}"#
+  let list = try parseList(one)
+  expect(list.count() == 1)
+  let def = try decodeSource(list[0])
+  expect(baseUrlOf(def) == "http://x.test")
+}
+
+test "the address fills in its templates" {
+  let list = try parseList(sample)
+  let def = try decodeSource(list[0])
+  let env = Env(base: baseUrlOf(def), key: "剑", page: 2, vars: varsOf(def))
+  let (target, _) = addressOf(def.searchUrl, def, env)
+  expect(target == "https://x.test/search?q=%E5%89%91&p=2")
+}
+
+test "headers and variables are JSON in a string" {
+  let list = try parseList(sample)
+  let def = try decodeSource(list[0])
+  expect(headersOf(def).get("User-Agent") == "UA")
+  expect(varsOf(def).get("host") == "h")
+}

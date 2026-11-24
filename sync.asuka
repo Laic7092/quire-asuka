@@ -15,6 +15,7 @@
 import std/json
 
 import ./lib
+import ./sources
 
 /// Why a sync can't start.
 pub enum SyncError: Error {
@@ -31,7 +32,7 @@ pub enum SyncError: Error {
 /// has never synced has, so a first sync can tell "the reader changed this"
 /// from "this is still the default".
 pub struct SyncSnapshot {
-  version: int = 2
+  version: int = 3
   /// When this file was written, in unix seconds. 0 for no file yet.
   updated: int = 0
   shelf: [lib.Shelf] = []
@@ -41,6 +42,9 @@ pub struct SyncSnapshot {
   /// Each book's sidecar revision: "id" -> updated unix seconds. A device
   /// only fetches meta/<key>.json when this is newer than what it has.
   docs: [string: int] = [:]
+  /// 书源：在线书的指针只有配上书源才读得出来，所以它跟书架一起走。
+  /// 同 id 的以本机的为准；删掉的源不会从别的设备上被删（先这样）。
+  sources: [sources.Entry] = []
   theme: string = "paper"
   size: float = 19.0
   line: float = 1.6
@@ -111,6 +115,16 @@ pub struct BookDoc {
 pub fn bookDocEncode(doc: BookDoc) -> string = json.encode(doc, indent: 2)
 
 pub fn bookDocDecode(text: string) throws -> BookDoc = try json.decode(text)
+
+/// 书源的一批合并：同 id 的以本机的为准，服务器上多出来的补进来。
+/// 删掉的源暂时不会跟着删（下一步再说）。
+pub fn syncSources(local: [sources.Entry], remote: [sources.Entry]) -> [sources.Entry] {
+  var out = local
+  for e in remote {
+    if !out.any(k => k.id == e.id) { out.push(e) }
+  }
+  return out
+}
 
 /// The shelf, with the server's rows added and this device's kept: a row on
 /// both sides is the same book, and the one here has the path this launch

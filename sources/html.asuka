@@ -1,0 +1,481 @@
+// A tolerant HTML reader, for the pages book sources are written against.
+//
+// The tree is flat: every node is an entry in one array, in document order,
+// holding its parent's index and its children's. A recursive type would say
+// the same thing in Asuka's own shape, but a page is imperfect markup — a
+// tag that never closes, one that closes without opening — and a flat tree
+// is what makes patching it up cheap.
+//
+// Selecting is asuka's; this file only reads the page into a tree and
+// answers what an element stands for: its text, its own text, an attribute,
+// or the whole element written back out.
+
+import std/html as h
+
+pub struct Node {
+  parent: int = -1
+  /// The element's lower-case name; "" for a text node.
+  name: string = ""
+  /// A text node's text.
+  text: string = ""
+  attrs: [string: string] = [:]
+  children: [int] = []
+}
+
+pub struct Tree {
+  nodes: [Node] = []
+  root: int = 0
+
+  /// Append a text node to the element at `at`.
+  mut fn addText(at: int, text: string) {
+    if text.isEmpty() { return }
+    let idx = nodes.count()
+    nodes.push(Node(parent: at, text: h.unescape(text)))
+    nodes[at].children.push(idx)
+  }
+}
+
+pub fn empty() -> Tree {
+  var t = Tree()
+  t.nodes.push(Node(parent: -1, name: "#root"))
+  t.root = 0
+  return t
+}
+
+/// Elements that never hold anything, so their start tag is their end.
+let voidTags = [
+  "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+  "meta", "param", "source", "track", "wbr",
+]
+
+/// Elements a following one of the same kind closes: a page leaves `<li>`
+/// and `<p>` unclosed all the time.
+let autoCloseTags = [
+  "p", "li", "option", "dt", "dd", "tr", "td", "th", "thead", "tbody", "tfoot",
+]
+
+/// Elements whose text is a line of its own.
+let blockTags = [
+  "address", "article", "aside", "blockquote", "dd", "div", "dl", "dt",
+  "fieldset", "figcaption", "figure", "footer", "form", "h1", "h2", "h3",
+  "h4", "h5", "h6", "header", "hr", "li", "main", "nav", "ol", "p", "pre",
+  "section", "table", "tbody", "td", "tfoot", "th", "thead", "tr", "ul",
+]
+
+fn isVoid(name: string) -> bool = voidTags.contains(name)
+
+fn isBlock(name: string) -> bool = blockTags.contains(name)
+
+fn isNameChar(c: char) -> bool = c.isLetter() || c.isDigit() || c == '-' || c == '_' || c == ':' || c == '.'
+
+/// Parse a page into a tree. Half a page beats a failed chapter: a start tag
+/// that never closes is closed at the end, and one that closes without a
+/// start is ignored.
+pub fn parse(source: string) -> Tree {
+  var tree = empty()
+  var stack: [int] = [0]
+  let cs = source.chars()
+  let n = cs.count()
+  var i = 0
+  var text = ""
+
+  while i < n {
+    let c = cs[i]
+    if c != '<' {
+      text += c
+      i += 1
+      continue
+    }
+    let next = if i + 1 < n { cs[i + 1] } else { ' ' }
+
+    // Comments, doctypes and processing instructions hold no content.
+    if next == '!' || next == '?' {
+      if startsAt(cs, i, "<!--") {
+        let end = indexOfChars(cs, i + 4, "-->")
+        i = if end < 0 { n } else { end + 3 }
+      } else {
+        let end = indexOfChars(cs, i + 2, ">")
+        i = if end < 0 { n } else { end + 1 }
+      }
+      continue
+    }
+
+    // A closing tag: pop to the element it names, if it is open.
+    if next == '/' {
+      var j = i + 2
+      var name = ""
+      while j < n && isNameChar(cs[j]) {
+        name += cs[j]
+        j += 1
+      }
+      if name.isEmpty() {
+        text += c
+        i += 1
+        continue
+      }
+      tree.addText(stack[stack.count() - 1], text)
+      text = ""
+      let lower = name.lower()
+      var at = -1
+      var k = stack.count() - 1
+      while k > 0 {
+        if tree.nodes[stack[k]].name == lower {
+          at = k
+          break
+        }
+        k -= 1
+      }
+      if at > 0 {
+        while stack.count() > at {
+          stack.pop()
+        }
+      }
+      let end = indexOfChars(cs, j, ">")
+      i = if end < 0 { n } else { end + 1 }
+      continue
+    }
+
+    if !next.isLetter() {
+      text += c
+      i += 1
+      continue
+    }
+
+    // An opening tag, with its attributes.
+    tree.addText(stack[stack.count() - 1], text)
+    text = ""
+    var j = i + 1
+    var name = ""
+    while j < n && isNameChar(cs[j]) {
+      name += cs[j]
+      j += 1
+    }
+    name = name.lower()
+
+    var attrs: [string: string] = [:]
+    var selfClose = false
+    while j < n {
+      while j < n && cs[j].isWhitespace() { j += 1 }
+      if j >= n { break }
+      if cs[j] == '>' {
+        j += 1
+        break
+      }
+      if cs[j] == '/' {
+        selfClose = true
+        j += 1
+        continue
+      }
+      var aname = ""
+      while j < n && !cs[j].isWhitespace() && cs[j] != '=' && cs[j] != '>' && cs[j] != '/' {
+        aname += cs[j]
+        j += 1
+      }
+      while j < n && cs[j].isWhitespace() { j += 1 }
+      var avalue = ""
+      if j < n && cs[j] == '=' {
+        j += 1
+        while j < n && cs[j].isWhitespace() { j += 1 }
+        if j < n && (cs[j] == '"' || cs[j] == '\'') {
+          let quote = cs[j]
+          j += 1
+          var raw = ""
+          while j < n && cs[j] != quote {
+            raw += cs[j]
+            j += 1
+          }
+          avalue = h.unescape(raw)
+          if j < n { j += 1 }
+        } else {
+          var raw = ""
+          while j < n && !cs[j].isWhitespace() && cs[j] != '>' {
+            raw += cs[j]
+            j += 1
+          }
+          avalue = h.unescape(raw)
+        }
+      }
+      if !aname.isEmpty() {
+        attrs[aname.lower()] = avalue
+      }
+    }
+    i = j
+
+    // A page's unclosed cells, rows and items: close the one this one
+    // replaces, down to the container it belongs in.
+    if autoCloseTags.contains(name) {
+      var targets: [string] = [name]
+      var fences: [string] = []
+      if name == "td" || name == "th" {
+        targets = ["td", "th"]
+        fences = ["tr", "table"]
+      } else if name == "tr" {
+        targets = ["tr"]
+        fences = ["table", "tbody", "thead", "tfoot"]
+      } else if name == "li" {
+        fences = ["ul", "ol", "menu"]
+      } else if name == "option" {
+        fences = ["select", "datalist"]
+      } else if name == "dt" || name == "dd" {
+        targets = ["dt", "dd"]
+        fences = ["dl"]
+      } else if name == "thead" || name == "tbody" || name == "tfoot" {
+        targets = ["thead", "tbody", "tfoot"]
+        fences = ["table"]
+      } else if name == "p" {
+        fences = ["div", "section", "td", "li", "body", "blockquote"]
+      }
+      var at = -1
+      var k = stack.count() - 1
+      while k > 0 {
+        let open = tree.nodes[stack[k]].name
+        if targets.contains(open) {
+          at = k
+          break
+        }
+        if fences.contains(open) { break }
+        k -= 1
+      }
+      if at > 0 {
+        while stack.count() > at {
+          stack.pop()
+        }
+      }
+    }
+
+    // An open <p> ends where a block element starts, as HTML says.
+    if isBlock(name) && name != "p" {
+      var at = -1
+      var k = stack.count() - 1
+      while k > 0 {
+        let open = tree.nodes[stack[k]].name
+        if open == "p" {
+          at = k
+          break
+        }
+        if open == "div" || open == "td" || open == "li" || open == "body" || open == "section" || open == "blockquote" {
+          break
+        }
+        k -= 1
+      }
+      if at > 0 {
+        while stack.count() > at {
+          stack.pop()
+        }
+      }
+    }
+
+    let parent = stack[stack.count() - 1]
+    let idx = tree.nodes.count()
+    tree.nodes.push(Node(parent: parent, name: name, attrs: attrs))
+    tree.nodes[parent].children.push(idx)
+
+    // A script's or a style's content is the page's machinery, not its book.
+    if name == "script" || name == "style" {
+      let close = indexOfCharsFold(cs, i, "</{name}")
+      if close < 0 {
+        i = n
+      } else {
+        let end = indexOfChars(cs, close, ">")
+        i = if end < 0 { n } else { end + 1 }
+      }
+      continue
+    }
+
+    if !selfClose && !isVoid(name) {
+      stack.push(idx)
+    }
+  }
+
+  tree.addText(stack[stack.count() - 1], text)
+  return tree
+}
+
+/// Every element under `within`, in document order.
+pub fn descendants(tree: Tree, within: int) -> [int] {
+  var out: [int] = []
+  var i = 0
+  while i < tree.nodes.count() {
+    if i != within && isWithin(tree, i, within) && !tree.nodes[i].name.isEmpty() {
+      out.push(i)
+    }
+    i += 1
+  }
+  return out
+}
+
+/// Whether `i` is inside `within` (not `within` itself).
+pub fn isInside(tree: Tree, i: int, within: int) -> bool = isWithin(tree, i, within)
+
+fn isWithin(tree: Tree, i: int, within: int) -> bool {
+  var p = tree.nodes[i].parent
+  while p >= 0 {
+    if p == within { return true }
+    p = tree.nodes[p].parent
+  }
+  return false
+}
+
+/// The element before `i` among its parent's element children, or -1.
+pub fn prevElement(tree: Tree, i: int) -> int {
+  let parent = tree.nodes[i].parent
+  if parent < 0 { return -1 }
+  var prev = -1
+  for s in tree.nodes[parent].children {
+    if s == i { return prev }
+    if !tree.nodes[s].name.isEmpty() { prev = s }
+  }
+  return -1
+}
+
+/// The element after `i` among its parent's element children, or -1.
+pub fn nextElement(tree: Tree, i: int) -> int {
+  let parent = tree.nodes[i].parent
+  if parent < 0 { return -1 }
+  var seen = false
+  for s in tree.nodes[parent].children {
+    if seen && !tree.nodes[s].name.isEmpty() { return s }
+    if s == i { seen = true }
+  }
+  return -1
+}
+
+/// How many elements of the parent come before `i`, plus one: its place
+/// among its siblings, which is what :nth-child reads.
+pub fn position(tree: Tree, i: int) -> int {
+  let parent = tree.nodes[i].parent
+  if parent < 0 { return 1 }
+  var n = 0
+  for s in tree.nodes[parent].children {
+    if !tree.nodes[s].name.isEmpty() { n += 1 }
+    if s == i { return n }
+  }
+  return n
+}
+
+/// An attribute's value, or "" when the element has none.
+pub fn attr(tree: Tree, i: int, name: string) -> string {
+  if i < 0 || i >= tree.nodes.count() { return "" }
+  return tree.nodes[i].attrs.get(name.lower()) ?? ""
+}
+
+fn textInto(tree: Tree, i: int) -> string {
+  var out = ""
+  for c in tree.nodes[i].children {
+    let node = tree.nodes[c]
+    if node.name.isEmpty() {
+      out += node.text
+      continue
+    }
+    if node.name == "script" || node.name == "style" || node.name == "noscript" {
+      continue
+    }
+    let block = isBlock(node.name) || node.name == "br"
+    if block { out += " " }
+    if node.name != "br" {
+      out += textInto(tree, c)
+    }
+    if block { out += " " }
+  }
+  return out
+}
+
+/// The element's text and the text of everything under it, as one line.
+pub fn textOf(tree: Tree, i: int) -> string {
+  if i < 0 || i >= tree.nodes.count() { return "" }
+  return collapse(textInto(tree, i))
+}
+
+/// The element's own text, without the text of the elements inside it.
+pub fn ownText(tree: Tree, i: int) -> string {
+  if i < 0 || i >= tree.nodes.count() { return "" }
+  var out = ""
+  for c in tree.nodes[i].children {
+    if tree.nodes[c].name.isEmpty() { out += tree.nodes[c].text }
+  }
+  return collapse(out)
+}
+
+/// The element's own text nodes, one a line.
+pub fn textNodes(tree: Tree, i: int) -> string {
+  if i < 0 || i >= tree.nodes.count() { return "" }
+  var lines: [string] = []
+  for c in tree.nodes[i].children {
+    if !tree.nodes[c].name.isEmpty() { continue }
+    let t = collapse(tree.nodes[c].text)
+    if !t.isEmpty() { lines.push(t) }
+  }
+  return lines.joined(separator: "\n")
+}
+
+fn plainInto(tree: Tree, i: int) -> string {
+  var out = ""
+  for c in tree.nodes[i].children {
+    let node = tree.nodes[c]
+    if node.name.isEmpty() {
+      out += node.text
+      continue
+    }
+    if node.name == "script" || node.name == "style" || node.name == "noscript" {
+      continue
+    }
+    if node.name == "br" {
+      out += "\n"
+      continue
+    }
+    let block = isBlock(node.name)
+    if block { out += "\n" }
+    out += plainInto(tree, c)
+    if block { out += "\n" }
+  }
+  return out
+}
+
+/// The element as the paragraphs a chapter is made of: one line for each
+/// block, whitespace collapsed, empty lines dropped.
+pub fn plain(tree: Tree, i: int) -> string {
+  if i < 0 || i >= tree.nodes.count() { return "" }
+  var lines: [string] = []
+  for line in plainInto(tree, i).split("\n") {
+    let t = collapse(line)
+    if !t.isEmpty() { lines.push(t) }
+  }
+  return lines.joined(separator: "\n")
+}
+
+fn renderInto(tree: Tree, i: int) -> string {
+  let node = tree.nodes[i]
+  if node.name.isEmpty() { return h.escape(node.text) }
+  var out = "<{node.name}"
+  for (k, v) in node.attrs {
+    out += " {k}=\"{h.escape(v)}\""
+  }
+  if isVoid(node.name) { return "{out}>" }
+  out += ">"
+  for c in node.children {
+    out += renderInto(tree, c)
+  }
+  return "{out}</{node.name}>"
+}
+
+/// The element written back out as HTML, scripts and styles dropped.
+pub fn render(tree: Tree, i: int) -> string {
+  if i < 0 || i >= tree.nodes.count() { return "" }
+  return renderInto(tree, i)
+}
+
+/// What a rule's `@text`, `@html`, `@href` and the rest read of an element.
+pub fn suffixValue(tree: Tree, i: int, suffix: string, plainText: bool) -> string {
+  if suffix.isEmpty() {
+    return if plainText { plain(tree, i) } else { textOf(tree, i) }
+  }
+  if suffix == "text" { return textOf(tree, i) }
+  if suffix == "ownText" { return ownText(tree, i) }
+  if suffix == "textNodes" { return textNodes(tree, i) }
+  if suffix == "html" || suffix == "all" { return if plainText { plain(tree, i) } else { render(tree, i) } }
+  return attr(tree, i, suffix)
+}
+
+/// A page's text, without the markup: its blocks are the lines a chapter
+/// has, which is what a body rule that selects one container leaves.
+pub fn stripTags(text: string) -> string = plain(parse(text), 0)

@@ -2,6 +2,7 @@
 // (ebook-engine, Rust, through its C ABI), drawn by each platform's own view.
 
 import ./lib
+import ./sources
 
 /// The app's own root: the shelf and the book it opened, as two views, not a
 /// modal presented over the shelf. The reading page is a full-window layer,
@@ -9,6 +10,7 @@ import ./lib
 /// it, not behind it.
 component Quire {
   use library: Library
+  use allSources: sources.Sources?
 
   state reading = lib.Book(id: "", title: "", author: "", chapters: [])
   /// The reader's layer is mounted while the engine opens the book, and shown
@@ -60,7 +62,9 @@ component Quire {
     library.migratePaths()
     await library.loadCredentials()
     await library.seedSamples()
-    await library.syncIfAuto()
+    if let s = allSources {
+      s.entries = await library.syncIfAuto(s.entries)
+    }
   }
 
   View {
@@ -89,7 +93,11 @@ component Quire {
       }
       Tab("搜索") {
         icon: Icons.search
-        Stack { Search() }
+        Stack {
+          Search() {
+            on open(book) { await openBook(book) }
+          }
+        }
       }
     }
 
@@ -121,5 +129,6 @@ component Quire {
 
 app {
   provide Library()
+  provide sources.Sources()
   Quire()
 }

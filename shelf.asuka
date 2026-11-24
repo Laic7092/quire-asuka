@@ -7,6 +7,7 @@ import std/fs
 
 import ./engine
 import ./lib
+import ./sources
 
 /// Cover colors from Quire's icon sheet: ink, cloth, dusk.
 let spines = [#2b2b2f, #3d5143, #4a3f63, #7a5b33, #2c5560]
@@ -149,10 +150,17 @@ component BookTile(book: lib.Book, reading: lib.Reading) {
         lines: 1
         shrink: 1
       }
-      if showCloud {
+      if book.sourceId.isEmpty() && showCloud {
         Symbol(if book.remote || book.backedUp { Icons.cloud } else { Icons.cloudOff }) {
           font: .caption2
           color: if book.remote || book.backedUp { .secondaryLabel } else { .tertiaryLabel }
+        }
+      }
+      if !book.sourceId.isEmpty() {
+        Symbol(Icons.globe) {
+          font: .caption2
+          color: .secondaryLabel
+          label: "在线书"
         }
       }
     }
@@ -197,10 +205,17 @@ component BookRow(book: lib.Book, reading: lib.Reading) {
         lines: 1
       }
     }
-    if showCloud {
+    if book.sourceId.isEmpty() && showCloud {
       Symbol(if book.remote || book.backedUp { Icons.cloud } else { Icons.cloudOff }) {
         font: .caption2
         color: if book.remote || book.backedUp { .secondaryLabel } else { .tertiaryLabel }
+      }
+    }
+    if !book.sourceId.isEmpty() {
+      Symbol(Icons.globe) {
+        font: .caption2
+        color: .secondaryLabel
+        label: "在线书"
       }
     }
   }
@@ -224,7 +239,9 @@ component BookCell(book: lib.Book, reading: lib.Reading) {
   // 云端与存储直接排在菜单里，不再收进二级菜单：长按一次就能点到，
   // 折起来还得再探一层。只列出这一刻有意义的：本机独有的书先备份；
   // 已经在云端的书才谈固定和「只留云端」；只在云端的书没有可做的。
-  let cloudItems: [Action] = if !book.backedUp {
+  let cloudItems: [Action] = if !book.sourceId.isEmpty() {
+    []
+  } else if !book.backedUp {
     [.button(title: "备份到云端", icon: Icons.upload, run: () => { emit backup })]
   } else if book.remote {
     []
@@ -473,6 +490,8 @@ component ShelfDisplay {
 
 screen Shelf {
   use library: Library
+  /// 在线书的书源列表：单独挂载书架（测试、或还没 provide 源）时没有。
+  use allSources: sources.Sources?
 
   /// A book was chosen: the app opens the reader over the shelf.
   event open(book: lib.Book)
@@ -618,7 +637,9 @@ screen Shelf {
 
   async fn syncFromCloud() {
     do {
-      snackbar(try await library.syncNow())
+      let (message, merged) = try await library.syncNow(allSources?.entries ?? [])
+      if let s = allSources { s.entries = merged }
+      snackbar(message)
     } catch e {
       snackbar(e.message)
     }

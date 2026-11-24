@@ -1,0 +1,256 @@
+// XPath, for the sources that write their rules that way.
+//
+// The subset a book source uses: a path of element steps (/ and //), a
+// * test, the predicates [@a], [@a='v'], [contains(@a,'v')], [1], [last()],
+// [text()='v'] and [contains(text(),'v')], and an answer that is a text()
+// or an @attribute. An expression this can't read matches nothing rather
+// than failing the rule.
+
+struct XPart {
+  deep: bool = false
+  name: string = "*"
+  attrs: [AttrTest] = []
+  pos: int = 0
+  last: bool = false
+  textEq: string = ""
+  textHas: string = ""
+
+  mut fn addPredicate(inner: string) {
+    if inner == "last()" {
+      last = true
+      return
+    }
+    if let n = inner.toInt() {
+      pos = n
+      return
+    }
+    let lower = inner.lower()
+    if lower.hasPrefix("contains(") {
+      let (args, _) = splitArgs(inner.slice(inner.find("(") ?? 0, inner.count()))
+      if args.count() < 2 { return }
+      let subject = args[0].trim()
+      let value = unquote(args[1])
+      if subject.hasPrefix("@") {
+        attrs.push(AttrTest(name: subject.slice(1, subject.count()).trim().lower(), op: "*=", value: value))
+      } else if subject.hasPrefix("text()") {
+        textHas = value
+      }
+      return
+    }
+    if lower.hasPrefix("starts-with(") {
+      let (args, _) = splitArgs(inner.slice(inner.find("(") ?? 0, inner.count()))
+      if args.count() < 2 { return }
+      let subject = args[0].trim()
+      let value = unquote(args[1])
+      if subject.hasPrefix("@") {
+        attrs.push(AttrTest(name: subject.slice(1, subject.count()).trim().lower(), op: "^=", value: value))
+      }
+      return
+    }
+    if inner.hasPrefix("@") {
+      let (parts, sep) = splitTopAny(inner, ["=", "!="])
+      let head = parts[0].trim()
+      let name = if head.count() > 1 { head.slice(1, head.count()).trim().lower() } else { "" }
+      if sep == "=" && parts.count() > 1 {
+        attrs.push(AttrTest(name: name, op: "=", value: unquote(parts[1])))
+      } else {
+        attrs.push(AttrTest(name: name))
+      }
+      return
+    }
+    if lower.hasPrefix("text()") {
+      let at = inner.find("=") ?? -1
+      if at >= 0 {
+        textEq = unquote(inner.slice(at + 1, inner.count()))
+      }
+    }
+  }
+}
+
+/// The elements `expr` names under `within`, and how to read them: "" or
+/// "text" for an element's text, or an attribute's name.
+pub fn read(tree: Tree, within: int, expr: string) -> ([int], string) {
+  let (parts, suffix) = parseXPath(expr)
+  var nodes: [int] = [within]
+  for p in parts {
+    var next: [int] = []
+    for ctx in nodes {
+      var candidates: [int] = []
+      if p.deep {
+        for i in descendants(tree, ctx) {
+          candidates.push(i)
+        }
+      } else {
+        for c in tree.nodes[ctx].children {
+          if !tree.nodes[c].name.isEmpty() { candidates.push(c) }
+        }
+      }
+      var kept: [int] = []
+      for i in candidates {
+        if matchesXPart(tree, i, p) { kept.push(i) }
+      }
+      if p.last {
+        kept = if kept.isEmpty() { [] } else { [kept[kept.count() - 1]] }
+      } else if p.pos > 0 {
+        kept = if p.pos <= kept.count() { [kept[p.pos - 1]] } else { [] }
+      }
+      for i in kept {
+        next.push(i)
+      }
+    }
+    nodes = next
+  }
+  return (nodes, suffix)
+}
+
+fn matchesXPart(tree: Tree, i: int, p: XPart) -> bool {
+  if i <= 0 { return false }
+  if p.name != "*" && tree.nodes[i].name != p.name.lower() { return false }
+  for a in p.attrs {
+    let v = attr(tree, i, a.name)
+    if a.op.isEmpty() {
+      if !tree.nodes[i].attrs.has(a.name) { return false }
+    } else if a.op == "=" {
+      if v != a.value { return false }
+    } else if a.op == "*=" {
+      if !v.contains(a.value) { return false }
+    } else if a.op == "^=" {
+      if !v.hasPrefix(a.value) { return false }
+    }
+  }
+  if !p.textEq.isEmpty() && textOf(tree, i) != p.textEq { return false }
+  if !p.textHas.isEmpty() && !textOf(tree, i).contains(p.textHas) { return false }
+  return true
+}
+
+fn parseXPath(expr: string) -> ([XPart], string) {
+  let cs = expr.trim().chars()
+  let n = cs.count()
+  var parts: [XPart] = []
+  var suffix = ""
+  var i = 0
+  var deep = false
+  while i < n {
+    if cs[i].isWhitespace() {
+      i += 1
+      continue
+    }
+    if cs[i] == '/' {
+      if i + 1 < n && cs[i + 1] == '/' {
+        deep = true
+        i += 2
+      } else {
+        deep = false
+        i += 1
+      }
+      continue
+    }
+    // One step: up to the next slash no bracket hides.
+    var j = i
+    var depth = 0
+    var quote = ""
+    var step = ""
+    while j < n {
+      let c = cs[j]
+      if !quote.isEmpty() {
+        if "{c}" == quote { quote = "" }
+        step += c
+        j += 1
+        continue
+      }
+      if c == '"' || c == '\'' {
+        quote = "{c}"
+        step += c
+        j += 1
+        continue
+      }
+      if c == '[' { depth += 1 }
+      if c == ']' {
+        if depth > 0 { depth -= 1 }
+      }
+      if c == '/' && depth == 0 { break }
+      step += c
+      j += 1
+    }
+    i = j
+    let text = step.trim()
+    if text.isEmpty() { continue }
+    if text.hasPrefix("@") {
+      suffix = text.slice(1, text.count()).trim()
+      break
+    }
+    if text == "text()" {
+      suffix = "text"
+      break
+    }
+    var part = parseXStep(text)
+    part.deep = deep
+    deep = false
+    parts.push(part)
+  }
+  return (parts, suffix)
+}
+
+fn parseXStep(text: string) -> XPart {
+  var p = XPart()
+  let cs = text.chars()
+  let n = cs.count()
+  var i = 0
+  // The element test.
+  if i < n && cs[i] == '*' {
+    i += 1
+  } else {
+    var name = ""
+    while i < n && cs[i] != '[' && cs[i] != '(' {
+      name += cs[i]
+      i += 1
+    }
+    if !name.isEmpty() { p.name = name.trim().lower() }
+  }
+  // The predicates.
+  while i < n {
+    if cs[i] != '[' {
+      i += 1
+      continue
+    }
+    i += 1
+    var depth = 1
+    var quote = ""
+    var inner = ""
+    while i < n {
+      let c = cs[i]
+      if !quote.isEmpty() {
+        if "{c}" == quote { quote = "" }
+        inner += c
+        i += 1
+        continue
+      }
+      if c == '"' || c == '\'' {
+        quote = "{c}"
+        inner += c
+        i += 1
+        continue
+      }
+      if c == '[' { depth += 1 }
+      if c == ']' {
+        depth -= 1
+        if depth == 0 {
+          i += 1
+          break
+        }
+      }
+      inner += c
+      i += 1
+    }
+    p.addPredicate(inner.trim())
+  }
+  return p
+}
+
+/// The arguments of a parenthesised call: "(a, 'b')" -> ["a", "'b'"].
+fn splitArgs(text: string) -> ([string], string) {
+  var t = text.trim()
+  if t.hasPrefix("(") { t = t.slice(1, t.count()) }
+  if t.hasSuffix(")") { t = t.slice(0, t.count() - 1) }
+  return (splitTop(t, ","), ",")
+}

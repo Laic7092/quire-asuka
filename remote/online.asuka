@@ -1,0 +1,200 @@
+// 在线书的本机部分。书架只记「哪个源、哪本书」，目录存在书自己的目录
+// 里，正文一章一个文件，按读到的先后缓存。阅读页拿到的是一小段窗口
+// （默认三章）拼成的 txt，所以「加入书架」从不整本下载。
+//
+//   remote/<id>/meta.json    书目 + 全量目录
+//   remote/<id>/c/<n>.txt    第 n 章的正文
+//   remote/<id>/window.txt   给引擎看的窗口：只有正在读的几章
+
+import std/crypto
+import std/fs
+import std/http
+import std/json
+import std/time
+
+import ../lib
+import ../sources
+
+pub struct TocEntry {
+  title: string
+  url: string
+}
+
+pub struct Meta {
+  version: int = 1
+  sourceId: string
+  bookUrl: string
+  tocUrl: string = ""
+  name: string = ""
+  author: string = ""
+  intro: string = ""
+  kind: string = ""
+  coverUrl: string = ""
+  chapterCount: int = 0
+  toc: [TocEntry] = []
+  /// 目录地址的指纹：开书时目录变了，正文缓存就整批作废。
+  stamp: string = ""
+  updated: int = 0
+}
+
+pub fn dirOf(id: string) -> string = fs.join([fs.appDir(), "remote", id])
+pub fn metaPath(id: string) -> string = fs.join([dirOf(id), "meta.json"])
+pub fn windowPath(id: string) -> string = fs.join([dirOf(id), "window.txt"])
+
+fn chaptersDir(id: string) -> string = fs.join([dirOf(id), "c"])
+fn chapterPath(id: string, at: int) -> string = fs.join([chaptersDir(id), "{at}.txt"])
+
+fn stampOf(toc: [TocEntry]) -> string {
+  var text = ""
+  for e in toc {
+    text += "{e.url}\n"
+  }
+  return crypto.sha256(text.bytes()).hex()
+}
+
+pub fn readMeta(id: string) -> Meta? {
+  let text = try? fs.readText(metaPath(id))
+  if let t = text { return try? json.decode(t) }
+  return none
+}
+
+pub fn writeMeta(id: string, meta: Meta) {
+  try? fs.mkdirAll(dirOf(id))
+  try? fs.writeText(metaPath(id), text: json.encode(meta, indent: 1))
+}
+
+/// 一次详情里的书目和目录，变成要落盘的 meta。
+pub fn buildMeta(d: sources.Detail, sourceId: string) -> Meta {
+  var meta = Meta(
+    sourceId: sourceId,
+    bookUrl: d.info.book.bookUrl,
+    tocUrl: d.info.tocUrl,
+    name: d.info.book.name,
+    author: d.info.book.author,
+    intro: d.info.book.intro,
+    kind: d.info.book.kind,
+    coverUrl: d.info.book.coverUrl,
+    updated: time.now().unix(),
+  )
+  for c in d.chapters {
+    meta.toc.push(TocEntry(title: c.title, url: c.url))
+  }
+  meta.chapterCount = meta.toc.count()
+  meta.stamp = stampOf(meta.toc)
+  return meta
+}
+
+/// 详情 + 目录一次取回：加入书架、换设备后第一次打开都用它。
+pub async fn fetchMeta(def: sources.BookSource, book: sources.Book) throws -> Meta {
+  let d = try await sources.detailOf(def, book)
+  return buildMeta(d, sourceId: def.bookSourceUrl)
+}
+
+/// 目录重新取一遍；目录没变时不动正文缓存。返回是否变了。
+pub async fn refresh(def: sources.BookSource, id: string, was: Meta) throws -> bool {
+  let next = try await fetchMeta(def, sources.Book(name: was.name, author: was.author, intro: was.intro, bookUrl: was.bookUrl))
+  if next.stamp == was.stamp && next.chapterCount == was.chapterCount {
+    writeMeta(id, next)
+    return false
+  }
+  // 章变了，旧的正文按序号对不上新目录：整批作废（缓存本来就可再生）。
+  try? fs.remove(chaptersDir(id))
+  writeMeta(id, next)
+  return true
+}
+
+/// 一章的正文：先看缓存，没有才去取，取到就落下。
+pub async fn chapterText(def: sources.BookSource, id: string, meta: Meta, at: int) throws -> string {
+  let path = chapterPath(id, at)
+  if let text = try? fs.readText(path) { return text }
+  if at < 0 || at >= meta.toc.count() { throw Error("这本书没有第 {at + 1} 章") }
+  let text = try await sources.content(def, meta.toc[at].url)
+  try? await spawn { try fs.mkdirAll(chaptersDir(id)) }
+  try? await spawn { try fs.writeText(path, text: text) }
+  return text
+}
+
+/// 窗口里的一章该用哪一行当标题：引擎只认「第…章」这类标题行，书源
+/// 给的标题不像标题时补一个，免得几章粘成一章。
+pub fn headingOf(meta: Meta, at: int) -> string {
+  let title = meta.toc[at].title.trim()
+  if lib.looksLikeHeading(title) { return title }
+  return "第 {at + 1} 章 {title}"
+}
+
+/// 把窗口的几章拼成一段给引擎看的文字。bodies 与 base 起逐章对应；
+/// 空的那一章写成占位，不让整段窗口失败。
+pub fn windowText(meta: Meta, base: int, bodies: [string]) -> string {
+  var parts: [string] = []
+  for k in 0..<bodies.count() {
+    let at = base + k
+    if at < 0 || at >= meta.toc.count() { continue }
+    parts.push(headingOf(meta, at))
+    parts.push("")
+    let body = bodies[k].trim()
+    if body.isEmpty() {
+      parts.push("（这一章没有读到。翻回去再试一次，或者换一个书源。）")
+    } else {
+      for line in body.split("\n") {
+        let text = line.trim()
+        if text.isEmpty() { continue }
+        parts.push(text)
+        parts.push("")
+      }
+    }
+  }
+  return parts.joined(separator: "\n")
+}
+
+/// 物化一个窗口：从 base 起的 count 章（不足 count 就是到目录末尾）。
+/// 返回实际的第一章和窗口文件；一章都取不到时也写占位，阅读页至少能
+/// 打开。
+pub async fn materialize(def: sources.BookSource, id: string, meta: Meta, base: int, count: int = 3) throws -> (int, string) {
+  let total = meta.chapterCount
+  if total <= 0 { throw Error("这本书的目录是空的") }
+  var from = base
+  if from < 0 { from = 0 }
+  if from >= total { from = total - 1 }
+  var to = from + count
+  if to > total { to = total }
+  var bodies: [string] = []
+  for at in from..<to {
+    let got = try? await chapterText(def, id, meta, at: at)
+    bodies.push(got ?? "")
+  }
+  let text = windowText(meta, base: from, bodies: bodies)
+  try await spawn { try fs.mkdirAll(dirOf(id)) }
+  let path = windowPath(id)
+  try await spawn { try fs.writeText(path, text: text) }
+  return (from, path)
+}
+
+/// 封面：书源的图存进 covers/，之后跟本地书的封面走同一条同步。
+pub async fn fetchCover(def: sources.BookSource, url: string, into: string) throws -> bool {
+  if url.trim().isEmpty() { return false }
+  var headers = sources.headersOf(def)
+  headers["User-Agent"] = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+  let r = try await http.request(method: "GET", url: url, headers: headers, timeout: 30s)
+  if r.status >= 400 || r.body.isEmpty() { return false }
+  try await spawn { try fs.mkdirAll(fs.join([fs.appDir(), "covers"])) }
+  try await spawn { try fs.write(into, data: r.body) }
+  return true
+}
+
+/// 本机这一本书的缓存有多大：清理和「已缓存」都看它。
+pub fn bytesOf(id: string) -> int {
+  let dir = dirOf(id)
+  if !fs.exists(dir) { return 0 }
+  let entries = (try? fs.walk(dir)) ?? []
+  var total = 0
+  for entry in entries {
+    if !entry.isDir { total += entry.size }
+  }
+  return total
+}
+
+/// 清掉一本书的正文缓存，目录留着：下次打开再按章取。
+pub fn dropChapters(id: string) {
+  try? fs.remove(chaptersDir(id))
+  try? fs.remove(windowPath(id))
+}

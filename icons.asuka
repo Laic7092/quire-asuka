@@ -31,6 +31,8 @@ struct Icons {
   let profile = symbolName(apple: "person.crop.circle", material: "person")
   let person = symbolName(apple: "person.fill", material: "person")
   let cloud = symbolName(apple: "icloud", material: "icloud")
+  /// 在线书：浏览器的小地球。
+  let globe = symbolName(apple: "globe", material: "public")
   let cloudOff = symbolName(apple: "icloud.slash", material: "icloud.slash")
   let syncBusy = symbolName(apple: "arrow.triangle.2.circlepath", material: "arrow.triangle.2.circlepath")
   let syncFailed = symbolName(apple: "exclamationmark.circle", material: "exclamationmark.circle")

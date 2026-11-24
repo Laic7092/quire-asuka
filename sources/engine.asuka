@@ -1,0 +1,273 @@
+// 一个书源能做的事：搜索、详情、目录、正文。顺序照 Legado 的来——搜索
+// 先取列表页，列表里的每一行再读字段；详情页补上搜索没给的，并说目录在
+// 哪一页；目录和正文都跟着 nextTocUrl / nextContentUrl 翻页，翻页有上限，
+// 免得一条永远回答“下一页”的规则把请求发个不停。
+
+import std/json
+import std/url
+
+pub struct Book {
+  name: string
+  author: string = ""
+  kind: string = ""
+  wordCount: string = ""
+  lastChapter: string = ""
+  intro: string = ""
+  coverUrl: string = ""
+  bookUrl: string
+}
+
+pub struct Info {
+  book: Book
+  /// 目录所在的地址：详情页说别处时是别处，否则就是详情页自己。
+  tocUrl: string
+}
+
+pub struct Chapter {
+  title: string
+  url: string
+}
+
+/// A book's own page and its chapters, as the detail screen loads them.
+pub struct Detail {
+  info: Info
+  chapters: [Chapter]
+}
+
+/// 书源在地址后面挂的请求设置：/search,{"method":"POST","body":"…"}。
+pub struct UrlOptions {
+  method: string = ""
+  body: string = ""
+  charset: string = ""
+  headers: [string: string] = [:]
+}
+
+/// 一本书的地址：已经绝对的照原样，相对的按找到它的页面解析。
+pub fn resolveURL(base: string, ref: string) -> string {
+  let r = ref.trim()
+  if r.isEmpty() { return "" }
+  if r.contains("://") { return r }
+  if r.hasPrefix("//") {
+    if let u = url.parse(base) {
+      return "{u.scheme}:{r}"
+    }
+    return "https:{r}"
+  }
+  if base.isEmpty() { return r }
+  return url.resolve(base, r)
+}
+
+fn envOf(s: BookSource, key: string, page: int) -> Env = Env(
+  base: baseUrlOf(s),
+  key: key,
+  page: max(1, page),
+  vars: varsOf(s),
+)
+
+/// 地址里的模板填好，再把它后面的设置拿出来。
+pub fn addressOf(raw: string, s: BookSource, env: Env) -> (string, UrlOptions) {
+  let text = raw.trim()
+  // The address is expanded as a URL (its key percent-encoded), the
+  // settings after it as a body (a form value stays as it is).
+  var urlPart = text
+  var optPart = ""
+  if let at = text.find(r",{") {
+    urlPart = text.byteSlice(0, at)
+    optPart = text.byteSlice(at + 1, text.byteCount())
+  }
+  var target = expandKey(urlPart, env)
+  var opts = UrlOptions()
+  if !optPart.isEmpty() {
+    if let v = try? json.parse(expand(optPart, env)) {
+      if let o = v.asObject() {
+        opts.method = o.get("method")?.asString() ?? ""
+        opts.body = o.get("body")?.asString() ?? ""
+        opts.charset = o.get("charset")?.asString() ?? ""
+        if let hs = o.get("headers")?.asObject() {
+          for (k, val) in hs {
+            opts.headers[k] = legadoString(val)
+          }
+        }
+      }
+    }
+  }
+  var base = baseUrlOf(s)
+  if !base.isEmpty() && !base.hasSuffix("/") { base = base + "/" }
+  return (resolveURL(base, target.trim()), opts)
+}
+
+fn legadoString(v: json.Value) -> string = match v {
+  .null => ""
+  .string(s) => s
+  .bool(b) => if b { "true" } else { "false" }
+  .int(n) => "{n}"
+  .float(f) => "{f}"
+  _ => "{v}"
+}
+
+async fn fetchDoc(s: BookSource, target: string, opts: UrlOptions, env: Env) throws -> (Doc, string) {
+  var headers = headersOf(s)
+  for (k, v) in opts.headers { headers[k] = v }
+  var page = Page(text: "", url: "", status: 0)
+  if !opts.body.trim().isEmpty() || opts.method.upper() == "POST" {
+    let body = expand(opts.body, env)
+    page = try await post(target, body, headers)
+  } else {
+    page = try await get(target, headers)
+  }
+  return (open(page.text, page.url), page.url)
+}
+
+/// 搜索：一页结果，每条一本书。没有规则、或者什么都没找到，都是空的。
+pub async fn search(s: BookSource, key: string, page: int) throws -> [Book] {
+  let raw = s.searchUrl.trim()
+  if raw.isEmpty() { throw Error("这个书源没有搜索规则") }
+  if raw.hasPrefix("@js:") || raw.hasPrefix("<js>") {
+    throw Error("这个书源的搜索地址是 JavaScript，Quire 不执行脚本书源")
+  }
+  let env = envOf(s, key, page)
+  let (target, opts) = addressOf(s.searchUrl, s, env)
+  if target.isEmpty() { throw Error("书源没有搜索地址") }
+  let (doc, at) = try await fetchDoc(s, target, opts, env)
+  let env2 = env.withURL(at)
+  let rows = eval(doc, s.searchRules().bookList, env2)
+  var out: [Book] = []
+  for row in rows.docs {
+    let name = readFirst(row, s.searchRules().name, env2)
+    let bookUrl = resolveURL(at, readFirst(row, s.searchRules().bookUrl, env2))
+    if name.isEmpty() || bookUrl.isEmpty() { continue }
+    out.push(Book(
+      name: name,
+      author: readFirst(row, s.searchRules().author, env2),
+      kind: readFirst(row, s.searchRules().kind, env2),
+      wordCount: readFirst(row, s.searchRules().wordCount, env2),
+      lastChapter: readFirst(row, s.searchRules().lastChapter, env2),
+      intro: readOne(row, s.searchRules().intro, env2),
+      coverUrl: resolveURL(at, readFirst(row, s.searchRules().coverUrl, env2)),
+      bookUrl: bookUrl,
+    ))
+  }
+  return out
+}
+
+fn pick(doc: Doc, ruleText: string, env: Env, was: string) -> string {
+  let got = readFirst(doc, ruleText, env)
+  return if got.isEmpty() { was } else { got }
+}
+
+/// 详情：详情页上有的字段补进来，搜索已经给的不再丢。
+pub async fn info(s: BookSource, bookUrl: string, from: Book) throws -> Info {
+  let env = envOf(s, "", 1)
+  let (doc, at) = try await fetchDoc(s, bookUrl, UrlOptions(), env)
+  let env2 = env.withURL(at)
+  if !s.infoRules().init.trim().isEmpty() {
+    eval(doc, s.infoRules().init, env2)
+  }
+  var book = from
+  book.name = pick(doc, s.infoRules().name, env2, from.name)
+  book.author = pick(doc, s.infoRules().author, env2, from.author)
+  book.kind = pick(doc, s.infoRules().kind, env2, from.kind)
+  book.wordCount = pick(doc, s.infoRules().wordCount, env2, from.wordCount)
+  book.lastChapter = pick(doc, s.infoRules().lastChapter, env2, from.lastChapter)
+  book.intro = pick(doc, s.infoRules().intro, env2, from.intro)
+  let cover = readFirst(doc, s.infoRules().coverUrl, env2)
+  if !cover.isEmpty() { book.coverUrl = resolveURL(at, cover) }
+  let toc = readFirst(doc, s.infoRules().tocUrl, env2)
+  return Info(book: book, tocUrl: if toc.isEmpty() { at } else { resolveURL(at, toc) })
+}
+
+/// 详情页和目录一起取：一本书点开后要的东西。
+pub async fn detailOf(s: BookSource, book: Book) throws -> Detail {
+  let own = try await info(s, book.bookUrl, book)
+  let chapters = try await toc(s, own.tocUrl)
+  return Detail(info: own, chapters: chapters)
+}
+
+/// 目录：一章一项，跟着 nextTocUrl 翻页，最多 40 页。
+pub async fn toc(s: BookSource, tocUrl: string) throws -> [Chapter] {
+  if s.tocRules().chapterList.trim().isEmpty() { throw Error("这个书源没有目录规则") }
+  var out: [Chapter] = []
+  var seen: Set<string> = Set<string>()
+  var next = tocUrl
+  var page = 0
+  while !next.isEmpty() && page < 40 {
+    if seen.contains(next) { break }
+    seen.insert(next)
+    let env = envOf(s, "", 1)
+    let (doc, at) = try await fetchDoc(s, next, UrlOptions(), env)
+    let env2 = env.withURL(at)
+    let rows = eval(doc, s.tocRules().chapterList, env2)
+    for row in rows.docs {
+      let title = readFirst(row, s.tocRules().chapterName, env2)
+      let target = resolveURL(at, readFirst(row, s.tocRules().chapterUrl, env2))
+      if target.isEmpty() { continue }
+      out.push(Chapter(
+        title: if title.isEmpty() { "第 {out.count() + 1} 章" } else { title },
+        url: target,
+      ))
+    }
+    let after = readFirst(doc, s.tocRules().nextTocUrl, env2)
+    let afterUrl = if after.isEmpty() { "" } else { resolveURL(at, after) }
+    next = if afterUrl == at { "" } else { afterUrl }
+    page += 1
+  }
+  return out
+}
+
+/// 正文：一章的文字。一章分几页时跟着 nextContentUrl 翻，最后照书源的
+/// replaceRegex 逐行替换。
+pub async fn content(s: BookSource, chapterUrl: string) throws -> string {
+  let ruleText = s.contentRules().content.trim()
+  if ruleText.isEmpty() { throw Error("这个书源没有正文规则") }
+  if ruleText.hasPrefix("@js:") || ruleText.hasPrefix("<js>") {
+    throw Error("这一章的正文规则是 JavaScript，Quire 不执行脚本书源")
+  }
+  var parts: [string] = []
+  var seen: Set<string> = Set<string>()
+  var next = chapterUrl
+  var page = 0
+  while !next.isEmpty() && page < 10 {
+    if seen.contains(next) { break }
+    seen.insert(next)
+    let env = envOf(s, "", 1)
+    let (doc, at) = try await fetchDoc(s, next, UrlOptions(), env)
+    let env2 = env.withURL(at)
+    let body = readPlain(doc, ruleText, env2).trim()
+    if !body.isEmpty() { parts.push(body) }
+    let after = readFirst(doc, s.contentRules().nextContentUrl, env2)
+    let afterUrl = if after.isEmpty() { "" } else { resolveURL(at, after) }
+    next = if afterUrl == at { "" } else { afterUrl }
+    page += 1
+  }
+  if parts.isEmpty() { throw Error("这一章没有读到正文") }
+  var text = parts.joined(separator: "\n")
+  for entry in s.contentRules().replaceRegex.split("\n") {
+    let line = entry.trim()
+    if line.isEmpty() { continue }
+    let parts2 = line.split("##")
+    if parts2.count() < 2 || parts2[0].isEmpty() { continue }
+    text = applyReplace(text, Replace(pattern: parts2[0], replacement: parts2[1]))
+  }
+  return text
+}
+
+/// 一本书的所有章节连成的一段文字，给「加入书架」写成的 .txt 用：每章
+/// 一个标题、空行、正文。
+pub async fn wholeText(s: BookSource, tocUrl: string, limit: int = 0) throws -> string {
+  let chapters = try await toc(s, tocUrl)
+  var out: [string] = []
+  var count = 0
+  for chapter in chapters {
+    if limit > 0 && count >= limit { break }
+    let body = try? await content(s, chapter.url)
+    if let text = body {
+      out.push(chapter.title)
+      out.push("")
+      out.push(text)
+      out.push("")
+    }
+    count += 1
+  }
+  if out.isEmpty() { throw Error("没有读到任何章节") }
+  return out.joined(separator: "\n")
+}

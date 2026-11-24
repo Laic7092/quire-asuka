@@ -24,6 +24,11 @@ pub struct Book {
   hash: string = ""
   /// The file's size in bytes.
   bytes: int = 0
+  /// 在线书：正文按章从书源取，本机只有一个窗口的缓存。三项都空的是
+  /// 普通书。
+  sourceId: string = ""
+  bookUrl: string = ""
+  tocUrl: string = ""
   /// The file isn't here but the server has it: opening downloads it first.
   remote: bool = false
   /// The server has these bytes, whether or not this device does.
@@ -60,10 +65,15 @@ pub struct Shelf {
   hash: string = ""
   /// 文件的大小（字节），给缓存和下载前显示用。
   bytes: int = 0
+  /// 在线书的三件套：书源、书页、目录页。空的是本地书。
+  sourceId: string = ""
+  bookUrl: string = ""
+  tocUrl: string = ""
 
   pub fn book() -> Book = Book(
     id: id, title: title, author: author, chapters: [],
     path: path, cover: cover, hash: hash, bytes: bytes,
+    sourceId: sourceId, bookUrl: bookUrl, tocUrl: tocUrl,
   )
 }
 
@@ -71,6 +81,7 @@ pub struct Shelf {
 pub fn shelfOf(book: Book) -> Shelf = Shelf(
   id: book.id, title: book.title, author: book.author,
   path: book.path, cover: book.cover, hash: book.hash, bytes: book.bytes,
+  sourceId: book.sourceId, bookUrl: book.bookUrl, tocUrl: book.tocUrl,
 )
 
 /// Where a book was left: the chapter, and how far into it (0…1).

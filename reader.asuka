@@ -15,6 +15,8 @@ import bookpage
 
 import ./lib
 import ./engine
+import ./remote
+import ./sources
 
 /// Points the engine lays out at, before the reader's own size multiplies it.
 let baseSize = 19.0
@@ -672,6 +674,7 @@ component NoteEditor(quote: string, draft: string, existing: bool) {
 
 component Reader(book: lib.Book) {
   use library: Library
+  use allSources: sources.Sources?
 
   /// The reader is done: the app takes its layer away.
   event close
@@ -689,6 +692,23 @@ component Reader(book: lib.Book) {
   state warning = ""
   state fontName = ""
   state opened = false
+  /// 在线书：本机的 window.txt 从全书的第几章起，全书一共几章。本地书
+  /// 窗口就是整本，windowBase 永远是 0。
+  state windowBase = 0
+  state windowTotal = 0
+  /// 在线书的目录（全书下标）；空的时候用引擎自己的目录。
+  state onlineToc: [engine.TocItem] = []
+  /// 翻出窗口时要去的那一章；-1 是没有请求。它不能做 task 的 key：task
+  /// 一开始就把它清掉会取消自己（下一个 await 处就断），换窗口永远不发生。
+  state windowTarget = -1
+  /// 每请求一次换窗口 +1，task 只跟着它跑。
+  state windowTick = 0
+  /// 这次换窗口是往回翻（落在上一章最后一页）。
+  state windowEnd = false
+  /// 换窗口后要落到的章内位置（书签、笔记）。
+  state windowPercent = -1.0
+  state switching = false
+  let online = !book.sourceId.isEmpty()
   /// `ready` is said once, however many pages follow it.
   state announced = false
   state shownTitle = book.title
@@ -776,6 +796,7 @@ component Reader(book: lib.Book) {
   let scale = if env.scale > 0 { env.scale } else { 2.0 }
   let pageMargins = marginsOf(frame.width, frame.height, library.margins, env)
   let saved = library.readingOf(book.id)
+  let tocItems = if online { onlineToc } else { engine.contents(engineId) }
   let scrollList = Ref()
 
   let heading = if shownTitle.isEmpty() { book.title } else { shownTitle }
@@ -798,8 +819,17 @@ component Reader(book: lib.Book) {
   let currentChapter = if library.mode == "scroll" { hereChapter } else { spine }
 
   // Opens where the book was left, in the chapter (spine) it was left in.
+  // 在线书的 spine 要等窗口拼好才知道（openBook 里），这里只定本地书。
   task {
-    spine = if saved.chapter > 0 { saved.chapter } else { 0 }
+    if !online {
+      spine = if saved.chapter > 0 { saved.chapter } else { 0 }
+    }
+  }
+
+  // 翻出窗口：拼下一个窗口，重开引擎，落在要读的那一章。
+  task("{windowTick}") {
+    if windowTarget < 0 { return }
+    await switchWindow(windowTarget)
   }
 
   // The buttons and the status bar are one layer: the page owns the whole
@@ -885,9 +915,9 @@ component Reader(book: lib.Book) {
     if ok {
       pagePath = path
       let info = engine.pageInfo(engineId, page)
-      hereChapter = spine
+      hereChapter = windowBase + spine
       herePercent = info.progress
-      library.save(book.id, spine, info.progress)
+      library.save(book.id, windowBase + spine, info.progress)
       announceReady()
       refreshMarks()
     }
@@ -922,7 +952,7 @@ component Reader(book: lib.Book) {
       tiles = []
     } else {
       let count = engine.chapterCount(engineId)
-      var target = hereChapter
+      var target = hereChapter - windowBase
       if target < 0 { target = 0 }
       if count > 0 && target >= count { target = count - 1 }
       if target != spine { spine = target }
@@ -1080,25 +1110,33 @@ component Reader(book: lib.Book) {
     if scrollHeight <= 0 { return }
     let index = engine.flowSpineAt(engineId, contentY())
     if index >= 0 {
-      hereChapter = index
+      hereChapter = windowBase + index
       herePercent = scrollWithin()
       placeTick += 1
+    }
+    // 在线书的窗口不长：滚到这一窗的底，还有下一章就去拼下一窗。
+    let count = engine.chapterCount(engineId)
+    if online && windowTarget < 0 && !switching && columnReady && windowBase + count < windowTotal {
+      if contentY() + frame.height >= scrollHeight - 2 {
+        windowEnd = false
+        requestWindow(windowBase + count)
+      }
     }
   }
 
   fn savePlace() {
     if scrollHeight <= 0 { return }
     let index = engine.flowSpineAt(engineId, contentY())
-    if index >= 0 { library.save(book.id, index, scrollWithin()) }
+    if index >= 0 { library.save(book.id, windowBase + index, scrollWithin()) }
   }
 
   /// Keeps a bookmark at the exact line at the top, not at a band boundary.
   fn toggleBookmark() {
     touch()
-    var chapter = spine
+    var chapter = windowBase + spine
     if library.mode == "scroll" {
       let index = engine.flowSpineAt(engineId, contentY())
-      chapter = if index >= 0 { index } else { hereChapter }
+      chapter = windowBase + (if index >= 0 { index } else { hereChapter - windowBase })
     }
     let percent = if library.mode == "scroll" { scrollWithin() } else { herePercent }
     if library.toggleBookmark(book.id, chapter: chapter, percent: percent) {
@@ -1212,7 +1250,7 @@ component Reader(book: lib.Book) {
       return
     }
     var next: [PageMark] = []
-    for note in library.notesInChapter(book.id, chapter: spine) {
+    for note in library.notesInChapter(book.id, chapter: windowBase + spine) {
       let count = engine.selectLines(engineId, note.startLine, note.startByte, note.endLine, note.endByte)
       if count <= 0 { continue }
       if engine.selectionText(engineId) != note.quote { continue }
@@ -1231,7 +1269,7 @@ component Reader(book: lib.Book) {
     if !selOn || engineId <= 0 { return }
     let percent = engine.progress(engineId, selStartLine)
     let _kept = library.addNote(
-      book.id, chapter: spine,
+      book.id, chapter: windowBase + spine,
       startLine: selStartLine, startByte: selStartByte,
       endLine: selEndLine, endByte: selEndByte,
       percent: percent, quote: selText, text: text,
@@ -1406,18 +1444,125 @@ component Reader(book: lib.Book) {
 
   /// The paper a page was drawn on, as its file name says it: the same lines on
   /// another paper are another file, and must be.
-  fn fileTag() -> string = "{layoutTag()}-{library.theme}"
+  fn fileTag() -> string = if windowBase > 0 { "{layoutTag()}-{library.theme}-w{windowBase}" } else { "{layoutTag()}-{library.theme}" }
 
   /// The column a layout produced: what a new layout would give the same
   /// answer to. The paper is not in it — it neither moves a line nor changes
   /// a chapter's height.
   fn columnKey() -> string = "{layoutTag()}:{frame.width.int()}x{frame.height.int()}"
 
+  /// 在线书：目录本机有就够，窗口按要读的那一章现取现拼。
+  async fn openOnline() throws -> string {
+    let found = allSources?.definitionOf(book.sourceId)
+    if found == none { throw Error("这本书的书源不在列表里了，先导入书源") }
+    let def = found
+    var meta = remote.readMeta(book.id)
+    if meta == none {
+      meta = try await remote.fetchMeta(def!, sources.Book(name: book.title, author: book.author, bookUrl: book.bookUrl))
+      if let m = meta { remote.writeMeta(book.id, m) }
+    }
+    if meta == none { throw Error("这本书的目录没有读到") }
+    windowTotal = meta!.chapterCount
+    var whole: [engine.TocItem] = []
+    for (i, entry) in meta!.toc.enumerated() {
+      whole.push(engine.TocItem(title: entry.title, spine: i, depth: 0))
+    }
+    onlineToc = whole
+    var target = saved.chapter
+    if target < 0 { target = 0 }
+    if windowTotal > 0 && target >= windowTotal { target = windowTotal - 1 }
+    let (base, path) = try await remote.materialize(def!, id: book.id, meta: meta!, base: target, count: 3)
+    windowBase = base
+    spine = target - base
+    if spine < 0 { spine = 0 }
+    return path
+  }
+
+  /// 字体：应用的衬线字体先试，平台的不行再找一个文件。
+  fn mountFace(id: int) {
+    if engine.registerFontBytes(id, data: bundledFace) {
+      fontName = "Noto Serif SC"
+    } else {
+      let font = fontFile()
+      fontName = lib.fileName(font)
+      if font.isEmpty() {
+        warning = "找不到可用的字体：正文画不出来"
+      } else if !engine.registerFont(id, path: font) {
+        warning = "字体打不开：{lib.fileName(font)}"
+      }
+    }
+  }
+
+  /// 请求换窗口。target 单独存，tick 变了 task 才动；task 里不提前清
+  /// 目标，否则会把自己取消。
+  fn requestWindow(target: int) {
+    windowTarget = target
+    windowTick += 1
+    snackbar("正在取后面的章节…")
+  }
+
+  /// 换一个窗口：上一窗的最后几页读完了，或者目录/书签要去别的章。
+  async fn switchWindow(target: int) {
+    if switching { return }
+    switching = true
+    defer { switching = false }
+    let def = allSources?.definitionOf(book.sourceId)
+    let meta = remote.readMeta(book.id)
+    if def == none || meta == none {
+      error = "这本书的目录读不到了"
+      return
+    }
+    // 往回翻时从上一章起拼，落在它的最后一页。
+    let atEnd = windowEnd
+    let got = try? await remote.materialize(def!, id: book.id, meta: meta!, base: target, count: 3)
+    if got == none {
+      error = "这一章没有取到，网络可能断了"
+      return
+    }
+    let (base, path) = got!
+    if engineId > 0 {
+      engine.close(engineId)
+      engineId = -1
+    }
+    let id = engine.open(path)
+    if id <= 0 {
+      error = "打不开这一章：{engine.lastError()}"
+      return
+    }
+    engineId = id
+    mountFace(id)
+    windowBase = base
+    spine = target - base
+    if spine < 0 { spine = 0 }
+    let count = engine.chapterCount(id)
+    if count > 0 && spine >= count { spine = count - 1 }
+    page = if atEnd { -1 } else { 0 }
+    if windowPercent >= 0 {
+      pendingPageFraction = windowPercent
+      windowPercent = -1.0
+    }
+    // 滚动模式没有「页」：窗口换了，整列重新量一遍，落在这一章的开头
+    // （往回翻就落在上一章的末尾）。
+    if library.mode == "scroll" {
+      startChapter = spine
+      startWithin = if atEnd { 1.0 } else { 0.0 }
+      columnReady = false
+      scrollHeight = 0
+      scrollAt = 0.0
+      windowBucket = 0
+      tiles = []
+      lastColumn = ""
+    }
+    windowEnd = false
+    windowTarget = -1
+    show()
+  }
+
   /// Opens the engine once, and the font it measures with.
   async fn openBook() throws {
     if opened { return }
     opened = true
-    let file = try await bookFileOf(book)
+    let file = if online { try await openOnline() } else { try await bookFileOf(book) }
     if !fs.exists(file) {
       error = "找不到《{book.title}》的文件"
       announceReady()
@@ -1436,29 +1581,23 @@ component Reader(book: lib.Book) {
       activeAt = now
       countedTo = now
     }
-    // The app's own face first: it's what the pages are designed around, and
-    // the platform's fonts aren't readable as files everywhere (iOS keeps
-    // several in the dyld cache).
-    if engine.registerFontBytes(id, data: bundledFace) {
-      fontName = "Noto Serif SC"
-    } else {
-      let font = fontFile()
-      fontName = lib.fileName(font)
-      if font.isEmpty() {
-        warning = "找不到可用的字体：正文画不出来"
-      } else if !engine.registerFont(id, path: font) {
-        warning = "字体打不开：{lib.fileName(font)}"
-      }
+    mountFace(id)
+    if !online {
+      let named = engine.title(id)
+      if !named.isEmpty() { shownTitle = named }
     }
-    let named = engine.title(id)
-    if !named.isEmpty() { shownTitle = named }
     let count = engine.chapterCount(id)
-    if count > 0 && spine >= count { spine = 0 }
     // Where the book was left: a chapter and how far into it. Both modes
-    // take that as their place.
-    startChapter = if saved.chapter > 0 { saved.chapter } else { 0 }
+    // take that as their place. 在线书的 spine 已经是窗口里的下标。
+    if online {
+      if count > 0 && spine >= count { spine = count - 1 }
+      startChapter = spine
+    } else {
+      if count > 0 && spine >= count { spine = 0 }
+      startChapter = if saved.chapter > 0 { saved.chapter } else { 0 }
+      if count > 0 && startChapter >= count { startChapter = count - 1 }
+    }
     startWithin = if saved.percent < 0 { 0 } else if saved.percent > 1 { 1 } else { saved.percent }
-    if count > 0 && startChapter >= count { startChapter = count - 1 }
     if library.mode == "page" { pendingPageFraction = startWithin }
     try await spawn { try fs.mkdirAll(pagesDir()) }
     // Off the main thread, once a book opens: the cache is for the reading that
@@ -1491,7 +1630,14 @@ component Reader(book: lib.Book) {
     } else if retyped {
       await sleep(150ms)
     }
-    try? await openBook()
+    do {
+      try await openBook()
+    } catch e {
+      opened = false
+      error = e.message
+      announceReady()
+      return
+    }
     show()
   }
 
@@ -1500,7 +1646,14 @@ component Reader(book: lib.Book) {
   fn next() {
     touch()
     clearSelection()
-    let place = lib.forward(spine, page, pages, engine.chapterCount(engineId))
+    let count = engine.chapterCount(engineId)
+    let place = lib.forward(spine, page, pages, count)
+    // 这一窗读完了，而全书还有：去拼下一窗，不把「窗口的末页」当「全书的墨尾」。
+    if online && place.spine == spine && place.page == page && windowBase + count < windowTotal {
+      windowEnd = false
+      requestWindow(windowBase + count)
+      return
+    }
     spine = place.spine
     page = place.page
   }
@@ -1508,6 +1661,11 @@ component Reader(book: lib.Book) {
   fn back() {
     touch()
     clearSelection()
+    if online && spine == 0 && page <= 0 && windowBase > 0 {
+      windowEnd = true
+      requestWindow(windowBase - 1)
+      return
+    }
     // A turn out of a chapter's first page lands on the last page of the one
     // before it (-1, resolved by show() once that chapter is laid out).
     let place = lib.backward(spine, page, engine.chapterCount(engineId))
@@ -1521,23 +1679,29 @@ component Reader(book: lib.Book) {
     touch()
     clearSelection()
     let count = engine.chapterCount(engineId)
-    if index < 0 || index >= count { return }
+    let local = index - windowBase
+    if online && (local < 0 || local >= count) {
+      windowEnd = false
+      requestWindow(index)
+      return
+    }
+    if local < 0 || local >= count { return }
     if library.mode == "scroll" {
       // The engine owns the chapter's top, and asking for one measures the
       // chapters before it: no table of our own to look it up in.
       if columnReady && scrollHeight > 0 {
-        let chapter = engine.flowChapter(engineId, index)
+        let chapter = engine.flowChapter(engineId, local)
         if chapter.ok {
           goToScrollY(scrollTopPad + chapter.top)
           return
         }
       }
       // Not laid out yet: the next layout takes this as its place.
-      startChapter = index
+      startChapter = local
       startWithin = 0
       return
     }
-    spine = index
+    spine = local
     page = 0
   }
 
@@ -1547,24 +1711,32 @@ component Reader(book: lib.Book) {
     touch()
     clearSelection()
     let count = engine.chapterCount(engineId)
-    if count <= 0 || chapter < 0 || chapter >= count { return }
+    if count <= 0 { return }
+    let local = chapter - windowBase
     var at = percent
     if at < 0 { at = 0 }
     if at > 1 { at = 1 }
+    if online && (local < 0 || local >= count) {
+      windowPercent = at
+      windowEnd = false
+      requestWindow(chapter)
+      return
+    }
+    if local < 0 || local >= count { return }
     if library.mode == "scroll" {
       if columnReady && scrollHeight > 0 {
         var target = at * scrollHeight
-        let ch = engine.flowChapter(engineId, chapter)
+        let ch = engine.flowChapter(engineId, local)
         if ch.ok { target = ch.top + at * ch.height }
         goToScrollY(scrollTopPad + target)
       } else {
-        startChapter = chapter
+        startChapter = local
         startWithin = at
       }
       return
     }
-    let same = chapter == spine
-    spine = chapter
+    let same = local == spine
+    spine = local
     page = 0
     // Page mode: the fraction is within this chapter, so it is the page.
     pendingPageFraction = at
@@ -1858,10 +2030,9 @@ component Reader(book: lib.Book) {
           label: "目录"
           tooltip: "目录"
           on press {
-            present(Contents(engine.contents(engineId), currentChapter, book.id) {
+            present(Contents(tocItems, currentChapter, book.id) {
               on pick(i) {
-                let items = engine.contents(engineId)
-                if i >= 0 && i < items.count() { jump(items[i].spine) }
+                if i >= 0 && i < tocItems.count() { jump(tocItems[i].spine) }
               }
               on goBookmark(chapter, percent) { goTo(chapter, percent) }
               on dropBookmark(id) { library.removeBookmark(id) }

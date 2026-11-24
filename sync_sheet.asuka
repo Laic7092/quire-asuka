@@ -6,6 +6,9 @@
 import std/fs
 import std/time
 
+import ./lib
+import ./sources
+
 /// The status line's time: "6月1日 21:04" for a sync at unix seconds.
 fn syncWhen(at: int) -> string {
   if at <= 0 { return "还没同步过" }
@@ -271,6 +274,7 @@ component SyncConnection {
 
 component SyncSettings {
   use library: Library
+  use allSources: sources.Sources?
 
   /// Shown inside 我's own sheet (true), or as a sheet of its own.
   prop embedded = false
@@ -319,7 +323,9 @@ component SyncSettings {
     busy = "sync"
     note = ""
     do {
-      note = try await library.syncNow()
+      let (message, merged) = try await library.syncNow(allSources?.entries ?? [])
+      if let s = allSources { s.entries = merged }
+      note = message
     } catch e {
       note = e.message
     }
@@ -331,7 +337,9 @@ component SyncSettings {
     busy = "sync"
     note = ""
     do {
-      note = try await library.backupAll()
+      let (message, merged) = try await library.backupAll(allSources?.entries ?? [])
+      if let s = allSources { s.entries = merged }
+      note = message
     } catch e {
       note = e.message
     }

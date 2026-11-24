@@ -1,0 +1,444 @@
+// The rule language book sources are written in.
+//
+// A rule is steps, each answering from what the step before it answered: a
+// CSS selector, an XPath, a JSONPath, or JavaScript (`@js:` and `<js>`,
+// which this engine has no sandbox for and so answers nothing). A step may
+// end with a suffix (`@href`, `@text`, `@html`), and after it a `##` chain
+// rewrites the answer with a regex.
+//
+// `{{…}}` and `@get:{…}` are filled in before a rule runs: the search key,
+// the page, the source's address, and its stored variables. Templates are
+// read as a small expression language — a name, a number, a quoted string,
+// `java.encodeURI(x)`, and `+ - *` over numbers — which covers how sources
+// work out a search address.
+
+import std/encoding
+import std/json
+import std/regex
+import std/url
+
+pub struct Replace {
+  pattern: string
+  replacement: string = ""
+  /// A third ##: answer with the first match alone.
+  first: bool = false
+}
+
+pub struct Step {
+  /// "css", "json", "xpath" or "js".
+  mode: string = "css"
+  body: string = ""
+  suffix: string = ""
+}
+
+pub struct Env {
+  /// The source's own address, for relative links.
+  base: string = ""
+  /// The page the rule runs against.
+  url: string = ""
+  key: string = ""
+  page: int = 1
+  /// The source's variables, as its `variable` JSON seeded them.
+  vars: [string: string] = [:]
+
+  pub fn withURL(at: string) -> Env = Env(base: base, url: at, key: key, page: page, vars: vars)
+}
+
+pub struct Doc {
+  /// "html" or "json".
+  kind: string = "html"
+  tree: Tree = Tree()
+  node: int = 0
+  value: json.Value = .null
+  raw: string = ""
+}
+
+pub struct Result {
+  values: [string] = []
+  docs: [Doc] = []
+
+  pub fn first() -> string = values.first() ?? ""
+
+  pub fn text() -> string {
+    if values.count() == 1 { return values[0] }
+    return values.joined(separator: "\n")
+  }
+
+  pub fn empty() -> bool = values.isEmpty()
+}
+
+/// Read a payload as a page, or as JSON when it is an object or an array.
+pub fn open(text: string, at: string) -> Doc {
+  let t = text.trim()
+  if t.hasPrefix(r"{") || t.hasPrefix(r"[") {
+    if let v = try? json.parse(t) {
+      return Doc(kind: "json", value: v, raw: t)
+    }
+  }
+  return Doc(kind: "html", tree: parse(t), node: 0, raw: t)
+}
+
+/// A Doc for text a step answered, which a following selector reads.
+fn textDoc(text: string) -> Doc = open(text, "")
+
+pub fn eval(doc: Doc, ruleText: string, env: Env) -> Result = run(doc, ruleText, env, false)
+
+/// As eval, but a body rule's elements read as the paragraphs a chapter is
+/// made of rather than as one line of text.
+pub fn evalPlain(doc: Doc, ruleText: string, env: Env) -> Result = run(doc, ruleText, env, true)
+
+fn run(doc: Doc, ruleText: string, env: Env, plain: bool) -> Result {
+  let steps = parseRule(ruleText, doc.kind == "json")
+  if steps.isEmpty() { return Result() }
+  var docs: [Doc] = [doc]
+  var values: [string] = [docText(doc)]
+  for step in steps {
+    if step.mode == "js" { return Result() }
+
+    let body = expand(step.body, env)
+    let (selector, replace) = splitReplace(body)
+    var target = selector
+    var suffix = step.suffix
+    if step.mode == "css" {
+      let (sel, suf) = splitSuffix(selector)
+      target = sel
+      if !suf.isEmpty() { suffix = suf }
+    }
+
+    var res = Result()
+    for d in docs {
+      if step.mode == "json" {
+        let matches = query(d.value, target)
+        for v in matches {
+          res.values.push(asText(v))
+          res.docs.push(Doc(kind: "json", value: v, raw: asText(v)))
+        }
+        continue
+      }
+      if step.mode == "xpath" {
+        var tree = d.tree
+        var within = d.node
+        if d.kind != "html" {
+          tree = parse(d.raw)
+          within = 0
+        }
+        let (nodes, xSuffix) = read(tree, within, target)
+        let use = if xSuffix.isEmpty() { suffix } else { xSuffix }
+        for i in nodes {
+          res.values.push(suffixValue(tree, i, use, plain))
+          res.docs.push(Doc(kind: "html", tree: tree, node: i, raw: ""))
+        }
+        continue
+      }
+      // CSS
+      var tree = d.tree
+      var within = d.node
+      if d.kind != "html" {
+        tree = parse(d.raw)
+        within = 0
+      }
+      if target.trim().isEmpty() {
+        res.values.push(suffixValue(tree, within, suffix, plain))
+        res.docs.push(Doc(kind: "html", tree: tree, node: within, raw: ""))
+        continue
+      }
+      for i in select(tree, within, target) {
+        res.values.push(suffixValue(tree, i, suffix, plain))
+        res.docs.push(Doc(kind: "html", tree: tree, node: i, raw: ""))
+      }
+    }
+
+    if let rep = replace {
+      var i = 0
+      while i < res.values.count() {
+        res.values[i] = applyReplace(res.values[i], rep)
+        i += 1
+      }
+    }
+
+    if res.values.isEmpty() && res.docs.isEmpty() { return Result() }
+    docs = if res.docs.isEmpty() {
+      [textDoc(res.values.joined(separator: "\n"))]
+    } else {
+      res.docs
+    }
+    values = res.values
+  }
+  return Result(values: values, docs: docs)
+}
+
+fn docText(doc: Doc) -> string {
+  if doc.kind == "json" { return asText(doc.value) }
+  if doc.tree.nodes.isEmpty() { return doc.raw }
+  return textOf(doc.tree, doc.node)
+}
+
+/// Read one value of a rule, trying its `||` alternatives in order.
+pub fn readOne(doc: Doc, ruleText: string, env: Env) -> string {
+  let t = ruleText.trim()
+  if t.isEmpty() { return "" }
+  for alt in splitTop(t, "||") {
+    let v = collapse(eval(doc, alt, env).text())
+    if !v.isEmpty() { return v }
+  }
+  return ""
+}
+
+/// Read the first value a rule answers, trying its `||` alternatives in
+/// order. This is what a URL is read with: a rule that matches two links (a
+/// book's and its author's) must not answer one address made of both.
+pub fn readFirst(doc: Doc, ruleText: string, env: Env) -> string {
+  let t = ruleText.trim()
+  if t.isEmpty() { return "" }
+  for alt in splitTop(t, "||") {
+    for v in eval(doc, alt, env).values {
+      let s = v.trim()
+      if !s.isEmpty() { return collapse(s) }
+    }
+  }
+  return ""
+}
+
+/// As readOne, for a body rule: paragraphs rather than one line.
+pub fn readPlain(doc: Doc, ruleText: string, env: Env) -> string {
+  let t = ruleText.trim()
+  if t.isEmpty() { return "" }
+  for alt in splitTop(t, "||") {
+    let v = evalPlain(doc, alt, env).text().trim()
+    if !v.isEmpty() { return v }
+  }
+  return ""
+}
+
+// ── The steps a rule is made of ─────────────────────────────────────
+
+pub fn parseRule(text: string, isJSON: bool) -> [Step] {
+  var steps: [Step] = []
+  for (body, isJS) in segments(text) {
+    if isJS {
+      steps.push(Step(mode: "js", body: body.trim()))
+      continue
+    }
+    let t = body.trim()
+    if t.isEmpty() { continue }
+    steps.push(parseBody(t, isJSON))
+  }
+  return steps
+}
+
+/// Divide a rule at its JavaScript: `<js>…</js>` is delimited and may be
+/// followed by more rule, and `@js:` takes the rest.
+fn segments(text: string) -> [(string, bool)] {
+  let cs = text.chars()
+  let n = cs.count()
+  var out: [(string, bool)] = []
+  var start = 0
+  var i = 0
+  while i < n {
+    if startsAtFold(cs, i, "<js>") {
+      if i > start { out.push((textOfChars(cs, start, i), false)) }
+      let close = indexOfCharsFold(cs, i + 4, "</js>")
+      if close < 0 {
+        out.push((textOfChars(cs, i + 4, n), true))
+        i = n
+      } else {
+        out.push((textOfChars(cs, i + 4, close), true))
+        i = close + 5
+      }
+      start = i
+      continue
+    }
+    if startsAtFold(cs, i, "@js:") {
+      if i > start { out.push((textOfChars(cs, start, i), false)) }
+      out.push((textOfChars(cs, i + 4, n), true))
+      i = n
+      start = n
+      continue
+    }
+    i += 1
+  }
+  if start < n { out.push((textOfChars(cs, start, n), false)) }
+  if out.isEmpty() { out.push((text, false)) }
+  return out
+}
+
+fn parseBody(body: string, isJSON: bool) -> Step {
+  let t = body.trim()
+  let upper = t.upper()
+  if upper.hasPrefix("@CSS:") {
+    return Step(mode: "css", body: t.slice(5, t.count()).trim())
+  }
+  if upper.hasPrefix("@XPATH:") {
+    return Step(mode: "xpath", body: t.slice(7, t.count()).trim())
+  }
+  if upper.hasPrefix("@JSON:") {
+    return Step(mode: "json", body: t.slice(6, t.count()).trim())
+  }
+  if t.hasPrefix("@@") {
+    return Step(mode: "css", body: t.slice(2, t.count()).trim())
+  }
+  if t.hasPrefix("$.") || t.hasPrefix("$[") {
+    return Step(mode: "json", body: t)
+  }
+  if t.hasPrefix("/") {
+    return Step(mode: "xpath", body: t)
+  }
+  if isJSON {
+    return Step(mode: "json", body: t)
+  }
+  return Step(mode: "css", body: t)
+}
+
+fn splitReplace(body: string) -> (string, Replace?) {
+  let parts = body.split("##")
+  let sel = parts[0].trim()
+  if parts.count() < 2 { return (sel, none) }
+  var r = Replace(pattern: parts[1])
+  if parts.count() > 2 { r.replacement = parts[2] }
+  if parts.count() > 3 { r.first = true }
+  return (sel, r)
+}
+
+/// Everything but a CSS rule's last top-level `@` is a chain of elements
+/// inside one another, and the last part is how to read what it matched:
+/// a@href is the link, a@text the text, and a@div@p the paragraph inside.
+fn splitSuffix(body: string) -> (string, string) {
+  let t = body.trim()
+  let parts = splitTop(t, "@")
+  if parts.count() < 2 {
+    if isBareSuffix(t) { return ("", t) }
+    return (t, "")
+  }
+  let suffix = parts[parts.count() - 1].trim()
+  var chain: [string] = []
+  var i = 0
+  while i < parts.count() - 1 {
+    let p = parts[i].trim()
+    if !p.isEmpty() { chain.push(p) }
+    i += 1
+  }
+  return (chain.joined(separator: " "), suffix)
+}
+
+let htmlTags = [
+  "a", "b", "body", "br", "dd", "div", "dl", "dt", "em", "h1", "h2", "h3",
+  "h4", "h5", "h6", "head", "html", "i", "img", "li", "ol", "option", "p",
+  "pre", "script", "select", "small", "span", "strong", "style", "table",
+  "tbody", "td", "th", "thead", "tr", "ul",
+]
+
+fn isBareSuffix(body: string) -> bool {
+  if body.isEmpty() { return false }
+  if body == "text" || body == "html" || body == "ownText" || body == "textNodes" || body == "all" {
+    return true
+  }
+  if htmlTags.contains(body.lower()) { return false }
+  return !body.chars().any(c => ".#[: >+~*(),='\"".contains("{c}"))
+}
+
+pub fn applyReplace(s: string, r: Replace) -> string {
+  if let compiled = try? regex.compile(r.pattern) {
+    if r.first {
+      if let range = compiled.findRange(s) {
+        let piece = s.byteSlice(range.0, range.1)
+        return compiled.replace(piece, with: r.replacement)
+      }
+      return ""
+    }
+    return compiled.replace(s, with: r.replacement)
+  }
+  return s.replace(r.pattern, r.replacement)
+}
+
+// ── Templates ───────────────────────────────────────────────────────
+
+pub fn expand(text: string, env: Env) -> string = expandWith(text, env, false)
+
+/// As expand, but a bare {{key}} is percent-encoded first: a search address
+/// is a URL, and the key is usually Chinese.
+pub fn expandKey(text: string, env: Env) -> string = expandWith(text, env, true)
+
+fn expandWith(text: string, env: Env, encodeKey: bool) -> string {
+  if !text.contains(r"{{") && !text.lower().contains("@get:") { return text }
+  let cs = text.chars()
+  let n = cs.count()
+  var out = ""
+  var i = 0
+  while i < n {
+    if startsAtFold(cs, i, r"@get:{") {
+      let close = indexOfChars(cs, i + 6, r"}")
+      if close < 0 {
+        out += textOfChars(cs, i, n)
+        break
+      }
+      let key = textOfChars(cs, i + 6, close).trim()
+      out += env.vars.get(key) ?? ""
+      i = close + 1
+      continue
+    }
+    if startsAt(cs, i, r"{{") {
+      let close = indexOfChars(cs, i + 2, r"}}")
+      if close < 0 {
+        out += textOfChars(cs, i, n)
+        break
+      }
+      let inner = textOfChars(cs, i + 2, close).trim()
+      if encodeKey && (inner == "key" || inner == "searchKey") {
+        out += encodeComponent(env.key)
+      } else {
+        out += exprValue(inner, env)
+      }
+      i = close + 2
+      continue
+    }
+    out += cs[i]
+    i += 1
+  }
+  return out
+}
+
+fn exprValue(e: string, env: Env) -> string {
+  var t = e.trim()
+  while t.count() >= 2 && t.hasPrefix("(") && t.hasSuffix(")") {
+    t = t.slice(1, t.count() - 1).trim()
+  }
+  if t.isEmpty() { return "" }
+  for name in ["java.encodeURI", "encodeURI", "encodeURIComponent"] {
+    if t.hasPrefix("{name}(") && t.hasSuffix(")") {
+      let arg = t.slice(name.count() + 1, t.count() - 1)
+      return encodeComponent(exprValue(arg, env))
+    }
+  }
+  if t.hasPrefix("java.base64Encode(") && t.hasSuffix(")") {
+    let arg = t.slice(18, t.count() - 1)
+    return encoding.base64Encode(exprValue(arg, env).bytes())
+  }
+  if t.count() >= 2 {
+    let first = t.slice(0, 1)
+    let last = t.slice(t.count() - 1, t.count())
+    if (first == "'" || first == "\"") && last == first {
+      return t.slice(1, t.count() - 1)
+    }
+  }
+  if let n = t.toInt() { return "{n}" }
+  if let f = t.toFloat() { return "{f}" }
+  let (parts, op) = splitTopAny(t, ["+", "-", "*"])
+  if !op.isEmpty() && parts.count() == 2 {
+    let a = exprValue(parts[0], env).toInt()
+    let b = exprValue(parts[1], env).toInt()
+    if let x = a, let y = b {
+      if op == "+" { return "{x + y}" }
+      if op == "-" { return "{x - y}" }
+      if op == "*" { return "{x * y}" }
+    }
+  }
+  return lookup(t, env)
+}
+
+fn lookup(name: string, env: Env) -> string {
+  if name == "key" || name == "searchKey" { return env.key }
+  if name == "page" || name == "searchPage" { return "{env.page}" }
+  if name == "baseUrl" { return env.base }
+  if name == "url" { return env.url }
+  return env.vars.get(name) ?? ""
+}

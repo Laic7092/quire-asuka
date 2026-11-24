@@ -1,0 +1,9 @@
+test "a source is found by its url as well as its id" {
+  let store = Sources()
+  let was = store.entries
+  store.entries = [Entry(id: "abc", name: "x", url: "https://x.test", json: r"{}")]
+  expect(store.entryOf("https://x.test") != none)
+  expect(store.entryOf("abc") != none)
+  expect(store.entryOf("nope") == none)
+  store.entries = was
+}

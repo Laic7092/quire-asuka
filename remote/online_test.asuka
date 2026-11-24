@@ -1,0 +1,21 @@
+
+test "a window keeps one chapter per heading" {
+  var meta = Meta(sourceId: "x", bookUrl: "https://x/1", chapterCount: 2)
+  meta.toc.push(TocEntry(title: "第一章 起", url: "https://x/1"))
+  meta.toc.push(TocEntry(title: "起风了", url: "https://x/2"))
+  let text = windowText(meta, base: 0, bodies: ["甲。\n\n乙。", ""])
+  expect(text.contains("第一章 起"))
+  // 书源给的标题不像标题行时补一个，免得两章粘成一章。
+  expect(text.contains("第 2 章 起风了"))
+  expect(text.contains("甲。"))
+  // 没取到的那一章写成占位，整窗不因此失败。
+  expect(text.contains("没有读到"))
+}
+
+test "a window past the toc has nothing to add" {
+  var meta = Meta(sourceId: "x", bookUrl: "https://x/1", chapterCount: 1)
+  meta.toc.push(TocEntry(title: "第一章", url: "https://x/1"))
+  let text = windowText(meta, base: 1, bodies: ["多余的"])
+  expect(!text.contains("多余的"))
+  expect(text.isEmpty())
+}

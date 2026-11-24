@@ -1,17 +1,709 @@
-// The search page: a placeholder for now. It is a page of the app's Tabs,
-// with its own navigation stack for results and a book once there is one.
+// 搜索：在导入的书源里找书。
+//
+// 标题栏的搜索框是系统的搜索栏；搜到的书按书名排，点一本看详情和目录，
+// 可以试读一章，也可以放进书架。入架的是一本「在线书」：书架只记书源和
+// 书页，目录存一份，正文读到哪取到哪，不整本下载。
 
-screen Search {
-  title: "搜索"
+import platform/dialog
+import std/fs
+
+import ./lib
+import ./remote
+import ./sources
+
+/// 一条搜索结果：哪本书，是哪个书源给的。
+struct Hit {
+  sourceId: string
+  sourceName: string
+  book: sources.Book
+}
+
+/// 一个书源的搜索：找到的书，或者它为什么没找成。
+struct Outcome {
+  hits: [Hit] = []
+  failed: string = ""
+}
+
+/// 书名变成文件名：路径里不能有的字符换成下划线。
+fn fileTitle(title: string) -> string {
+  var out = ""
+  for c in title {
+    if c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' {
+      out += "_"
+    } else {
+      out += c
+    }
+  }
+  let t = out.trim()
+  return if t.isEmpty() { "网络小说" } else { t }
+}
+
+/// 搜索结果里的一条：封面、书名、作者，和它来自哪个书源。
+component ResultRow(hit: Hit) {
+  event open
+
+  Row {
+    gap: 12
+    align: .center
+    padding: [10, lib.pageKeyline]
+    on press { emit open }
+    RemoteCover(url: hit.book.coverUrl) {
+      width: 46
+      height: 64
+    }
+    Column {
+      grow: 1
+      gap: 4
+      Text(hit.book.name) {
+        font: .headline
+        lines: 2
+      }
+      if !hit.book.author.isEmpty() {
+        Text(hit.book.author) {
+          font: .subheadline
+          color: .secondaryLabel
+          lines: 1
+        }
+      }
+      Text(hit.sourceName) {
+        font: .caption
+        color: .tertiaryLabel
+        lines: 1
+      }
+    }
+  }
+}
+
+/// 网络上的封面：没有地址时不占位，等它的图到了才画。
+component RemoteCover(url: string) {
+  prop width = 76
+  prop height = 108
+
+  View {
+    width: width
+    height: height
+    radius: 7
+    clip: true
+    background: .secondaryBackground
+    if !url.isEmpty() {
+      Image(source: url) {
+        grow: 1
+        mode: .fill
+      }
+    }
+  }
+}
+
+/// 书源里的书详情：一本书的封面、简介，和它的目录。加入书架只存目录。
+screen SearchBook(hit: Hit) {
+  use allSources: sources.Sources
+  use library: Library
+
+  event open(book: lib.Book)
+
+  title: hit.book.name
+
+  state adding = false
+  state note = ""
+
+  let detail = load detailOf(hit)
+
+  fn definition() -> sources.BookSource? {
+    for e in allSources.list() {
+      if e.id == hit.sourceId {
+        return allSources.definition(e)
+      }
+    }
+    return none
+  }
+
+  async fn detailOf(the: Hit) throws -> sources.Detail {
+    let def = definition()
+    if def == none { throw Error("这个书源已经不在列表里了") }
+    return try await sources.detailOf(def!, the.book)
+  }
+
+  async fn addToShelf(d: sources.Detail) {
+    if adding { return }
+    let def = definition()
+    if def == none {
+      note = "这个书源已经不在列表里了"
+      return
+    }
+    adding = true
+    note = "正在记下目录…"
+    do {
+      let meta = remote.buildMeta(d, sourceId: def!.bookSourceUrl)
+      let id = onlineId(meta.sourceId, bookUrl: meta.bookUrl)
+      remote.writeMeta(id, meta)
+      // 封面小，随目录一起取；取不到就画书脊。
+      var cover = ""
+      if !meta.coverUrl.isEmpty() {
+        let target = fs.join([fs.appDir(), "covers", "{id}.img"])
+        if (try? await remote.fetchCover(def!, url: meta.coverUrl, into: target)) == true {
+          cover = "covers/{id}.img"
+        }
+      }
+      // 第一章顺手取回来：书架的字数、第一次打开都立刻有东西。
+      try? await remote.chapterText(def!, id: id, meta: meta, at: 0)
+      let book = library.addOnline(meta, cover: cover)
+      note = "已加入书架，正文按章取"
+      emit open(book)
+    } catch e {
+      note = e.message
+    }
+    adding = false
+  }
+
+  View {
+    grow: 1
+    match detail {
+      .pending => Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        ProgressRing {}
+        Text("正在读《{hit.book.name}》的详情…") {
+          font: .footnote
+          color: .secondaryLabel
+        }
+      }
+      .failed(e) => Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        Text("没能打开这本书") { font: .headline }
+        Text(e.message) {
+          font: .footnote
+          color: .secondaryLabel
+          textAlign: .center
+        }
+        Button("重试") {
+          on press { detail.reload() }
+        }
+      }
+      .ready(d) => Column {
+        grow: 1
+        Column {
+          gap: 12
+          padding: [14, lib.pageKeyline, 10, lib.pageKeyline]
+          Row {
+            gap: 14
+            align: .start
+            RemoteCover(url: d.info.book.coverUrl) {
+              width: 78
+              height: 110
+            }
+            Column {
+              grow: 1
+              gap: 5
+              Text(d.info.book.name) {
+                font: .title3.bold()
+                lines: 3
+              }
+              if !d.info.book.author.isEmpty() {
+                Text(d.info.book.author) {
+                  font: .subheadline
+                  color: .secondaryLabel
+                }
+              }
+              Text("{hit.sourceName} · {d.chapters.count()} 章") {
+                font: .caption
+                color: .tertiaryLabel
+              }
+              if !d.info.book.lastChapter.isEmpty() {
+                Text("最新：{d.info.book.lastChapter}") {
+                  font: .caption
+                  color: .secondaryLabel
+                  lines: 1
+                }
+              }
+            }
+          }
+          if !d.info.book.intro.isEmpty() {
+            Text(d.info.book.intro) {
+              font: .footnote
+              color: .secondaryLabel
+              lines: 7
+            }
+          }
+          if !note.isEmpty() {
+            Text(note) {
+              font: .footnote
+              color: .tertiaryLabel
+            }
+          }
+          Row {
+            gap: 10
+            Button(if adding { "正在加入…" } else { "加入书架" }) {
+              on press { await addToShelf(d) }
+              disabled: adding
+            }
+          }
+        }
+        List {
+          appearance: .plain
+          grow: 1
+          for (i, c) in d.chapters.enumerated() key i {
+            Row {
+              gap: 10
+              align: .center
+              padding: [11, lib.pageKeyline]
+              on press { push(SearchChapter(hit, c)) }
+              Text("{i + 1}") {
+                font: .caption
+                color: .tertiaryLabel
+                width: 34
+              }
+              Text(c.title) {
+                font: .body
+                grow: 1
+                lines: 1
+              }
+              Symbol(Icons.disclosure) {
+                font: .caption
+                color: .tertiaryLabel
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// 一章的正文：按段落排，长按可以选中复制。
+screen SearchChapter(hit: Hit, chapter: sources.Chapter) {
+  use allSources: sources.Sources
+
+  title: chapter.title
+
+  let body = load textOf(hit, chapter)
+
+  async fn textOf(the: Hit, c: sources.Chapter) throws -> string {
+    for e in allSources.list() {
+      if e.id == the.sourceId {
+        if let def = allSources.definition(e) {
+          return try await sources.content(def, c.url)
+        }
+        break
+      }
+    }
+    throw Error("这个书源已经不在列表里了")
+  }
+
+  View {
+    grow: 1
+    background: .background
+    match body {
+      .pending => Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        ProgressRing {}
+        Text("正在取这一章…") {
+          font: .footnote
+          color: .secondaryLabel
+        }
+      }
+      .failed(e) => Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        Text("这一章没有取到") { font: .headline }
+        Text(e.message) {
+          font: .footnote
+          color: .secondaryLabel
+          textAlign: .center
+        }
+        Button("重试") {
+          on press { body.reload() }
+        }
+      }
+      .ready(text) => ChapterBody(text)
+    }
+  }
+}
+
+/// 一段正文的文字：一行一段。
+component ChapterBody(text: string) {
+  let paragraphs = text.split("\n").map(p => p.trim()).filter(p => !p.isEmpty())
+
+  Scroll {
+    Column {
+      gap: 14
+      padding: [20, lib.pageKeyline, 44, lib.pageKeyline]
+      for (i, p) in paragraphs.enumerated() key i {
+        Text(p) {
+          font: Font(size: 17)
+          color: .label
+        }
+      }
+    }
+  }
+}
+
+/// 书源列表：开关、分组和删除。新书源从「导入」进来。
+component SourceManager {
+  use allSources: sources.Sources
 
   Column {
-    grow: 1
-    justify: .center
-    align: .center
-    gap: 8
-    Text("搜索") {
-      font: .title2
+    gap: 14
+    padding: [22, 22, 26, 22]
+
+    Row {
+      gap: 8
+      align: .center
+      Text("书源") {
+        font: .title3
+        grow: 1
+      }
+      Button("导入") {
+        icon: Icons.add
+        variant: .glass
+        on press { present(SourceImport()) }
+      }
+      Button("") {
+        icon: Icons.close
+        variant: .glass
+        on press { dismiss() }
+      }
+    }
+
+    Text("{allSources.count()} 个书源 · {allSources.enabledCount()} 个在用") {
+      font: .footnote
       color: .secondaryLabel
+    }
+
+    if allSources.isEmpty() {
+      Column {
+        gap: 10
+        padding: [20, 0]
+        align: .center
+        Text("还没有书源") { font: .headline }
+        Text("导入一份阅读3.0（Legado）的书源 JSON，就能在这里搜书。") {
+          font: .footnote
+          color: .secondaryLabel
+          textAlign: .center
+        }
+      }
+    } else {
+      List {
+        appearance: .plain
+        height: 360
+        for e in allSources.list() key e.id {
+          Row {
+            gap: 10
+            align: .center
+            padding: [9, 0]
+            Column {
+              grow: 1
+              gap: 2
+              Text(e.name) {
+                font: .body
+                lines: 1
+              }
+              Text(if e.group.isEmpty() { e.url } else { "{e.group} · {e.url}" }) {
+                font: .caption
+                color: .tertiaryLabel
+                lines: 1
+              }
+            }
+            Toggle {
+              on: e.enabled
+              checkbox: true
+              on change(v) { allSources.setEnabled(e.id, v) }
+            }
+            Button("") {
+              icon: Icons.trash
+              variant: .plain
+              on press { allSources.remove(e.id) }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// 导入书源：粘贴一段 JSON，或者从链接、文件取。
+component SourceImport {
+  use allSources: sources.Sources
+
+  state mode = 0
+  state text = ""
+  state address = ""
+  state busy = false
+  state note = ""
+
+  async fn run() {
+    if busy { return }
+    busy = true
+    note = ""
+    do {
+      let report = if mode == 0 {
+        try allSources.importText(text)
+      } else {
+        try await allSources.importUrl(address)
+      }
+      note = report.text()
+      if report.added > 0 {
+        text = ""
+        address = ""
+      }
+    } catch e {
+      note = e.message
+    }
+    busy = false
+  }
+
+  async fn fromFile() {
+    if busy { return }
+    busy = true
+    note = ""
+    do {
+      let paths = try await dialog.open(
+        title: "导入书源",
+        button: "导入",
+        filters: [dialog.Filter(name: "书源 JSON", extensions: ["json", "txt"])],
+      )
+      for p in paths {
+        let content = try await spawn { try fs.readText(p) }
+        let report = try allSources.importText(content)
+        note = report.text()
+      }
+    } catch e {
+      note = e.message
+    }
+    busy = false
+  }
+
+  Column {
+    gap: 14
+    padding: [22, 22, 28, 22]
+
+    Row {
+      gap: 8
+      align: .center
+      Text("导入书源") {
+        font: .title3
+        grow: 1
+      }
+      Button("") {
+        icon: Icons.close
+        variant: .glass
+        on press { dismiss() }
+      }
+    }
+
+    Segmented(["粘贴", "链接"]) {
+      selected: mode
+      on change(i) { mode = i }
+    }
+
+    if mode == 0 {
+      TextField {
+        bind text: text
+        multiline: true
+        placeholder: "把书源 JSON 粘在这里（单个或一份合集）"
+        height: 200
+      }
+    } else {
+      TextField {
+        bind text: address
+        placeholder: "https://…/sources.json"
+        autocapitalize: .off
+        autocorrect: .no
+        returnKey: .search
+      }
+    }
+
+    Row {
+      gap: 10
+      Button(if busy { "导入中…" } else { "导入" }) {
+        on press { await run() }
+        disabled: busy
+      }
+      Button("从文件导入") {
+        on press { await fromFile() }
+        disabled: busy
+      }
+    }
+
+    if !note.isEmpty() {
+      Text(note) {
+        font: .footnote
+        color: .secondaryLabel
+      }
+    }
+
+    Text("Quire 按 Legado 的规则读书源：CSS / XPath / JSONPath 和字符串模板。需要执行 JavaScript 的书源只能读到它们写死的部分。") {
+      font: .caption
+      color: .tertiaryLabel
+    }
+  }
+}
+
+/// 搜索页本身：没有结果时是提示，找到后是列表。
+screen Search {
+  use allSources: sources.Sources
+
+  /// 书架接住一本刚取回来的书：它已经是一本普通书了。
+  event open(book: lib.Book)
+
+  title: "搜索"
+  largeTitle: true
+  bind search: key
+  searchPlaceholder: "书名或作者"
+  searchButton: true
+
+  state key = ""
+  state busy = false
+  state results: [Hit] = []
+  state note = ""
+
+  toolbar {
+    Button("书源") {
+      icon: Icons.contents
+      variant: .glass
+      tooltip: "管理书源"
+      on press { present(SourceManager()) }
+    }
+    Button("导入书源") {
+      icon: Icons.add
+      variant: .glass
+      tooltip: "导入书源"
+      on press { present(SourceImport()) }
+    }
+  }
+
+  on searchSubmit {
+    await run()
+  }
+
+  async fn searchOne(e: sources.Entry, q: string) -> Outcome {
+    let def = allSources.definition(e)
+    if def == none {
+      return Outcome(failed: "{e.name} 的书源读不出来")
+    }
+    do {
+      let books = try await sources.search(def!, q, 1)
+      return Outcome(hits: books.map(b => Hit(sourceId: e.id, sourceName: e.name, book: b)))
+    } catch err {
+      return Outcome(failed: "{e.name}：{err.message}")
+    }
+  }
+
+  async fn run() {
+    let q = key.trim()
+    if q.isEmpty() { return }
+    let list = allSources.enabled()
+    if list.isEmpty() {
+      results = []
+      note = "还没有可用的书源，先导入一个"
+      return
+    }
+    busy = true
+    note = ""
+    let outcomes = await all(list, e => await searchOne(e, q), limit: 4)
+    var hits: [Hit] = []
+    var failed: [string] = []
+    for o in outcomes {
+      hits = hits + o.hits
+      if !o.failed.isEmpty() { failed.push(o.failed) }
+    }
+    hits = hits.sorted(key: h => h.book.name)
+    results = hits
+    busy = false
+    if hits.isEmpty() {
+      note = if failed.isEmpty() {
+        "没有找到「{q}」"
+      } else {
+        "没有找到「{q}」。{failed.first() ?? ""}"
+      }
+    }
+  }
+
+  View {
+    grow: 1
+    background: .background
+
+    if allSources.isEmpty() {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 14
+        padding: [24, 40]
+        Symbol(Icons.contents) {
+          font: .title
+          color: .tertiaryLabel
+        }
+        Text("还没有书源") {
+          font: .title3
+        }
+        Text("书源告诉 Quire 去哪里搜、怎么读一本书。导入一份阅读3.0（Legado）的书源 JSON 就可以开始。") {
+          font: .footnote
+          color: .secondaryLabel
+          textAlign: .center
+        }
+        Button("导入书源") {
+          on press { present(SourceImport()) }
+        }
+      }
+    } else if results.isEmpty() {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 10
+        padding: [24, 40]
+        if busy {
+          ProgressRing {}
+          Text("正在 {allSources.enabledCount()} 个书源里找…") {
+            font: .footnote
+            color: .secondaryLabel
+          }
+        } else {
+          Symbol(Icons.search) {
+            font: .title
+            color: .tertiaryLabel
+          }
+          Text(if note.isEmpty() { "在 {allSources.enabledCount()} 个书源里搜一本书" } else { note }) {
+            font: .footnote
+            color: .secondaryLabel
+            textAlign: .center
+          }
+        }
+      }
+    } else {
+      Column {
+        grow: 1
+        if busy || !note.isEmpty() {
+          Text(if busy { "正在找…" } else { note }) {
+            font: .caption
+            color: .secondaryLabel
+            padding: [8, lib.pageKeyline]
+          }
+        }
+        List {
+          appearance: .plain
+          grow: 1
+          for hit in results key "{hit.sourceId}:{hit.book.bookUrl}" {
+            ResultRow(hit) {
+              on open {
+                push(SearchBook(hit) {
+                  on open(book) { emit open(book) }
+                })
+              }
+            }
+          }
+        }
+      }
     }
   }
 }

@@ -1,0 +1,219 @@
+// Small string helpers the book-source engine shares: reading a slice of
+// characters as text, and splitting a rule at an operator that no bracket or
+// quote hides.
+
+/// The characters from `from` up to `to` as a string.
+pub fn textOfChars(cs: [char], from: int, to: int) -> string {
+  var out = ""
+  var i = max(0, from)
+  let end = min(to, cs.count())
+  while i < end {
+    out += cs[i]
+    i += 1
+  }
+  return out
+}
+
+/// Whether `cs` at `i` starts with `prefix`, character by character.
+pub fn startsAt(cs: [char], i: int, prefix: string) -> bool {
+  let ps = prefix.chars()
+  if i < 0 || i + ps.count() > cs.count() { return false }
+  var k = 0
+  while k < ps.count() {
+    if cs[i + k] != ps[k] { return false }
+    k += 1
+  }
+  return true
+}
+
+/// Whether `cs` at `i` starts with `prefix`, ignoring case.
+pub fn startsAtFold(cs: [char], i: int, prefix: string) -> bool {
+  let ps = prefix.lower().chars()
+  if i < 0 || i + ps.count() > cs.count() { return false }
+  var k = 0
+  while k < ps.count() {
+    if cs[i + k].lower() != ps[k] { return false }
+    k += 1
+  }
+  return true
+}
+
+/// Where the next occurrence of `needle` begins at or after `from`, or -1.
+/// `needle` is matched as characters, not as a case-folded pattern.
+pub fn indexOfChars(cs: [char], from: int, needle: string) -> int {
+  var i = max(0, from)
+  while i < cs.count() {
+    if startsAt(cs, i, needle) { return i }
+    i += 1
+  }
+  return -1
+}
+
+/// Where the next occurrence of `needle` begins, ignoring case, or -1.
+pub fn indexOfCharsFold(cs: [char], from: int, needle: string) -> int {
+  var i = max(0, from)
+  while i < cs.count() {
+    if startsAtFold(cs, i, needle) { return i }
+    i += 1
+  }
+  return -1
+}
+
+/// Every run of whitespace as one space, and the ends trimmed. This is what
+/// a page's text reads as (Jsoup's text()), so a rule that names no suffix
+/// answers with one line.
+pub fn collapse(s: string) -> string {
+  var out = ""
+  var space = false
+  for c in s {
+    if c.isWhitespace() {
+      space = true
+      continue
+    }
+    if space && !out.isEmpty() { out += " " }
+    space = false
+    out += c
+  }
+  return out
+}
+
+/// Split `text` at every top-level occurrence of the literal `sep`: one
+/// inside a balanced [ ], ( ) or { } group is not one, and neither is one
+/// inside a quoted string, which is what keeps a JSONPath filter, a CSS
+/// :not(...) and a script's `||` in one piece.
+pub fn splitTop(text: string, sep: string) -> [string] {
+  if sep.isEmpty() { return [text] }
+  let cs = text.chars()
+  let n = cs.count()
+  var parts: [string] = []
+  var start = 0
+  var depth = 0
+  var quote = ""
+  var i = 0
+  while i < n {
+    let c = cs[i]
+    if !quote.isEmpty() {
+      if c == '\\' {
+        i += 2
+        continue
+      }
+      if "{c}" == quote { quote = "" }
+      i += 1
+      continue
+    }
+    if c == '"' || c == '\'' {
+      quote = "{c}"
+      i += 1
+      continue
+    }
+    if c == '[' || c == '(' || c == '{' {
+      depth += 1
+      i += 1
+      continue
+    }
+    if c == ']' || c == ')' || c == '}' {
+      if depth > 0 { depth -= 1 }
+      i += 1
+      continue
+    }
+    if depth == 0 && startsAt(cs, i, sep) {
+      parts.push(textOfChars(cs, start, i))
+      i += sep.count()
+      start = i
+      continue
+    }
+    i += 1
+  }
+  parts.push(textOfChars(cs, start, n))
+  return parts
+}
+
+/// Where a top-level occurrence of `sep` begins, or -1.
+pub fn findTop(text: string, sep: string) -> int {
+  let cs = text.chars()
+  let n = cs.count()
+  var depth = 0
+  var quote = ""
+  var i = 0
+  while i < n {
+    let c = cs[i]
+    if !quote.isEmpty() {
+      if c == '\\' {
+        i += 2
+        continue
+      }
+      if "{c}" == quote { quote = "" }
+      i += 1
+      continue
+    }
+    if c == '"' || c == '\'' {
+      quote = "{c}"
+      i += 1
+      continue
+    }
+    if c == '[' || c == '(' || c == '{' {
+      depth += 1
+      i += 1
+      continue
+    }
+    if c == ']' || c == ')' || c == '}' {
+      if depth > 0 { depth -= 1 }
+      i += 1
+      continue
+    }
+    if depth == 0 && startsAt(cs, i, sep) { return i }
+    i += 1
+  }
+  return -1
+}
+
+/// Split `text` on whichever of `seps` occurs first at the top level: the
+/// answer is the parts and that separator ("" when none of them appeared).
+/// This is how a rule's `||`, `&&` and `%%` are told apart.
+pub fn splitTopAny(text: string, seps: [string]) -> ([string], string) {
+  var best = -1
+  var which = ""
+  for sep in seps {
+    let at = findTop(text, sep)
+    if at >= 0 && (best < 0 || at < best) {
+      best = at
+      which = sep
+    }
+  }
+  if which.isEmpty() { return ([text], "") }
+  return (splitTop(text, which), which)
+}
+
+/// A string between matching quotes, or as it is when it has none.
+pub fn unquote(text: string) -> string {
+  let t = text.trim()
+  if t.count() >= 2 {
+    let first = t.slice(0, 1)
+    if (first == "\"" || first == "'") && t.slice(t.count() - 1, t.count()) == first {
+      return t.slice(1, t.count() - 1)
+    }
+  }
+  return t
+}
+
+/// Percent-encode text as JavaScript's encodeURIComponent does: letters,
+/// digits and -_.!~*'() kept, every other byte of its UTF-8 as %XX. This is
+/// what a source's {{java.encodeURI(key)}} means.
+pub fn encodeComponent(text: string) -> string {
+  var out = ""
+  let bs = text.bytes().toArray()
+  var i = 0
+  while i < bs.count() {
+    let b = int(bs[i])
+    let unreserved = (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || (b >= 48 && b <= 57)
+      || b == 45 || b == 95 || b == 46 || b == 33 || b == 126 || b == 42
+      || b == 39 || b == 40 || b == 41
+    if unreserved {
+      out += char(b)
+    } else {
+      out += "%{b.toString(radix: 16).padStart(2, with: "0").upper()}"
+    }
+    i += 1
+  }
+  return out
+}
