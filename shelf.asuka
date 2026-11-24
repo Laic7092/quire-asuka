@@ -11,13 +11,21 @@ import ./lib
 /// Cover colors from Quire's icon sheet: ink, cloth, dusk.
 let spines = [#2b2b2f, #3d5143, #4a3f63, #7a5b33, #2c5560]
 
-// The page is drawn on one left keyline: the status bar's time, the title
-// and every cover start there. A list row's text takes the second line,
-// one cover and one gap to the right, so the eye has two stable axes.
-let pageKeyline: float = 20
+// The page is drawn on one left keyline (lib.pageKeyline): the status bar's
+// time, the title and every cover start there. A list row's text takes the
+// second line, one cover and one gap to the right, so the eye has two stable
+// axes.
+//
+// The grid's gap is one number: the wrapping Row's, and the one the header's
+// measure counts cells with. They must agree, so neither is written twice.
+let shelfGridGap: float = 22
+// As many covers of this width as a row has room for; a cell wider than
+// shelfTileMax takes another column instead of stretching one cover across
+// the row (a narrow window can still end with narrower ones).
+let shelfTileCover: float = 150
+let shelfTileMax: float = 200
 let shelfRowCover: float = 44
 let shelfRowGap: float = 12
-let shelfTileCover: float = 150
 
 /// A title's cover color, the same every launch.
 fn spine(title: string) -> Color {
@@ -26,6 +34,15 @@ fn spine(title: string) -> Color {
     h = (h * 31 + c.code()) % 9973
   }
   return spines[h % spines.count()]
+}
+
+/// The list's line under the title: who wrote it, or why there is no file
+/// here. (A grid tile leaves the author out: its title is the cover.)
+fn authorLine(book: lib.Book) -> string {
+  if !book.remote && !book.path.isEmpty() && !fs.exists(book.path) {
+    return if book.hash.isEmpty() { "文件找不到了" } else { "未备份到云端" }
+  }
+  return book.author
 }
 
 component Cover(book: lib.Book) {
@@ -61,6 +78,9 @@ component Cover(book: lib.Book) {
     radius: 8
     clip: true
     background: spine(book.title)
+    // 书站在纸上，给它一点影子；iOS 上裁切会把影子一起裁掉，宿主自己
+    // 把子视图裁进另一层再留影子，这里只写一句。
+    shadow: Shadow(color: #0000002e, radius: 6, y: 3)
     if !cover.isEmpty() && fs.exists(cover) {
       Image(source: cover) {
         grow: 1
@@ -83,11 +103,12 @@ component Cover(book: lib.Book) {
   }
 }
 
-/// The cell itself: a cover, a title, and where the reader is.
+/// The cell itself: a cover, and how far in the reader is. The author is the
+/// list's to show: a grid of covers reads as the covers themselves.
 component BookTile(book: lib.Book, reading: lib.Reading) {
   prop showCloud = false
-  /// 一格占的宽：封面还是 150，余下的宽留在格子两边，一行因此正好
-  /// 填满，封面大小不变。
+  /// 一格占的宽：封面与它同宽，格子因此正好填满一行，封面贴在两边的
+  /// keyline 上。
   prop cellWidth = shelfTileCover
   event open
 
@@ -99,14 +120,20 @@ component BookTile(book: lib.Book, reading: lib.Reading) {
     gap: 6
     align: .center
     on press { emit open }
-    Cover(book) { width: shelfTileCover }
-    // 标题和进度左对齐，和封面左边齐；云端状态贴在标题行的右侧。
+    Cover(book) { width: cellWidth }
+    // 网格只给封面和进度：书名在封面上，作者留给列表。文件不在本机时
+    // 这一行改成说哪一种不在。云端状态贴在它的右侧。
     Row {
-      width: shelfTileCover
+      width: cellWidth
       gap: 5
       align: .center
-      Text(book.title) {
-        font: .subheadline
+      Text(if missing {
+        if book.hash.isEmpty() { "文件找不到了" } else { "未备份到云端" }
+      } else {
+        reading.label()
+      }) {
+        font: .caption
+        color: if missing { .red } else { .secondaryLabel }
         lines: 1
         shrink: 1
       }
@@ -117,25 +144,11 @@ component BookTile(book: lib.Book, reading: lib.Reading) {
         }
       }
     }
-    Text(if missing {
-      if book.hash.isEmpty() { "文件找不到了" } else { "未备份到云端" }
-    } else if book.author.isEmpty() {
-      reading.label()
-    } else {
-      "{book.author} · {reading.label()}"
-    }) {
-      width: shelfTileCover
-      font: .caption
-      color: if missing { .red } else { .secondaryLabel }
-      lines: 1
-      textAlign: .start
-    }
   }
 }
 
-/// The same book as a list row: a small cover, its title, and its author or
-/// where it's missing. The reading position sits at the row's end, where a
-/// list's column of numbers is easy to scan.
+/// The same book as a list row: a small cover, its title, then the author and
+/// the place, each on its own line.
 component BookRow(book: lib.Book, reading: lib.Reading) {
   prop showCloud = false
   event open
@@ -150,26 +163,25 @@ component BookRow(book: lib.Book, reading: lib.Reading) {
     Cover(book) { width: shelfRowCover }
     Column {
       grow: 1
-      gap: 3
-      Text(book.title) {
-        font: .body
-        lines: 1
+      gap: 6
+      // 书名与作者是一组，贴紧；进度单独在下面，隔得开一点。
+      Column {
+        gap: 2
+        Text(book.title) {
+          font: .body
+          lines: 1
+        }
+        Text(authorLine(book)) {
+          font: .caption
+          color: if missing { .red } else { .secondaryLabel }
+          lines: 1
+        }
       }
-      Text(if missing {
-        if book.hash.isEmpty() { "文件找不到了" } else { "未备份到云端" }
-      } else if book.author.isEmpty() {
-        ""
-      } else {
-        book.author
-      }) {
+      Text(reading.label()) {
         font: .caption
-        color: if missing { .red } else { .secondaryLabel }
+        color: .secondaryLabel
         lines: 1
       }
-    }
-    Text(reading.label()) {
-      font: .caption2
-      color: .secondaryLabel
     }
     if showCloud {
       Symbol(if book.remote || book.backedUp { Icons.cloud } else { Icons.cloudOff }) {
@@ -195,9 +207,9 @@ component BookCell(book: lib.Book, reading: lib.Reading) {
   event evict
   event record
 
-  // 云端的三件事收进一层：第一眼只有阅读记录、云端与存储、删除。
-  // 只列出这一刻有意义的：本机独有的书先备份；已经在云端的书才谈固定
-  // 和「只留云端」；只在云端的书没有可做的。
+  // 云端与存储直接排在菜单里，不再收进二级菜单：长按一次就能点到，
+  // 折起来还得再探一层。只列出这一刻有意义的：本机独有的书先备份；
+  // 已经在云端的书才谈固定和「只留云端」；只在云端的书没有可做的。
   let cloudItems: [Action] = if !book.backedUp {
     [.button(title: "备份到云端", icon: Icons.upload, run: () => { emit backup })]
   } else if book.remote {
@@ -220,11 +232,13 @@ component BookCell(book: lib.Book, reading: lib.Reading) {
       .button(title: "删除", icon: Icons.trash, role: .destructive, run: () => { emit delete }),
     ]
   } else {
-    [
+    let first: [Action] = [
       .button(title: "阅读记录", icon: Icons.statistics, run: () => { emit record }),
-      .submenu(title: "云端与存储", icon: Icons.cloud, items: cloudItems),
+    ]
+    let last: [Action] = [
       .button(title: "删除", icon: Icons.trash, role: .destructive, run: () => { emit delete }),
     ]
+    first + cloudItems + last
   }
 
   Menu {
@@ -535,9 +549,14 @@ component Shelf {
   // 书架滚过页头底下：大标题消失，页头只剩右边那几个按钮。只在跨过
   // 那条线时写它，滚动的每一帧不重建什么。
   state scrolled = false
-  // 一格占的宽：页头量到能摆几个 150pt 的封面，余下的宽留给格子两边，
-  // 封面不跟着变，一行正好填满。
+  // 一格占的宽：页头量出一行摆几个封面，封面就占满一格，边缘因此压在
+  // 两边的 keyline 上。
   state cellWidth = shelfTileCover
+
+  // 横屏时系统给的是紧凑的高度类，它自己的栏也收成一行：大标题只在
+  // 竖屏，横屏换成 headline，页头也降到 44，不占掉一屏高度的七分之一。
+  let env = environment()
+  let compact = env.heightClass == .compact
 
   let books = library.books()
   let listMode = library.shelfLayout == "list"
@@ -553,27 +572,34 @@ component Shelf {
       // keyline；系统状态栏在上方，三者的左边缘于是对齐。滚下去以后
       // 标题让位，页头上只剩那排按钮。
       Row {
-        // 页头的高度不随标题变：列表的框在滚动中间不动。
-        height: 56
-        padding: [0, pageKeyline]
+        // 页头的高度不随标题变：列表的框在滚动中间不动。minHeight 而
+        // 不是 height：用户放大字时页头跟着长，不把标题裁掉。
+        minHeight: if compact { 44 } else { 56 }
+        padding: [0, lib.pageKeyline]
         gap: 8
         align: .center
         // 页头和下面的书架在同一个 SafeArea 里，一样宽：量它就是量书架
-        // 的宽（List 和 Scroll 都没有 layout 事件）。
+        // 的宽（List 和 Scroll 都没有 layout 事件）。一行的格宽就是这个
+        // 宽减去 keyline 和格间距后，按列数均分。
         on layout(f) {
-          let room = f.width - 2 * pageKeyline
-          let n = max(1, int((room + 22) / (shelfTileCover + 22)))
-          let w = (room - 22 * float(n - 1)) / float(n)
+          let room = f.width - 2 * lib.pageKeyline
+          var n = max(1, int((room + shelfGridGap) / (shelfTileCover + shelfGridGap)))
+          // 窄窗口（小屏手机、分屏）放不下两本 150pt 的书时，一张封面会
+          // 撑满整行：多分一列，书小一点，也不让一行只有一张大封面。
+          while n < 4 && (room - shelfGridGap * float(n - 1)) / float(n) > shelfTileMax {
+            n += 1
+          }
+          let w = (room - shelfGridGap * float(n - 1)) / float(n)
           if w != cellWidth { cellWidth = w }
         }
-        if scrolled {
-          View { grow: 1 }
-        } else {
-          Text("书架") {
-            font: .largeTitle.bold()
-            lines: 1
-            grow: 1
-          }
+        // 标题不增删，只淡出：滚动后新插一个 View 在 iOS 上会带一层底色，
+        // 在页头留下一块白挡着下面的列表。
+        Text("书架") {
+          font: if compact { .headline } else { .largeTitle.bold() }
+          lines: 1
+          grow: 1
+          opacity: if scrolled { 0 } else { 1 }
+          a11yHidden: scrolled
         }
         // 按钮只有图标：图标加一行字会把标题挤出屏幕，而名字读屏要
         // （label），指针要（tooltip）。
@@ -657,7 +683,7 @@ component Shelf {
         // Linux 上不缩进它的行，分隔线还在。
         Column {
           grow: 1
-          padding: [10, pageKeyline]
+          padding: [10, lib.pageKeyline]
           List {
             grow: 1
             on scroll(x, y) {
@@ -678,14 +704,14 @@ component Shelf {
         // 换行——换行是布局自己算的，不读窗口宽度，也不靠 List 的网格。
         Scroll {
           grow: 1
-          padding: [22, pageKeyline]
+          padding: [22, lib.pageKeyline]
           on scroll(x, y) {
             let past = y > 12
             if past != scrolled { scrolled = past }
           }
           Row {
             wrap: true
-            gap: 22
+            gap: shelfGridGap
             for b in ordered key b.id {
               ShelfBook(b, library.readingOf(b.id)) {
                 mode: "grid"

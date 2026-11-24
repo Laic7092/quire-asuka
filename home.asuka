@@ -370,6 +370,11 @@ component Home {
   // 线时写它，滚动的每一帧不重建什么。
   state scrolled = false
 
+  // 横屏时系统给的是紧凑的高度类，它自己的栏也收成一行：大标题只在
+  // 竖屏，横屏换成 headline，页头也降到 44，不占掉一屏高度的七分之一。
+  let env = environment()
+  let compact = env.heightClass == .compact
+
   View {
     grow: 1
     SafeArea {
@@ -380,19 +385,20 @@ component Home {
       // keyline；系统状态栏在上方，三者的左边缘于是对齐。滚下去以后
       // 标题让位，页头上只剩那个按钮。
       Row {
-        // 页头的高度不随标题变：列表的框在滚动中间不动。
-        height: 56
-        padding: [0, pageKeyline]
+        // 页头的高度不随标题变：列表的框在滚动中间不动。minHeight 而
+        // 不是 height：用户放大字时页头跟着长，不把标题裁掉。
+        minHeight: if compact { 44 } else { 56 }
+        padding: [0, lib.pageKeyline]
         gap: 8
         align: .center
-        if scrolled {
-          View { grow: 1 }
-        } else {
-          Text("首页") {
-            font: .largeTitle.bold()
-            lines: 1
-            grow: 1
-          }
+        // 标题不增删，只淡出：滚动后新插一个 View 在 iOS 上会带一层底色，
+        // 在页头留下一块白挡着下面的列表。
+        Text("首页") {
+          font: if compact { .headline } else { .largeTitle.bold() }
+          lines: 1
+          grow: 1
+          opacity: if scrolled { 0 } else { 1 }
+          a11yHidden: scrolled
         }
         Button("") {
           icon: Icons.profile
@@ -414,7 +420,7 @@ component Home {
           match section {
             .reading => Column {
               gap: 12
-              padding: [20, pageKeyline, 0, pageKeyline]
+              padding: [20, lib.pageKeyline, 0, lib.pageKeyline]
               SectionHead("继续阅读") {
                 icon: Icons.reading
               }
@@ -426,7 +432,7 @@ component Home {
             }
             .year => Column {
               gap: 12
-              padding: [20, pageKeyline, 0, pageKeyline]
+              padding: [20, lib.pageKeyline, 0, lib.pageKeyline]
               SectionHead("今年") {
                 icon: Icons.goal
               }
@@ -448,7 +454,7 @@ component Home {
             }
             .done => Column {
               gap: 12
-              padding: [20, pageKeyline, 44, pageKeyline]
+              padding: [20, lib.pageKeyline, 44, lib.pageKeyline]
               SectionHead("之前读过") {
                 icon: Icons.finished
               }

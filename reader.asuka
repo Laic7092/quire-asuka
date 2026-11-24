@@ -19,6 +19,11 @@ import ./engine
 /// Points the engine lays out at, before the reader's own size multiplies it.
 let baseSize = 19.0
 
+/// 浮在页面上的控件离屏幕边缘的宽。阅读页铺满整屏（纸连状态栏底下都刷），
+/// 所以系统栏和安全区得自己让开：先加 safeLeft/safeRight，再留出系统栏那
+/// 样的 16pt。横屏的刘海也因此在外面。
+let chromeMargin: float = 16
+
 /// Where the reader is in the column, in the Scroll's own coordinates. A frame's
 /// scroll event writes it, so it can't be `state`: that would rebuild the page
 /// on every frame of a fling. Nothing in the tree draws from it — a bookmark,
@@ -1775,8 +1780,8 @@ component Reader(book: lib.Book) {
       Row {
         absolute: true
         top: barTop
-        left: 8
-        right: 8
+        left: env.safeLeft + chromeMargin
+        right: env.safeRight + chromeMargin
         justify: .center
         gap: 6
         Button("复制") {
@@ -1822,9 +1827,9 @@ component Reader(book: lib.Book) {
     if chrome {
       Row {
         absolute: true
-        top: env.safeTop + 6
-        left: 8
-        right: 8
+        top: env.safeTop + 8
+        left: env.safeLeft + chromeMargin
+        right: env.safeRight + chromeMargin
         gap: 4
         Button("") {
           icon: Icons.back
@@ -1875,7 +1880,7 @@ component Reader(book: lib.Book) {
       // action.
       Row {
         absolute: true
-        bottom: env.safeBottom + 8
+        bottom: env.safeBottom + chromeMargin
         left: 0
         right: 0
         justify: .center
@@ -1896,6 +1901,8 @@ component Reader(book: lib.Book) {
       Column {
         grow: 1
         justify: .start
+        // 页面铺到状态栏底下：这条提示也得让开安全区，不然被刘海和圆角吃掉。
+        padding: [env.safeTop, env.safeLeft + chromeMargin, 0, env.safeRight + chromeMargin]
         Text(warning) {
           font: .footnote
           color: palette.ink

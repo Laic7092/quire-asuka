@@ -31,7 +31,9 @@ test "a book that is only in the cloud is marked, not missing" {
   }
   let app = mount(Harness(), provide: library)
   await app.idle()
-  app.expect("朱自清 · 未开始")
+  // 云端有的书不是找不到：网格在封面上印书名，下面只说进度。
+  app.expect("未开始")
+  app.expectNo("文件找不到了")
   app.expectNo("云端 ·")
 }
 
@@ -924,14 +926,18 @@ test "the shelf draws a book as a grid tile or a list row" {
   library.shelfLayout = "list"
   let app = mount(Harness(), provide: library)
   await app.idle()
-  // 列表把作者和进度分成两列；网格把它们拼成一行。
+  // 列表一行说三件事：书名、作者、进度。网格只有封面和进度：书名在
+  // 封面上，作者归列表。
   let rows = app.texts()
   expect(rows.contains("朱自清"))
   expect(rows.contains("未开始"))
   expect(!rows.contains("朱自清 · 未开始"))
   library.shelfLayout = "grid"
   await app.idle()
-  expect(app.texts().contains("朱自清 · 未开始"))
+  let grid = app.texts()
+  expect(!grid.contains("朱自清"))
+  expect(grid.contains("未开始"))
+  expect(!grid.contains("朱自清 · 未开始"))
 }
 
 test "the shelf's display choices set its layout and order" {
