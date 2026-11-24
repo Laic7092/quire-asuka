@@ -1,0 +1,131 @@
+# Quire on Codemagic (https://codemagic.io): the same two jobs as
+# .github/workflows/ios.yml, for a repository whose builds run there too.
+#
+# Nothing here builds the book engine: it's released (ebook-engine's
+# Releases) with one static library per target, and each workflow downloads
+# the one it links — no Rust toolchain, no cargo cache, no compile.
+# ENGINE_VERSION is `latest` by default; pin a tag (v0.2.0) to freeze one.
+#
+# Codemagic reads this file from the repository root; automatic builds also
+# need a webhook created under the app's Webhooks settings. Docs ignore
+# README-only pushes below, as the GitHub workflow does.
+
+definitions:
+  # Both workflows build the same app: the font, the CLI and the checks are
+  # shared, only the engine target differs (the tests link this machine's,
+  # the IPA the phone's).
+  fetch_font: &fetch_font
+    name: Fetch the font
+    script: bash .github/scripts/fetch-font.sh
+
+  install_asuka: &install_asuka
+    name: Install the asuka CLI
+    script: |
+      curl -fsSL https://asuka.egoist.dev/install.sh | sh
+      # Each step is a fresh shell: hand it the PATH through Codemagic's
+      # environment file (what GITHUB_PATH is on Actions).
+      echo "PATH=$HOME/.asuka/bin:$PATH" >> "$CM_ENV"
+
+  # asuka needs Xcode 26 or newer. Pinned rather than `latest` so that a new
+  # Xcode on the image doesn't change what compiles the app; 26.6 is the
+  # default image's, with the iOS 26.5 runtimes actool wants for the icon.
+  xcode: &xcode
+    xcode: "26.6"
+
+  # Asuka's prebuilt libraries and the C it compiles: the same between runs,
+  # so a workflow doesn't download and build them again. Codemagic keeps a
+  # workflow's cache for 14 days.
+  asuka_cache: &asuka_cache
+    cache_paths:
+      - ~/.cache/asuka
+
+  # Docs don't change the app or its engine: a README edit doesn't need a
+  # macOS runner.
+  skip_docs: &skip_docs
+    changeset:
+      excludes:
+        - '**/*.md'
+
+workflows:
+  tests:
+    name: Tests
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    environment:
+      <<: *xcode
+      vars:
+        ENGINE_VERSION: latest
+    cache: *asuka_cache
+    when: *skip_docs
+    triggering:
+      events:
+        - push
+        - pull_request
+      branch_patterns:
+        - pattern: main
+          include: true
+          source: true
+      # A newer push on the same branch cancels the run before it: a macOS
+      # runner is the expensive part.
+      cancel_previous_builds: true
+    scripts:
+      # reader.asuka embeds the font, and the repository doesn't carry it:
+      # the script downloads the pinned WOFF.
+      - *fetch_font
+      # The tests link the engine, so they need this machine's library.
+      - name: Fetch the engine
+        script: bash .github/scripts/fetch-engine.sh macos-arm64
+      - *install_asuka
+      - name: Check and test
+        script: |
+          asuka version
+          asuka check
+          # The app's tests, and the lib package's (parser and page turn):
+          # `asuka test` runs the tests of the package in the directory it's
+          # given, and lib/ is one of its own.
+          asuka test
+          asuka test lib
+
+  ios-ipa:
+    name: Unsigned IPA
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    labels:
+      - iOS
+    environment:
+      <<: *xcode
+      vars:
+        ENGINE_VERSION: latest
+    cache: *asuka_cache
+    when: *skip_docs
+    triggering:
+      events:
+        - push
+        - tag
+      branch_patterns:
+        - pattern: main
+          include: true
+          source: true
+      tag_patterns:
+        - pattern: '*'
+          include: true
+      cancel_previous_builds: true
+    scripts:
+      - *fetch_font
+      # The device's library only: a simulator's is for whoever builds for
+      # one.
+      - name: Fetch the engine
+        script: bash .github/scripts/fetch-engine.sh ios-arm64
+      - *install_asuka
+      - name: Check
+        script: |
+          asuka version
+          asuka check
+      # A throwaway self-signed identity and a stub profile get asuka through
+      # its signing step, then the signature is stripped: an unsigned .ipa
+      # for Sideloadly or AltStore (a free Apple ID re-signs it), TrollStore
+      # (iOS 17.0 and older), or a jailbroken device.
+      - name: Build the unsigned IPA
+        script: bash .github/scripts/build-unsigned-ipa.sh
+    artifacts:
+      - dist/*-unsigned.ipa
