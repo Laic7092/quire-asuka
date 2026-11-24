@@ -55,6 +55,12 @@ libraries = ["pthread", "dl", "m"]
 # kernel32 and the GUI's libraries already.
 [c.windows]
 libraries = ["bcrypt", "ntdll", "userenv", "ws2_32"]
+# Its static library carries Rust's compiler_builtins, and Zig links its
+# own compiler_rt: lld-link sees __udivti3 twice (both weak) and stops.
+# MSVC's link takes the first; /force:multiple tells lld the same. The
+# other flag is so the -Wl, doesn't count as unused on the C compiles,
+# which are -Werror.
+flags = ["-Wl,/force:multiple", "-Wno-unused-command-line-argument"]
 
 [c.android]
 libraries = ["dl", "log", "m"]
