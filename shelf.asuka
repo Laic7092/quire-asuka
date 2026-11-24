@@ -86,14 +86,18 @@ component Cover(book: lib.Book) {
 /// The cell itself: a cover, a title, and where the reader is.
 component BookTile(book: lib.Book, reading: lib.Reading) {
   prop showCloud = false
+  /// 一格占的宽：封面还是 150，余下的宽留在格子两边，一行因此正好
+  /// 填满，封面大小不变。
+  prop cellWidth = shelfTileCover
   event open
 
   // 文件不在本机：云端有就是「按需下载」，没有才是真的找不到。
   let missing = !book.remote && !book.path.isEmpty() && !fs.exists(book.path)
 
   Column {
+    width: cellWidth
     gap: 6
-    align: .start
+    align: .center
     on press { emit open }
     Cover(book) { width: shelfTileCover }
     // 标题和进度左对齐，和封面左边齐；云端状态贴在标题行的右侧。
@@ -183,6 +187,7 @@ component BookCell(book: lib.Book, reading: lib.Reading) {
   prop pinned = false
   prop showCloud = false
   prop mode = "grid"
+  prop cellWidth = shelfTileCover
   event open
   event delete
   event backup
@@ -233,6 +238,7 @@ component BookCell(book: lib.Book, reading: lib.Reading) {
     } else {
       BookTile(book, reading) {
         showCloud: showCloud
+        cellWidth: cellWidth
         on open { emit open }
       }
     }
@@ -246,12 +252,14 @@ component ShelfBook(book: lib.Book, reading: lib.Reading) {
 
   prop mode = "grid"
   prop showCloud = false
+  prop cellWidth = shelfTileCover
   event open
 
   BookCell(book, reading) {
     pinned: library.pinned.contains(book.id)
     showCloud: showCloud
     mode: mode
+    cellWidth: cellWidth
     on open { emit open }
     on backup {
       if book.remote {
@@ -524,9 +532,13 @@ component Shelf {
     }
   }
 
-  // As many covers in a row as the window has room for, 150 points each.
-  let width = environment().width
-  let columns = if width > 1180 { 6 } else if width > 980 { 5 } else if width > 780 { 4 } else if width > 560 { 3 } else { 2 }
+  // 书架滚过页头底下：大标题消失，页头只剩右边那几个按钮。只在跨过
+  // 那条线时写它，滚动的每一帧不重建什么。
+  state scrolled = false
+  // 一格占的宽：页头量到能摆几个 150pt 的封面，余下的宽留给格子两边，
+  // 封面不跟着变，一行正好填满。
+  state cellWidth = shelfTileCover
+
   let books = library.books()
   let listMode = library.shelfLayout == "list"
   let ordered = lib.sortBooks(books, library.readings, library.shelfSort)
@@ -538,32 +550,51 @@ component Shelf {
       gap: 0
 
       // 页头自绘：标题与右上角的按钮在同一行，左边与下面的封面同一条
-      // keyline；系统状态栏在上方，三者的左边缘于是对齐。
+      // keyline；系统状态栏在上方，三者的左边缘于是对齐。滚下去以后
+      // 标题让位，页头上只剩那排按钮。
       Row {
-        padding: [8, pageKeyline]
+        // 页头的高度不随标题变：列表的框在滚动中间不动。
+        height: 56
+        padding: [0, pageKeyline]
         gap: 8
         align: .center
-        Text("书架") {
-          font: .largeTitle.bold()
-          lines: 1
-          grow: 1
+        // 页头和下面的书架在同一个 SafeArea 里，一样宽：量它就是量书架
+        // 的宽（List 和 Scroll 都没有 layout 事件）。
+        on layout(f) {
+          let room = f.width - 2 * pageKeyline
+          let n = max(1, int((room + 22) / (shelfTileCover + 22)))
+          let w = (room - 22 * float(n - 1)) / float(n)
+          if w != cellWidth { cellWidth = w }
         }
+        if scrolled {
+          View { grow: 1 }
+        } else {
+          Text("书架") {
+            font: .largeTitle.bold()
+            lines: 1
+            grow: 1
+          }
+        }
+        // 按钮只有图标：图标加一行字会把标题挤出屏幕，而名字读屏要
+        // （label），指针要（tooltip）。
         if !library.shelf.isEmpty() {
           // 显示与排序 is the platform's own menu where it has one: a UIMenu
           // on iOS, Material's on Android, an NSMenu on a Mac, a pop-up on
           // Windows and a popover in a browser. Linux keeps the page: its
           // menu stops opening once a checked item changes.
           if @platform == .linux {
-            Button("显示与排序") {
+            Button("") {
               icon: Icons.display
               variant: .glass
+              label: "显示与排序"
               tooltip: "显示方式与排序"
               on press { present(ShelfDisplay()) }
             }
           } else {
-            Button("显示与排序") {
+            Button("") {
               icon: Icons.display
               variant: .glass
+              label: "显示与排序"
               tooltip: "显示方式与排序"
               menu: [
                 .section(title: "显示", items: [
@@ -580,9 +611,10 @@ component Shelf {
             }
           }
         }
-        Button("同步") {
+        Button("") {
           icon: syncIcon
           variant: .glass
+          label: "同步"
           tooltip: syncTip
           color: if syncFailed {
             .red
@@ -593,9 +625,10 @@ component Shelf {
           }
           on press { present(SyncSettings()) }
         }
-        Button("导入") {
+        Button("") {
           icon: Icons.add
           variant: .glass
+          label: "导入"
           tooltip: "导入 .txt 或 .epub，可多选"
           on press { await pick() }
         }
@@ -619,17 +652,47 @@ component Shelf {
         } else {
           View { grow: 1 }
         }
-      } else {
-        List {
+      } else if listMode {
+        // 列表模式：keyline 给外面的 Column。List 自己的 padding 在
+        // Linux 上不缩进它的行，分隔线还在。
+        Column {
           grow: 1
-          columns: if listMode { 1 } else { columns }
-          gap: if listMode { 0 } else { 22 }
-          padding: if listMode { [10, pageKeyline] } else { [22, pageKeyline] }
-          for b in ordered key b.id {
-            ShelfBook(b, library.readingOf(b.id)) {
-              mode: library.shelfLayout
-              showCloud: library.davConfigured()
-              on open { emit open(b) }
+          padding: [10, pageKeyline]
+          List {
+            grow: 1
+            on scroll(x, y) {
+              let past = y > 12
+              if past != scrolled { scrolled = past }
+            }
+            for b in ordered key b.id {
+              ShelfBook(b, library.readingOf(b.id)) {
+                mode: "list"
+                showCloud: library.davConfigured()
+                on open { emit open(b) }
+              }
+            }
+          }
+        }
+      } else {
+        // 网格：不数列数。窗口多宽就摆几个封面，满了由 Row 的 wrap
+        // 换行——换行是布局自己算的，不读窗口宽度，也不靠 List 的网格。
+        Scroll {
+          grow: 1
+          padding: [22, pageKeyline]
+          on scroll(x, y) {
+            let past = y > 12
+            if past != scrolled { scrolled = past }
+          }
+          Row {
+            wrap: true
+            gap: 22
+            for b in ordered key b.id {
+              ShelfBook(b, library.readingOf(b.id)) {
+                mode: "grid"
+                showCloud: library.davConfigured()
+                cellWidth: cellWidth
+                on open { emit open(b) }
+              }
             }
           }
         }

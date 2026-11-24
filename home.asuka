@@ -366,6 +366,10 @@ component Home {
     .done => !older.isEmpty()
   })
 
+  // 首页滚过页头底下：大标题消失，页头只剩右边那个按钮。只在跨过那条
+  // 线时写它，滚动的每一帧不重建什么。
+  state scrolled = false
+
   View {
     grow: 1
     SafeArea {
@@ -373,19 +377,27 @@ component Home {
       gap: 0
 
       // 页头自绘：标题与右上角的按钮同一行，左边与下面的内容同一条
-      // keyline；系统状态栏在上方，三者的左边缘于是对齐。
+      // keyline；系统状态栏在上方，三者的左边缘于是对齐。滚下去以后
+      // 标题让位，页头上只剩那个按钮。
       Row {
-        padding: [8, pageKeyline]
+        // 页头的高度不随标题变：列表的框在滚动中间不动。
+        height: 56
+        padding: [0, pageKeyline]
         gap: 8
         align: .center
-        Text("首页") {
-          font: .largeTitle.bold()
-          lines: 1
-          grow: 1
+        if scrolled {
+          View { grow: 1 }
+        } else {
+          Text("首页") {
+            font: .largeTitle.bold()
+            lines: 1
+            grow: 1
+          }
         }
-        Button("我") {
+        Button("") {
           icon: Icons.profile
           variant: .glass
+          label: "我"
           tooltip: "阅读记录、同步与设置"
           on press { present(Profile()) }
         }
@@ -394,6 +406,10 @@ component Home {
       List {
         grow: 1
         appearance: .bare
+        on scroll(x, y) {
+          let past = y > 12
+          if past != scrolled { scrolled = past }
+        }
         for section in sections key section {
           match section {
             .reading => Column {
