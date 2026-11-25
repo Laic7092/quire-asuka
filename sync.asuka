@@ -43,8 +43,11 @@ pub struct SyncSnapshot {
   /// only fetches meta/<key>.json when this is newer than what it has.
   docs: [string: int] = [:]
   /// 书源：在线书的指针只有配上书源才读得出来，所以它跟书架一起走。
-  /// 同 id 的以本机的为准；删掉的源不会从别的设备上被删（先这样）。
+  /// 同 id 的按 updated 取新的；删除记在 sourceRemoved 里，别的设备
+  /// 下一次同步也会删。
   sources: [sources.Entry] = []
+  /// 删掉的书源，和书架一样是墓碑：id -> unix 秒。
+  sourceRemoved: [string: int] = [:]
   theme: string = "paper"
   size: float = 19.0
   line: float = 1.6
@@ -116,14 +119,35 @@ pub fn bookDocEncode(doc: BookDoc) -> string = json.encode(doc, indent: 2)
 
 pub fn bookDocDecode(text: string) throws -> BookDoc = try json.decode(text)
 
-/// 书源的一批合并：同 id 的以本机的为准，服务器上多出来的补进来。
-/// 删掉的源暂时不会跟着删（下一步再说）。
-pub fn syncSources(local: [sources.Entry], remote: [sources.Entry]) -> [sources.Entry] {
-  var out = local
-  for e in remote {
-    if !out.any(k => k.id == e.id) { out.push(e) }
+/// 书源的一批合并：本机和服务器的条目按 updated 取新的，删除按墓碑
+/// 过滤。墓碑也要按时间合并，不然一台设备删了、另一台还没听过，下一次
+/// 同步就会把它补回来。
+pub fn syncSources(local: sources.SyncState, remote: [sources.Entry], remoteRemoved: [string: int]) -> sources.SyncState {
+  let tombstones = mergedRemoved(local.removed, remoteRemoved)
+  var out: [sources.Entry] = []
+  for e in local.entries {
+    if sourceKept(e, tombstones) { out.push(e) }
   }
-  return out
+  for e in remote {
+    if !sourceKept(e, tombstones) { continue }
+    if let at = out.index(x => x.id == e.id) {
+      if e.updated > out[at].updated { out[at] = e }
+    } else {
+      out.push(e)
+    }
+  }
+  var removed = tombstones
+  for e in out {
+    if let at = removed.get(e.id) {
+      if e.updated > at { removed.remove(e.id) }
+    }
+  }
+  return sources.SyncState(entries: out, removed: removed)
+}
+
+fn sourceKept(e: sources.Entry, removed: [string: int]) -> bool {
+  if let at = removed.get(e.id) { return e.updated > at }
+  return true
 }
 
 /// The shelf, with the server's rows added and this device's kept: a row on

@@ -781,22 +781,22 @@ pub store Library {
   }
 
   /// The launch task: a sync only when the reader asked for one.
-  pub async fn syncIfAuto(entries: [sources.Entry]) -> [sources.Entry] {
-    if !syncAuto || !davConfigured() { return entries }
-    let (_, merged) = (try? await syncNow(entries)) ?? (syncMessage, entries)
+  pub async fn syncIfAuto(sourceState: sources.SyncState) -> sources.SyncState {
+    if !syncAuto || !davConfigured() { return sourceState }
+    let (_, merged) = (try? await syncNow(sourceState)) ?? (syncMessage, sourceState)
     return merged
   }
 
   /// A full two-way sync: files, then the state that names them. The message
   /// is what the 我 page and the sheet show; the error is thrown as well, so
   /// a sheet that asked can say what happened.
-  pub async fn syncNow(entries: [sources.Entry]) throws -> (string, [sources.Entry]) {
+  pub async fn syncNow(sourceState: sources.SyncState) throws -> (string, sources.SyncState) {
     if !davConfigured() { throw SyncError.notConfigured }
-    if syncBusy { return (syncMessage, entries) }
+    if syncBusy { return (syncMessage, sourceState) }
     syncBusy = true
     defer { syncBusy = false }
     do {
-      let (report, merged) = try await runSync(davConfig(), entries)
+      let (report, merged) = try await runSync(davConfig(), sourceState)
       syncLast = time.now().unix()
       syncMessage = report.text()
       return (syncMessage, merged)
@@ -941,12 +941,12 @@ pub store Library {
   }
 
   /// 把本机所有书都传上去；正文很多时这会很慢，所以是一个显式动作。
-  pub async fn backupAll(entries: [sources.Entry]) throws -> (string, [sources.Entry]) {
+  pub async fn backupAll(sourceState: sources.SyncState) throws -> (string, sources.SyncState) {
     if !davConfigured() { throw SyncError.notConfigured }
-    if syncBusy { return (syncMessage, entries) }
+    if syncBusy { return (syncMessage, sourceState) }
     uploadAll = true
     defer { uploadAll = false }
-    return try await syncNow(entries)
+    return try await syncNow(sourceState)
   }
 
   /// 把一本书的正文从本机删掉，云端那份保留：下次打开会重新下载。
@@ -1064,7 +1064,7 @@ pub store Library {
     if changed { shelf = next; keep() }
   }
 
-  async fn runSync(cfg: DavConfig, entries: [sources.Entry]) throws -> (SyncReport, [sources.Entry]) {
+  async fn runSync(cfg: DavConfig, sourceState: sources.SyncState) throws -> (SyncReport, sources.SyncState) {
     try await davEnsure(cfg)
     await fillHashes()
 
@@ -1082,7 +1082,8 @@ pub store Library {
       serverShelf.push(kept)
     }
 
-    let allSources = syncSources(entries, server.sources)
+    let sourceSync = syncSources(sourceState, server.sources, server.sourceRemoved)
+    let allSources = sourceSync.entries
     let removed = mergedRemoved(removedIds, server.removed)
     let (nextShelf, added) = mergedShelf(shelf, serverShelf, removed)
     let live = prunedRemoved(nextShelf, removed)
@@ -1289,6 +1290,7 @@ pub store Library {
       removed: removedIds,
       docs: finalRemote,
       sources: allSources,
+      sourceRemoved: sourceSync.removed,
       theme: theme,
       size: size,
       line: line,
@@ -1299,7 +1301,7 @@ pub store Library {
       goal: goal,
     )
     try await davPutText(cfg, "catalog.json", syncEncode(written))
-    return (report, allSources)
+    return (report, sourceSync)
   }
 }
 

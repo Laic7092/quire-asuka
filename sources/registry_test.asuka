@@ -7,3 +7,25 @@ test "a source is found by its url as well as its id" {
   expect(store.entryOf("nope") == none)
   store.entries = was
 }
+
+test "a removed source leaves a tombstone, and an import after it outlives that" {
+  let store = Sources()
+  let wasEntries = store.entries
+  let wasRemoved = store.removed
+  store.entries = []
+  store.removed = [:]
+  let text = r#"{"bookSourceName":"一个","bookSourceUrl":"https://tomb.test","searchUrl":"/s?q={{key}}"}"#
+  let first = try store.importText(text)
+  expect(first.added == 1)
+  let id = store.entries[0].id
+  store.remove(id)
+  expect(store.entries.isEmpty())
+  expect(store.removed.has(id))
+  let at = store.removed.get(id) ?? 0
+  let again = try store.importText(text)
+  expect(again.added == 1)
+  expect(!store.removed.has(id))
+  expect(store.entries[0].updated > at)
+  store.entries = wasEntries
+  store.removed = wasRemoved
+}

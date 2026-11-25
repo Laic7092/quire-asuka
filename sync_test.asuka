@@ -3,6 +3,7 @@
 // meet. No network: what a server does is the server's.
 
 import ./lib
+import ./sources
 
 let multistatus = """<?xml version="1.0" encoding="utf-8"?>
 <D:multistatus xmlns:D="DAV:">
@@ -199,4 +200,48 @@ test "a book's sidecar reads back its bookmarks and days" {
   expect(back.days[0].seconds == 90)
   expect(back.notes[0].quote == "背影")
   expect(back.notes[0].text == "好")
+}
+
+test "a source deleted on this device isn't brought back by the server" {
+  let local = sources.SyncState(entries: [], removed: ["a": 100])
+  let remote = [sources.Entry(id: "a", name: "A", url: "https://a.test", json: r"{}", updated: 50)]
+  let merged = syncSources(local, remote, [:])
+  expect(merged.entries.isEmpty())
+  expect(merged.removed.get("a") == 100)
+}
+
+test "a source imported again after the deletion comes back" {
+  let local = sources.SyncState(entries: [], removed: ["a": 100])
+  let remote = [sources.Entry(id: "a", name: "A", url: "https://a.test", json: r"{}", updated: 101)]
+  let merged = syncSources(local, remote, ["a": 50])
+  expect(merged.entries.count() == 1)
+  expect(merged.removed.get("a") == none)
+}
+
+test "the newer edit of a source wins, whichever device made it" {
+  let local = sources.SyncState(entries: [
+    sources.Entry(id: "a", name: "A", url: "https://a.test", json: r"{}", enabled: false, updated: 20),
+    sources.Entry(id: "b", name: "B", url: "https://b.test", json: r"{}", updated: 30),
+  ])
+  let remote = [
+    sources.Entry(id: "a", name: "A", url: "https://a.test", json: r"{}", enabled: true, updated: 40),
+    sources.Entry(id: "b", name: "B", url: "https://b.test", json: r"{}", enabled: false, updated: 10),
+  ]
+  let merged = syncSources(local, remote, [:])
+  expect(merged.entries.find(e => e.id == "a")?.enabled == true)
+  expect(merged.entries.find(e => e.id == "b")?.enabled == true)
+}
+
+test "a source deleted on either device stays deleted" {
+  let local = sources.SyncState(entries: [
+    sources.Entry(id: "a", name: "A", url: "https://a.test", json: r"{}", updated: 20),
+    sources.Entry(id: "b", name: "B", url: "https://b.test", json: r"{}", updated: 20),
+  ], removed: ["a": 30])
+  let remote = [
+    sources.Entry(id: "b", name: "B", url: "https://b.test", json: r"{}", updated: 20),
+  ]
+  let merged = syncSources(local, remote, ["b": 30])
+  expect(merged.entries.isEmpty())
+  expect(merged.removed.get("a") == 30)
+  expect(merged.removed.get("b") == 30)
 }

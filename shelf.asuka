@@ -692,8 +692,9 @@ screen Shelf {
 
   async fn syncFromCloud() {
     do {
-      let (message, merged) = try await library.syncNow(allSources?.entries ?? [])
-      if let s = allSources { s.entries = merged }
+      let state = allSources?.syncState() ?? sources.SyncState()
+      let (message, merged) = try await library.syncNow(state)
+      if let s = allSources { s.applySync(merged) }
       snackbar(message)
     } catch e {
       snackbar(e.message)

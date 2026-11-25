@@ -68,7 +68,7 @@ component Quire {
     await library.loadCredentials()
     await library.seedSamples()
     if let s = allSources {
-      s.entries = await library.syncIfAuto(s.entries)
+      s.applySync(await library.syncIfAuto(s.syncState()))
     }
   }
 

@@ -126,11 +126,13 @@ pub struct ExploreCategory {
   url: string
 }
 
-pub fn exploreCategories(s: BookSource) -> [ExploreCategory] {
-  let raw = s.exploreUrl.trim()
-  if raw.isEmpty() { return [] }
+/// 一段分类文本读成分类：JSON 数组、单个对象，或一串地址。不是分类
+/// JSON 时返回空，由调用方决定这是不是一个书的列表。
+fn parseCategoryText(raw: string) -> [ExploreCategory] {
+  let t = raw.trim()
+  if t.isEmpty() { return [] }
   var out: [ExploreCategory] = []
-  if let v = try? json.parse(raw) {
+  if let v = try? json.parse(t) {
     if let arr = v.asArray() {
       for item in arr {
         // 常见的是 {"title","url"}；也有书源只给一串地址。
@@ -160,9 +162,67 @@ pub fn exploreCategories(s: BookSource) -> [ExploreCategory] {
       }
     }
   }
-  // 不是 JSON：整个 exploreUrl 就是一个分类的地址。
-  if out.isEmpty() { out.push(ExploreCategory(title: "发现", url: raw)) }
   return out
+}
+
+pub fn exploreCategories(s: BookSource) -> [ExploreCategory] {
+  let raw = s.exploreUrl.trim()
+  if raw.isEmpty() { return [] }
+  let out = parseCategoryText(raw)
+  if !out.isEmpty() { return out }
+  // 不是 JSON：整个 exploreUrl 就是一个分类的地址。调用方若要用网络
+  // 解析它，走 exploreCategoriesOf。
+  return [ExploreCategory(title: "发现", url: raw)]
+}
+
+/// `exploreUrl` 是一个地址时，它常常返回一份分类 JSON。先把这段 JSON
+/// 取回来再列分类；否则会把「分类定义」当成一个书的列表，发现页于是
+/// 多出一层「发现」，点进去也打不开。取不到、或者取回来的不是分类
+/// JSON 时，退回「这个地址就是一个分类」。
+pub async fn exploreCategoriesOf(s: BookSource) -> [ExploreCategory] {
+  let raw = s.exploreUrl.trim()
+  if raw.isEmpty() { return [] }
+  let direct = parseCategoryText(raw)
+  if !direct.isEmpty() { return direct }
+  let url = absoluteUrl(baseUrlOf(s), raw)
+  do {
+    let page = try await withTimeout(8s) {
+      return try await get(url, headersOf(s), timeout: 8s)
+    }
+    let fetched = parseCategoryText(page.text)
+    if !fetched.isEmpty() { return fetched }
+  } catch {
+    // 网络失败也退回一个分类：至少读者能看到是哪个地址打不开。
+  }
+  return [ExploreCategory(title: "发现", url: raw)]
+}
+
+/// 相对地址按书源的地址补全。只处理发现页会遇到的几种：绝对地址、
+/// 协议相对的地址、站内绝对路径和相对路径。
+fn absoluteUrl(base: string, href: string) -> string {
+  let p = href.trim()
+  if p.isEmpty() { return base }
+  if p.contains("://") { return p }
+  var b = base.trim()
+  if b.isEmpty() { return p }
+  if !b.contains("://") { b = "http://" + b }
+  let scheme = b.find("://") ?? 0
+  if p.hasPrefix("//") {
+    return b.byteSlice(0, scheme + 1) + p
+  }
+  if p.hasPrefix("/") {
+    let after = scheme + 3
+    let rest = b.byteSlice(after, b.byteCount())
+    let slash = rest.find("/")
+    let host = if let at = slash { rest.byteSlice(0, at) } else { rest }
+    return b.byteSlice(0, after) + host + p
+  }
+  if b.hasSuffix("/") { return b + p }
+  let slash = b.findLast("/") ?? -1
+  if slash > scheme + 2 {
+    return b.byteSlice(0, slash + 1) + p
+  }
+  return b + "/" + p
 }
 
 /// 请求头写在 header 字段里，是一段 JSON 字符串。proxy 是连接设置，不是

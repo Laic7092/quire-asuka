@@ -18,7 +18,20 @@ pub struct Entry {
   /// 导入时那段书源 JSON，原样保存。
   json: string
   added: int = 0
+  /// 最后一次改开关、分组或重新导入的时间（unix 秒）。同步时同 id
+  /// 的三份数据按它取新的；旧版本留下的条目是 0。
+  updated: int = 0
 }
+
+/// 书源和本机记下的删除。同步一次带走两样：还在的条目，和删掉的 id
+/// 与时间。删除要留下墓碑，否则另一台设备（或云端旧快照）会把它补回来。
+pub struct SyncState {
+  entries: [Entry] = []
+  removed: [string: int] = [:]
+}
+
+/// 一条书源的组：Legado 的 group 可以是逗号分隔的多个组。
+pub fn entryGroups(e: Entry) -> [string] = e.group.split(",").map(g => g.trim()).filter(g => !g.isEmpty())
 
 pub struct ImportReport {
   added: int = 0
@@ -36,10 +49,22 @@ pub struct ImportReport {
   }
 }
 
+/// 一次改动的版本：通常就是现在；同一秒里改过的，至少比上一次大 1。
+fn touch(was: int) -> int {
+  let now = time.now().unix()
+  return if now > was { now } else { was + 1 }
+}
+
+/// 删除墓碑：比这本书源最后一次改动晚一点，免得同一秒里删了又算它还在。
+fn tombstone(was: int) -> int = touch(was)
+
 pub store Sources {
   pub state entries: [Entry] = store.read("sources.entries", [])
+  /// 删掉的书源：id -> 删除时间。它跟着 catalog 走，别的设备据此也删。
+  pub state removed: [string: int] = store.read("sources.removed", [:])
 
   effect { store.write("sources.entries", entries) }
+  effect { store.write("sources.removed", removed) }
 
   pub fn list() -> [Entry] = entries
 
@@ -56,16 +81,28 @@ pub store Sources {
     return none
   }
 
-  /// 同步回来的一批：同 id 的以本机的为准，其余补进来。返回补了几条。
+  /// 同步回来的一批：同 id 的按 updated 取新的，墓碑里的不收。返回补了
+  /// 几条。主要给同步库用；完整的合并见 sync.asuka 的 syncSources。
   pub fn merge(remote: [Entry]) -> int {
     var added = 0
+    var changed = false
     var next = entries
     for e in remote {
-      if next.any(k => k.id == e.id) { continue }
-      next.push(e)
-      added += 1
+      if let at = removed.get(e.id) {
+        if e.updated <= at { continue }
+      }
+      if let at = next.index(k => k.id == e.id) {
+        if e.updated > next[at].updated {
+          next[at] = e
+          changed = true
+        }
+      } else {
+        next.push(e)
+        added += 1
+        changed = true
+      }
     }
-    if added > 0 { entries = next }
+    if changed { entries = next }
     return added
   }
 
@@ -79,32 +116,75 @@ pub store Sources {
 
   pub fn has(url: string) -> bool = entries.any(e => e.url == url)
 
+  /// 一次改一条或一批：批量是同一个写回，列表不会每行都写一次。
   pub fn setEnabled(id: string, on: bool) {
+    setEnabledMany([id], on)
+  }
+
+  pub fn setEnabledMany(ids: [string], on: bool) {
     var next: [Entry] = []
     for e in entries {
-      var row = e
-      if e.id == id { row.enabled = on }
-      next.push(row)
+      if ids.contains(e.id) && e.enabled != on {
+        var row = e
+        row.enabled = on
+        row.updated = touch(row.updated)
+        next.push(row)
+      } else {
+        next.push(e)
+      }
     }
     entries = next
   }
 
   pub fn setGroup(id: string, group: string) {
+    setGroupMany([id], group)
+  }
+
+  pub fn setGroupMany(ids: [string], group: string) {
     var next: [Entry] = []
     for e in entries {
-      var row = e
-      if e.id == id { row.group = group }
-      next.push(row)
+      if ids.contains(e.id) && e.group != group {
+        var row = e
+        row.group = group
+        row.updated = touch(row.updated)
+        next.push(row)
+      } else {
+        next.push(e)
+      }
     }
     entries = next
   }
 
   pub fn remove(id: string) {
-    entries.removeWhere(e => e.id == id)
+    removeMany([id])
+  }
+
+  pub fn removeMany(ids: [string]) {
+    var next: [Entry] = []
+    for e in entries {
+      if ids.contains(e.id) {
+        removed[e.id] = tombstone(e.updated)
+      } else {
+        next.push(e)
+      }
+    }
+    entries = next
   }
 
   pub fn clear() {
+    for e in entries {
+      removed[e.id] = tombstone(e.updated)
+    }
     entries = []
+  }
+
+  /// 同步用的快照：现在还在的书源，和本机记下的删除。
+  pub fn syncState() -> SyncState = SyncState(entries: entries, removed: removed)
+
+  /// 同步合并后的结果写回本机。
+  pub fn applySync(state: SyncState) {
+    entries = state.entries
+    removed = state.removed
   }
 
   /// 一段书源 JSON（单个或一份合集）导进来。读不出来的条目只计数，不停
@@ -124,14 +204,22 @@ pub store Sources {
       }
       let name = nameOf(v)
       let def = try? decodeSource(v)
+      let id = crypto.sha256(url.bytes()).hex()
+      // 刚删掉的源又导进来：它比墓碑新，下一次同步不该再把它删掉。
+      var stamp = time.now().unix()
+      if let at = removed.get(id) {
+        if stamp <= at { stamp = at + 1 }
+      }
+      removed.remove(id)
       entries.push(Entry(
-        id: crypto.sha256(url.bytes()).hex(),
+        id: id,
         name: name,
         group: def?.bookSourceGroup ?? "",
         url: url,
         enabled: def?.enabled ?? true,
         json: "{v}",
-        added: time.now().unix(),
+        added: stamp,
+        updated: stamp,
       ))
       report.added += 1
       report.names.push(name)

@@ -39,17 +39,20 @@ struct ExploreSource {
   categories: [sources.ExploreCategory]
 }
 
-fn exploreSources(all: sources.Sources) -> [ExploreSource] {
-  var out: [ExploreSource] = []
-  for e in all.enabled() {
-    if let d = all.definition(e) {
-      let categories = sources.exploreCategories(d)
-      if !categories.isEmpty() {
-        out.push(ExploreSource(id: e.id, name: e.name, group: e.group, categories: categories))
-      }
+async fn exploreSourceOf(store: sources.Sources, e: sources.Entry) -> ExploreSource? {
+  if let d = store.definition(e) {
+    let categories = await sources.exploreCategoriesOf(d)
+    if !categories.isEmpty() {
+      return ExploreSource(id: e.id, name: e.name, group: e.group, categories: categories)
     }
   }
-  return out
+  return none
+}
+
+async fn exploreSources(store: sources.Sources) -> [ExploreSource] {
+  // 分类可能要从地址取回来：一两个书源慢，不要挡住其余书源。
+  let rows = await all(store.enabled(), e => await exploreSourceOf(store, e), limit: 6)
+  return rows.compactMap(r => r)
 }
 
 /// 书名变成文件名：路径里不能有的字符换成下划线。
@@ -68,6 +71,8 @@ fn fileTitle(title: string) -> string {
 
 /// 搜索结果里的一条：封面、书名、作者，和它来自哪个书源。
 component ResultRow(hit: Hit) {
+  /// 合并重复书时，这个书名+作者还在另外几个书源里。
+  prop also = 0
   event open
 
   Row {
@@ -97,7 +102,7 @@ component ResultRow(hit: Hit) {
           lines: 1
         }
       }
-      Text(hit.sourceName) {
+      Text(if also > 0 { "{hit.sourceName} · 还有 {also} 个书源" } else { hit.sourceName }) {
         font: .caption
         color: .tertiaryLabel
         lines: 1
@@ -394,13 +399,146 @@ component ChapterBody(text: string) {
   }
 }
 
-/// 书源列表：开关、分组和删除。新书源从「导入」进来。
+/// 书源列表里的分组：空组用这个键，显示成「未分组」。
+let sourceUngrouped = "__ungrouped__"
+
+struct SourceSection {
+  key: string
+  title: string
+  rows: [sources.Entry]
+}
+
+fn sourceGroupNames(all: [sources.Entry]) -> [string] {
+  var names: [string] = []
+  for e in all {
+    let groups = sources.entryGroups(e)
+    if groups.isEmpty() {
+      if !names.contains(sourceUngrouped) { names.push(sourceUngrouped) }
+    } else {
+      for g in groups {
+        if !names.contains(g) { names.push(g) }
+      }
+    }
+  }
+  names.sort()
+  if names.contains(sourceUngrouped) {
+    names.removeWhere(n => n == sourceUngrouped)
+    names.push(sourceUngrouped)
+  }
+  return names
+}
+
+fn sourceSections(all: [sources.Entry], filter: string) -> [SourceSection] {
+  var out: [SourceSection] = []
+  for name in sourceGroupNames(all) {
+    if !filter.isEmpty() && filter != name { continue }
+    var rows: [sources.Entry] = []
+    for e in all {
+      let groups = sources.entryGroups(e)
+      let inGroup = if name == sourceUngrouped { groups.isEmpty() } else { groups.contains(name) }
+      if inGroup { rows.push(e) }
+    }
+    rows.sort(key: e => e.name)
+    if !rows.isEmpty() {
+      out.push(SourceSection(
+        key: name,
+        title: if name == sourceUngrouped { "未分组" } else { name },
+        rows: rows,
+      ))
+    }
+  }
+  return out
+}
+
+component SourceFilterChip(title: string, selected: bool) {
+  event choose
+
+  Button(title) {
+    variant: if selected { .tinted } else { .bordered }
+    on press { emit choose }
+  }
+}
+
+/// 书源列表：按分组排，可以选择一批一起开关、分组或删除。新书源从
+/// 「导入」进来。
 component SourceManager {
   use allSources: sources.Sources
 
+  state selecting = false
+  state selected: [string] = []
+  state filter = ""
+  state moving = false
+  state groupText = ""
+
+  let all = allSources.list()
+  let filters = sourceGroupNames(all)
+  let sections = sourceSections(all, filter)
+  let shown = sections.flatMap(section => section.rows)
+  let allSelected = !shown.isEmpty() && shown.all(e => selected.contains(e.id))
+
+  fn toggle(id: string) {
+    if selected.contains(id) {
+      selected.removeWhere(s => s == id)
+    } else {
+      selected.push(id)
+    }
+  }
+
+  fn toggleAll() {
+    if allSelected {
+      selected = []
+      return
+    }
+    var next: [string] = []
+    for e in shown {
+      if !next.contains(e.id) { next.push(e.id) }
+    }
+    selected = next
+  }
+
+  fn toggleGroup(rows: [sources.Entry]) {
+    let allIn = rows.all(e => selected.contains(e.id))
+    var next = selected
+    if allIn {
+      next.removeWhere(s => rows.any(e => e.id == s))
+    } else {
+      for e in rows {
+        if !next.contains(e.id) { next.push(e.id) }
+      }
+    }
+    selected = next
+  }
+
+  fn applyGroup() {
+    if selected.isEmpty() { return }
+    let name = groupText.trim()
+    allSources.setGroupMany(selected, name)
+    moving = false
+    groupText = ""
+    selecting = false
+    selected = []
+    filter = ""
+    snackbar(if name.isEmpty() { "已移到未分组" } else { "已移到「{name}」" })
+  }
+
+  fn askDelete() {
+    if selected.isEmpty() { return }
+    let count = selected.count()
+    alert("删除 {count} 个书源？", message: "书架上的在线书会打不开；删除也会同步到其他设备。", actions: [
+      .button(title: "取消", run: () => {}),
+      .button(title: "删除", role: .destructive, run: () => {
+        allSources.removeMany(selected)
+        selected = []
+        selecting = false
+        filter = ""
+        snackbar("已删除 {count} 个书源")
+      }),
+    ])
+  }
+
   Column {
     grow: 1
-    gap: 14
+    gap: 12
     padding: lib.sheetPad(top: 22, bottom: 26, side: 22)
 
     Row {
@@ -409,6 +547,14 @@ component SourceManager {
       Text("书源") {
         font: .title3
         grow: 1
+      }
+      Button(if selecting { "完成" } else { "选择" }) {
+        variant: .glass
+        on press {
+          selecting = !selecting
+          if !selecting { selected = [] }
+          moving = false
+        }
       }
       Button("") {
         icon: Icons.close
@@ -429,7 +575,7 @@ component SourceManager {
       }
     }
 
-    if allSources.isEmpty() {
+    if all.isEmpty() {
       Column {
         gap: 10
         padding: [20, 0]
@@ -440,42 +586,150 @@ component SourceManager {
           color: .secondaryLabel
           textAlign: .center
         }
+        Button("导入书源") {
+          on press { present(SourceImport()) }
+        }
       }
     } else {
+      if !filters.isEmpty() {
+        Scroll {
+          width: 100%
+          horizontal: true
+          Row {
+            gap: 8
+            SourceFilterChip("全部", filter.isEmpty()) {
+              on choose { filter = "" }
+            }
+            for name in filters key name {
+              SourceFilterChip(if name == sourceUngrouped { "未分组" } else { name }, filter == name) {
+                on choose { filter = name }
+              }
+            }
+          }
+        }
+      }
+
+      if moving {
+        Row {
+          gap: 8
+          align: .center
+          TextField {
+            bind text: groupText
+            placeholder: "分组名称；多个组用逗号分开，留空为未分组"
+            grow: 1
+          }
+          Button("应用") {
+            on press { applyGroup() }
+            disabled: selected.isEmpty()
+          }
+          Button("取消") {
+            variant: .plain
+            on press { moving = false }
+          }
+        }
+      }
+
       List {
         grow: 1
         appearance: .plain
-        for e in allSources.list() key e.id {
-          Row {
-            gap: 10
-            align: .center
-            padding: [9, 0]
-            Column {
-              grow: 1
-              gap: 2
-              Text(e.name) {
-                font: .body
-                lines: 1
+        for section in sections key section.key {
+          Column {
+            Row {
+              gap: 8
+              align: .center
+              padding: [10, 0, 4, 0]
+              on press {
+                if selecting { toggleGroup(section.rows) }
               }
-              Text(if e.group.isEmpty() { e.url } else { "{e.group} · {e.url}" }) {
+              Text(section.title) {
+                font: .caption.bold()
+                color: .secondaryLabel
+                grow: 1
+              }
+              Text("{section.rows.count()}") {
                 font: .caption
                 color: .tertiaryLabel
-                lines: 1
+              }
+              if selecting {
+                Text(if section.rows.all(e => selected.contains(e.id)) { "取消本组" } else { "全选本组" }) {
+                  font: .caption
+                  color: .accent
+                }
               }
             }
-            Toggle {
-              on: e.enabled
-              checkbox: true
-              // iOS 的 checkbox 是自己画的圆形符号，默认的开关高度比符号矮，
-              // 上下会被裁掉；给它够高的框。
-              height: 32
-              on change(v) { allSources.setEnabled(e.id, v) }
+            for e in section.rows key e.id {
+              Row {
+                gap: 10
+                align: .center
+                padding: [9, 0]
+                if selecting {
+                  Toggle {
+                    on: selected.contains(e.id)
+                    checkbox: true
+                    height: 32
+                    on change(v) { toggle(e.id) }
+                  }
+                }
+                Column {
+                  grow: 1
+                  gap: 2
+                  Text(e.name) {
+                    font: .body
+                    lines: 1
+                  }
+                  Text(if e.group.isEmpty() { e.url } else { "{e.group} · {e.url}" }) {
+                    font: .caption
+                    color: .tertiaryLabel
+                    lines: 1
+                  }
+                }
+                if !selecting {
+                  Toggle {
+                    on: e.enabled
+                    checkbox: true
+                    height: 32
+                    on change(v) { allSources.setEnabled(e.id, v) }
+                  }
+                  Button("") {
+                    icon: Icons.trash
+                    variant: .plain
+                    on press {
+                      allSources.remove(e.id)
+                      filter = ""
+                    }
+                  }
+                }
+              }
             }
-            Button("") {
-              icon: Icons.trash
-              variant: .plain
-              on press { allSources.remove(e.id) }
-            }
+          }
+        }
+      }
+
+      if selecting {
+        Row {
+          gap: 10
+          align: .center
+          Button(if allSelected { "全不选" } else { "全选" }) {
+            on press { toggleAll() }
+          }
+          Text("已选 {selected.count()}") {
+            font: .footnote
+            color: .secondaryLabel
+            grow: 1
+          }
+          Button("") {
+            icon: Icons.display
+            variant: .glass
+            tooltip: "批量操作"
+            menu: [
+              .button(title: "启用所选", disabled: selected.isEmpty(), run: () => { allSources.setEnabledMany(selected, true) }),
+              .button(title: "停用所选", disabled: selected.isEmpty(), run: () => { allSources.setEnabledMany(selected, false) }),
+              .button(title: "设置分组", disabled: selected.isEmpty(), run: () => {
+                moving = true
+                groupText = ""
+              }),
+              .button(title: "删除所选", role: .destructive, disabled: selected.isEmpty(), run: () => { askDelete() }),
+            ]
           }
         }
       }
@@ -607,7 +861,63 @@ component SourceImport {
   }
 }
 
-/// 搜索页本身：没有结果时是提示，找到后是列表。
+/// 搜索结果的范围：全部（引擎怎么匹配就怎么算）、书名、作者，或精确
+/// 匹配。Legado 的搜索接口只有一个关键词，所以这些是在结果回来后筛。
+fn hitMatches(hit: Hit, q: string, scope: string) -> bool {
+  let key = q.trim()
+  if key.isEmpty() || scope == "all" { return true }
+  if scope == "title" { return hit.book.name.contains(key, ignoreCase: true) }
+  if scope == "author" { return hit.book.author.contains(key, ignoreCase: true) }
+  if scope == "exact" {
+    return hit.book.name.trim().equals(key, ignoreCase: true) ||
+      hit.book.author.trim().equals(key, ignoreCase: true)
+  }
+  return true
+}
+
+fn scopeName(scope: string) -> string {
+  if scope == "title" { return "书名" }
+  if scope == "author" { return "作者" }
+  if scope == "exact" { return "精确" }
+  return "全部"
+}
+
+/// 列表里的一行：一本书，和合并重复书时它还在几个书源里。
+struct ShownHit {
+  hit: Hit
+  also: int = 0
+}
+
+fn shownHits(results: [Hit], q: string, scope: string, dedupe: bool) -> [ShownHit] {
+  let filtered = results.filter(h => hitMatches(h, q, scope))
+  if !dedupe { return filtered.map(h => ShownHit(hit: h)) }
+  var out: [ShownHit] = []
+  for h in filtered {
+    let key = "{h.book.name.lower()}\n{h.book.author.lower()}"
+    var found = false
+    for i in 0..<out.count() {
+      let at = "{out[i].hit.book.name.lower()}\n{out[i].hit.book.author.lower()}"
+      if at == key {
+        var row = out[i]
+        row.also += 1
+        out[i] = row
+        found = true
+        break
+      }
+    }
+    if !found { out.push(ShownHit(hit: h)) }
+  }
+  return out
+}
+
+struct SearchRequest {
+  token: int = 0
+  q: string = ""
+}
+
+/// 搜索页本身：没有结果时是提示，找到后是列表。一次搜索是一个带版本号
+/// 的 task：再按一次搜索、或点停止，旧的 task 被取消，慢的请求回来也
+/// 不会再写进界面。
 screen Search {
   use allSources: sources.Sources
 
@@ -625,88 +935,131 @@ screen Search {
   /// 这一轮搜到哪儿了：每回来一个书源 +1。结果不再等全部书源。
   state searched = 0
   state failures: [string] = []
-  /// 每开始一轮搜索 +1；慢的旧请求回来时按它丢掉。
-  state runId = 0
-  let env = environment()
+  /// 搜索结果的范围；只影响显示，不会少发一个书源请求。
+  state scope = "all"
+  /// 合并同名同作者的书，只留第一个来源，并标出还有几个来源。
+  state dedupe = false
+  /// 一次请求：token 变了就取消上一轮。
+  state request = SearchRequest()
 
-  on searchSubmit { await run() }
+  let env = environment()
+  let shown = shownHits(results, request.q, scope, dedupe)
+
+  on searchSubmit { start() }
 
   toolbar {
-    Button("书源") {
-      icon: Icons.contents
+    Button(scopeName(scope)) {
+      icon: Icons.display
       variant: .glass
-      tooltip: "管理书源"
-      on press { present(SourceManager()) }
+      tooltip: "搜索范围与结果"
+      menu: [
+        .section(title: "搜索范围", items: [
+          .button(title: "全部", checked: scope == "all", run: () => { scope = "all" }),
+          .button(title: "书名", checked: scope == "title", run: () => { scope = "title" }),
+          .button(title: "作者", checked: scope == "author", run: () => { scope = "author" }),
+          .button(title: "精确匹配", checked: scope == "exact", run: () => { scope = "exact" }),
+        ]),
+        .section(title: "结果", items: [
+          .button(title: "合并重复书", checked: dedupe, run: () => { dedupe = !dedupe }),
+        ]),
+      ]
     }
-    Button("导入书源") {
-      icon: Icons.add
-      variant: .glass
-      tooltip: "导入书源"
-      on press { present(SourceImport()) }
+    if busy {
+      Button("停止") {
+        icon: Icons.close
+        variant: .glass
+        tooltip: "停止这一轮搜索"
+        on press { stop() }
+      }
     }
   }
 
   /// 一个书源回来就写进结果：不再等最慢的那个。
   async fn searchOne(e: sources.Entry, q: string, run: int) -> Outcome {
-    if run != runId { return Outcome() }
+    if request.token != run { return Outcome() }
     let def = allSources.definition(e)
     if def == none {
-      if run == runId {
+      if request.token == run {
         searched += 1
         failures.push("{e.name} 的书源读不出来")
-        note = "已搜 {searched}/{allSources.enabledCount()} 个书源，找到 {results.count()} 本"
       }
       return Outcome(failed: "{e.name} 的书源读不出来")
     }
     do {
       let books = try await sources.search(def!, q, 1)
-      if run != runId { return Outcome() }
+      if request.token != run { return Outcome() }
       let hits = books.map(b => Hit(sourceId: e.id, sourceName: e.name, book: b))
       results = (results + hits).sorted(key: h => h.book.name)
       searched += 1
-      note = "已搜 {searched}/{allSources.enabledCount()} 个书源，找到 {results.count()} 本"
       return Outcome(hits: hits)
     } catch err {
-      if run != runId { return Outcome() }
+      if request.token != run { return Outcome() }
       searched += 1
       failures.push("{e.name}：{err.message}")
-      note = "已搜 {searched}/{allSources.enabledCount()} 个书源，找到 {results.count()} 本"
       return Outcome(failed: "{e.name}：{err.message}")
     }
   }
 
-  async fn run() {
+  fn start() {
     let q = key.trim()
     if q.isEmpty() { return }
     if !sources.bookSourcesAvailable() {
       results = []
       note = "这个平台还没有书源引擎（legado-engine），暂时不能搜索书源"
+      snackbar(note)
       return
     }
-    let list = allSources.enabled()
-    if list.isEmpty() {
+    if allSources.enabledCount() == 0 {
       results = []
-      note = "还没有可用的书源，先导入一个"
+      note = "还没有可用的书源，先去发现页导入一个"
+      snackbar(note)
       return
     }
-    runId += 1
-    let run = runId
+    request = SearchRequest(token: request.token + 1, q: q)
+  }
+
+  fn stop() {
+    if !busy { return }
+    request = SearchRequest(token: request.token + 1, q: "")
+    snackbar("已停止搜索")
+  }
+
+  // 搜索在一个 task 里：request.token 一变（新搜索或停止），上一轮就被
+  // 取消；它正在 await 的 all(...) 也会被取消，而不是留在后台继续跑。
+  task(request.token) {
+    if request.q.isEmpty() {
+      busy = false
+      return
+    }
+    await run(request.q, request.token)
+  }
+
+  async fn run(q: string, run: int) {
     busy = true
     note = ""
     results = []
     failures = []
     searched = 0
+    let total = allSources.enabledCount()
+    snackbar("正在 {total} 个书源里找「{q}」…")
+    let list = allSources.enabled()
     let _outcomes = await all(list, e => await searchOne(e, q, run), limit: 8)
-    if run != runId { return }
+    if request.token != run { return }
     busy = false
-    if results.isEmpty() {
-      note = if failures.isEmpty() {
-        "没有找到「{q}」"
+    let found = shownHits(results, q, scope, dedupe).count()
+    if found == 0 {
+      if !results.isEmpty() {
+        note = "找到 {results.count()} 本，但没有符合「{scopeName(scope)}」这范围的"
+      } else if failures.isEmpty() {
+        note = "没有找到「{q}」"
       } else {
-        "没有找到「{q}」。{failures.first() ?? ""}"
+        note = "没有找到「{q}」。{failures.first() ?? ""}"
       }
+      snackbar(note)
     } else {
-      note = "找到 {results.count()} 本"
+      note = ""
+      let extra = if failures.isEmpty() { "" } else { " · {failures.count()} 个书源失败" }
+      snackbar("找到 {found} 本{extra}")
     }
   }
 
@@ -731,16 +1084,16 @@ screen Search {
         Text("还没有书源") {
           font: .title3
         }
-        Text("书源告诉 Quire 去哪里搜、怎么读一本书。导入一份阅读3.0（Legado）的书源 JSON 就可以开始。") {
+        Text("书源告诉 Quire 去哪里搜、怎么读一本书。去发现页导入一份阅读3.0（Legado）的书源 JSON 就可以开始。") {
           font: .footnote
           color: .secondaryLabel
           textAlign: .center
         }
-        Button("导入书源") {
-          on press { present(SourceImport()) }
+        Button("返回发现页") {
+          on press { pop() }
         }
       }
-    } else if results.isEmpty() {
+    } else if shown.isEmpty() {
       Column {
         grow: 1
         justify: .center
@@ -758,7 +1111,13 @@ screen Search {
             font: .title
             color: .tertiaryLabel
           }
-          Text(if note.isEmpty() { "在 {allSources.enabledCount()} 个书源里搜一本书" } else { note }) {
+          Text(if !note.isEmpty() {
+            note
+          } else if !results.isEmpty() {
+            "没有符合「{scopeName(scope)}」这范围的书"
+          } else {
+            "在 {allSources.enabledCount()} 个书源里搜一本书"
+          }) {
             font: .footnote
             color: .secondaryLabel
             textAlign: .center
@@ -766,25 +1125,16 @@ screen Search {
         }
       }
     } else {
-      Column {
+      List {
+        appearance: .plain
         grow: 1
-        if busy || !note.isEmpty() {
-          Text(if busy { "正在找…" } else { note }) {
-            font: .caption
-            color: .secondaryLabel
-            padding: [8, lib.pageKeyline]
-          }
-        }
-        List {
-          appearance: .plain
-          grow: 1
-          for hit in results key "{hit.sourceId}:{hit.book.bookUrl}" {
-            ResultRow(hit) {
-              on open {
-                push(SearchBook(hit) {
-                  on open(book) { emit open(book) }
-                })
-              }
+        for row in shown key "{row.hit.sourceId}:{row.hit.book.bookUrl}" {
+          ResultRow(row.hit) {
+            also: row.also
+            on open {
+              push(SearchBook(row.hit) {
+                on open(book) { emit open(book) }
+              })
             }
           }
         }
@@ -801,7 +1151,7 @@ screen Discover {
   event open(book: lib.Book)
 
   title: "发现"
-  let rows = exploreSources(allSources)
+  let rows = load exploreSources(allSources)
 
   toolbar {
     Button("搜索") {
@@ -814,63 +1164,104 @@ screen Discover {
         })
       }
     }
+    Button("导入") {
+      icon: Icons.add
+      variant: .glass
+      tooltip: "导入书源"
+      on press { present(SourceImport()) }
+    }
+    Button("书源管理") {
+      icon: Icons.contents
+      variant: .glass
+      tooltip: "管理书源"
+      on press { present(SourceManager()) }
+    }
   }
 
   View {
     grow: 1
     background: .background
-    if rows.isEmpty() {
-      Column {
+    match rows {
+      .pending => Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        ProgressRing {}
+        Text("正在读取书源的发现页…") {
+          font: .footnote
+          color: .secondaryLabel
+        }
+      }
+      .failed(e) => Column {
         grow: 1
         justify: .center
         align: .center
         gap: 12
         padding: [24, 40]
-        Symbol(Icons.globe) {
-          font: .title
-          color: .tertiaryLabel
-        }
-        Text("没有带发现页的书源") {
-          font: .headline
-        }
-        Text("这个书源的 exploreUrl 是空的，或者还没有启用。") {
+        Text("发现页没有读出来") { font: .headline }
+        Text(e.message) {
           font: .footnote
           color: .secondaryLabel
           textAlign: .center
         }
+        Button("重试") {
+          on press { rows.reload() }
+        }
       }
-    } else {
-      List {
-        appearance: .plain
-        grow: 1
-        for row in rows key row.id {
-          Row {
-            gap: 12
-            align: .center
-            padding: [13, lib.pageKeyline]
-            on press {
-              push(DiscoverSource(row) {
-                on open(book) { emit open(book) }
-              })
-            }
-            Column {
-              grow: 1
-              gap: 3
-              Text(row.name) {
-                font: .body
+      .ready(list) => if list.isEmpty() {
+        Column {
+          grow: 1
+          justify: .center
+          align: .center
+          gap: 12
+          padding: [24, 40]
+          Symbol(Icons.globe) {
+            font: .title
+            color: .tertiaryLabel
+          }
+          Text("没有带发现页的书源") {
+            font: .headline
+          }
+          Text("这个书源的 exploreUrl 是空的，或者还没有启用。导入或管理书源在右上角。") {
+            font: .footnote
+            color: .secondaryLabel
+            textAlign: .center
+          }
+        }
+      } else {
+        List {
+          appearance: .plain
+          grow: 1
+          for row in list key row.id {
+            Row {
+              gap: 12
+              align: .center
+              padding: [13, lib.pageKeyline]
+              on press {
+                push(DiscoverSource(row) {
+                  on open(book) { emit open(book) }
+                })
               }
-              Text(if row.group.isEmpty() { "{row.categories.count()} 个分类" } else { "{row.group} · {row.categories.count()} 个分类" }) {
+              Column {
+                grow: 1
+                gap: 3
+                Text(row.name) {
+                  font: .body
+                }
+                Text(if row.group.isEmpty() { "{row.categories.count()} 个分类" } else { "{row.group} · {row.categories.count()} 个分类" }) {
+                  font: .caption
+                  color: .tertiaryLabel
+                }
+              }
+              Text("{row.categories.count()}") {
                 font: .caption
                 color: .tertiaryLabel
               }
-            }
-            Text("{row.categories.count()}") {
-              font: .caption
-              color: .tertiaryLabel
-            }
-            Symbol(Icons.disclosure) {
-              font: .caption
-              color: .tertiaryLabel
+              Symbol(Icons.disclosure) {
+                font: .caption
+                color: .tertiaryLabel
+              }
             }
           }
         }
@@ -937,12 +1328,18 @@ screen DiscoverList(row: ExploreHit) {
   event open(book: lib.Book)
 
   title: row.category.title
+  let target = row.category.url
   let books = load booksOf(row)
 
   async fn booksOf(the: ExploreHit) throws -> [sources.Book] {
+    if the.category.url.trim().isEmpty() { throw Error("这个分类没有地址") }
     let def = allSources.definitionOf(the.sourceId)
     if def == none { throw Error("这个书源已经不在列表里了") }
-    return try await sources.explore(def!, the.category.url)
+    // 有些书源自己的发现页会绕远路；到了时间还没回来，说清楚，而不是
+    // 一直停在“正在打开”。
+    return try await withTimeout(20s) {
+      return try await sources.explore(def!, the.category.url)
+    }
   }
 
   View {
@@ -954,10 +1351,17 @@ screen DiscoverList(row: ExploreHit) {
         justify: .center
         align: .center
         gap: 12
+        padding: [24, 40]
         ProgressRing {}
         Text("正在打开「{row.category.title}」…") {
           font: .footnote
           color: .secondaryLabel
+        }
+        Text(target) {
+          font: .caption2
+          color: .tertiaryLabel
+          textAlign: .center
+          lines: 2
         }
       }
       .failed(e) => Column {
@@ -971,6 +1375,12 @@ screen DiscoverList(row: ExploreHit) {
           font: .footnote
           color: .secondaryLabel
           textAlign: .center
+        }
+        Text(target) {
+          font: .caption2
+          color: .tertiaryLabel
+          textAlign: .center
+          lines: 2
         }
         Button("重试") {
           on press { books.reload() }
