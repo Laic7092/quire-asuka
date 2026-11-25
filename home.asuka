@@ -349,7 +349,6 @@ screen Home {
   state showingProfile = false
 
   title: "首页"
-  largeTitle: true
 
   // 我 sits at the top right of the bar, not in the page's first line.
   toolbar {

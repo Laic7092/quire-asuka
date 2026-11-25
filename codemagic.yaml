@@ -1,10 +1,11 @@
 # Quire on Codemagic (https://codemagic.io): the same two jobs as
 # .github/workflows/ios.yml, for a repository whose builds run there too.
 #
-# Nothing here builds the book engine: it's released (ebook-engine's
-# Releases) with one static library per target, and each workflow downloads
-# the one it links — no Rust toolchain, no cargo cache, no compile.
-# ENGINE_VERSION is the engine release this app is written against (README).
+# Nothing here builds the engines: ebook-engine and legado-engine are
+# released with one static library per target, and each workflow downloads
+# the ones it links — no Rust toolchain, no cargo cache, no compile.
+# ENGINE_VERSION and LEGADO_VERSION are the releases this app is written
+# against (README).
 #
 # Codemagic reads this file from the repository root; automatic builds also
 # need a webhook created under the app's Webhooks settings. Docs ignore
@@ -54,7 +55,8 @@ workflows:
     environment:
       <<: *xcode
       vars:
-        ENGINE_VERSION: v0.3.0
+        ENGINE_VERSION: v0.3.1
+        LEGADO_VERSION: v0.2.0
     cache: *asuka_cache
     when: *skip_docs
     triggering:
@@ -72,9 +74,11 @@ workflows:
       # reader.asuka embeds the font, and the repository doesn't carry it:
       # the script downloads the pinned WOFF.
       - *fetch_font
-      # The tests link the engine, so they need this machine's library.
-      - name: Fetch the engine
-        script: bash .github/scripts/fetch-engine.sh macos-arm64
+      # The tests link the engines, so they need this machine's libraries.
+      - name: Fetch the engines
+        script: |
+          bash .github/scripts/fetch-engine.sh macos-arm64
+          bash .github/scripts/fetch-legado.sh macos-arm64
       - *install_asuka
       - name: Check and test
         script: |
@@ -95,7 +99,8 @@ workflows:
     environment:
       <<: *xcode
       vars:
-        ENGINE_VERSION: v0.3.0
+        ENGINE_VERSION: v0.3.1
+        LEGADO_VERSION: v0.2.0
     cache: *asuka_cache
     when: *skip_docs
     triggering:
@@ -112,10 +117,12 @@ workflows:
       cancel_previous_builds: true
     scripts:
       - *fetch_font
-      # The device's library only: a simulator's is for whoever builds for
-      # one.
-      - name: Fetch the engine
-        script: bash .github/scripts/fetch-engine.sh ios-arm64
+      # The device's libraries only: a simulator's are for whoever builds for
+      # one (legado-engine doesn't release a simulator slice).
+      - name: Fetch the engines
+        script: |
+          bash .github/scripts/fetch-engine.sh ios-arm64
+          bash .github/scripts/fetch-legado.sh ios-arm64
       - *install_asuka
       - name: Check
         script: |

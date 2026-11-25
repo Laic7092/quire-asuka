@@ -18,6 +18,9 @@ import ../sources
 pub struct TocEntry {
   title: string
   url: string
+  isVip: bool = false
+  isPay: bool = false
+  isVolume: bool = false
 }
 
 pub struct Meta {
@@ -77,7 +80,13 @@ pub fn buildMeta(d: sources.Detail, sourceId: string) -> Meta {
     updated: time.now().unix(),
   )
   for c in d.chapters {
-    meta.toc.push(TocEntry(title: c.title, url: c.url))
+    meta.toc.push(TocEntry(
+      title: c.title,
+      url: c.url,
+      isVip: c.isVip,
+      isPay: c.isPay,
+      isVolume: c.isVolume,
+    ))
   }
   meta.chapterCount = meta.toc.count()
   meta.stamp = stampOf(meta.toc)
@@ -108,7 +117,25 @@ pub async fn chapterText(def: sources.BookSource, id: string, meta: Meta, at: in
   let path = chapterPath(id, at)
   if let text = try? fs.readText(path) { return text }
   if at < 0 || at >= meta.toc.count() { throw Error("这本书没有第 {at + 1} 章") }
-  let text = try await sources.content(def, meta.toc[at].url)
+  let entry = meta.toc[at]
+  // 正文的规则可能读这本书的字段（书名、作者、目录地址）和这一章的标题。
+  let book = sources.Book(
+    name: meta.name,
+    author: meta.author,
+    kind: meta.kind,
+    intro: meta.intro,
+    coverUrl: meta.coverUrl,
+    bookUrl: meta.bookUrl,
+    tocUrl: meta.tocUrl,
+  )
+  let text = try await sources.contentOf(def, book, sources.Chapter(
+    title: entry.title,
+    url: entry.url,
+    index: at,
+    isVip: entry.isVip,
+    isPay: entry.isPay,
+    isVolume: entry.isVolume,
+  ))
   try? await spawn { try fs.mkdirAll(chaptersDir(id)) }
   try? await spawn { try fs.writeText(path, text: text) }
   return text

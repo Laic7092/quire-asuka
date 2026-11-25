@@ -24,6 +24,34 @@ struct Outcome {
   failed: string = ""
 }
 
+/// 发现页的一栏：哪个书源的哪个分类。
+struct ExploreHit {
+  sourceId: string
+  sourceName: string
+  category: sources.ExploreCategory
+}
+
+/// 发现页的第一层：带 exploreUrl 的书源，各自带着自己的分类。
+struct ExploreSource {
+  id: string
+  name: string
+  group: string
+  categories: [sources.ExploreCategory]
+}
+
+fn exploreSources(all: sources.Sources) -> [ExploreSource] {
+  var out: [ExploreSource] = []
+  for e in all.enabled() {
+    if let d = all.definition(e) {
+      let categories = sources.exploreCategories(d)
+      if !categories.isEmpty() {
+        out.push(ExploreSource(id: e.id, name: e.name, group: e.group, categories: categories))
+      }
+    }
+  }
+  return out
+}
+
 /// 书名变成文件名：路径里不能有的字符换成下划线。
 fn fileTitle(title: string) -> string {
   var out = ""
@@ -97,6 +125,15 @@ component RemoteCover(url: string) {
         mode: .fill
       }
     }
+  }
+}
+
+/// 发现页的一条结果：和搜索的一条一样，只是从分类来。
+component ExploreResultRow(row: ExploreHit, book: sources.Book) {
+  event open
+
+  ResultRow(Hit(sourceId: row.sourceId, sourceName: row.sourceName, book: book)) {
+    on open { emit open }
   }
 }
 
@@ -296,7 +333,7 @@ screen SearchChapter(hit: Hit, chapter: sources.Chapter) {
     for e in allSources.list() {
       if e.id == the.sourceId {
         if let def = allSources.definition(e) {
-          return try await sources.content(def, c.url)
+          return try await sources.contentOf(def, the.book, c)
         }
         break
       }
@@ -385,6 +422,13 @@ component SourceManager {
       color: .secondaryLabel
     }
 
+    if !sources.bookSourcesAvailable() {
+      Text("这个平台还没有书源引擎（legado-engine），导入的书源暂时不能搜索。") {
+        font: .footnote
+        color: .secondaryLabel
+      }
+    }
+
     if allSources.isEmpty() {
       Column {
         gap: 10
@@ -448,6 +492,12 @@ component SourceImport {
   state address = ""
   state busy = false
   state note = ""
+
+  let engineNote = if sources.bookSourcesAvailable() {
+    "书源规则与 JavaScript 由 {sources.nativeVersion()} 执行；cookie 和书源变量存在应用目录里。"
+  } else {
+    "这个平台还没有书源引擎（legado-engine），导入的书源暂时不能搜索。"
+  }
 
   async fn run() {
     if busy { return }
@@ -550,7 +600,7 @@ component SourceImport {
       }
     }
 
-    Text("Quire 按 Legado 的规则读书源：CSS / XPath / JSONPath 和字符串模板。需要执行 JavaScript 的书源只能读到它们写死的部分。") {
+    Text(engineNote) {
       font: .caption
       color: .tertiaryLabel
     }
@@ -565,13 +615,21 @@ screen Search {
   event open(book: lib.Book)
 
   title: "搜索"
-  largeTitle: true
+  bind search: key
+  searchPlaceholder: "书名或作者"
 
   state key = ""
   state busy = false
   state results: [Hit] = []
   state note = ""
+  /// 这一轮搜到哪儿了：每回来一个书源 +1。结果不再等全部书源。
+  state searched = 0
+  state failures: [string] = []
+  /// 每开始一轮搜索 +1；慢的旧请求回来时按它丢掉。
+  state runId = 0
   let env = environment()
+
+  on searchSubmit { await run() }
 
   toolbar {
     Button("书源") {
@@ -588,15 +646,31 @@ screen Search {
     }
   }
 
-  async fn searchOne(e: sources.Entry, q: string) -> Outcome {
+  /// 一个书源回来就写进结果：不再等最慢的那个。
+  async fn searchOne(e: sources.Entry, q: string, run: int) -> Outcome {
+    if run != runId { return Outcome() }
     let def = allSources.definition(e)
     if def == none {
+      if run == runId {
+        searched += 1
+        failures.push("{e.name} 的书源读不出来")
+        note = "已搜 {searched}/{allSources.enabledCount()} 个书源，找到 {results.count()} 本"
+      }
       return Outcome(failed: "{e.name} 的书源读不出来")
     }
     do {
       let books = try await sources.search(def!, q, 1)
-      return Outcome(hits: books.map(b => Hit(sourceId: e.id, sourceName: e.name, book: b)))
+      if run != runId { return Outcome() }
+      let hits = books.map(b => Hit(sourceId: e.id, sourceName: e.name, book: b))
+      results = (results + hits).sorted(key: h => h.book.name)
+      searched += 1
+      note = "已搜 {searched}/{allSources.enabledCount()} 个书源，找到 {results.count()} 本"
+      return Outcome(hits: hits)
     } catch err {
+      if run != runId { return Outcome() }
+      searched += 1
+      failures.push("{e.name}：{err.message}")
+      note = "已搜 {searched}/{allSources.enabledCount()} 个书源，找到 {results.count()} 本"
       return Outcome(failed: "{e.name}：{err.message}")
     }
   }
@@ -604,89 +678,44 @@ screen Search {
   async fn run() {
     let q = key.trim()
     if q.isEmpty() { return }
+    if !sources.bookSourcesAvailable() {
+      results = []
+      note = "这个平台还没有书源引擎（legado-engine），暂时不能搜索书源"
+      return
+    }
     let list = allSources.enabled()
     if list.isEmpty() {
       results = []
       note = "还没有可用的书源，先导入一个"
       return
     }
+    runId += 1
+    let run = runId
     busy = true
     note = ""
-    let outcomes = await all(list, e => await searchOne(e, q), limit: 4)
-    var hits: [Hit] = []
-    var failed: [string] = []
-    for o in outcomes {
-      hits = hits + o.hits
-      if !o.failed.isEmpty() { failed.push(o.failed) }
-    }
-    hits = hits.sorted(key: h => h.book.name)
-    results = hits
+    results = []
+    failures = []
+    searched = 0
+    let _outcomes = await all(list, e => await searchOne(e, q, run), limit: 8)
+    if run != runId { return }
     busy = false
-    if hits.isEmpty() {
-      note = if failed.isEmpty() {
+    if results.isEmpty() {
+      note = if failures.isEmpty() {
         "没有找到「{q}」"
       } else {
-        "没有找到「{q}」。{failed.first() ?? ""}"
+        "没有找到「{q}」。{failures.first() ?? ""}"
       }
+    } else {
+      note = "找到 {results.count()} 本"
     }
   }
 
   // 上下的安全区不能整页套 SafeArea：结果列表自己会按 tab 栏调整，
-  // 再让一次就滚不到玻璃下面。左右让开，顶部的搜索行自己加 safeTop。
+  // 再让一次就滚不到玻璃下面。左右让开；搜索框在导航栏里，内容从栏下开始。
   View {
     grow: 1
     padding: [0, env.safeLeft, 0, env.safeRight]
     background: .background
-
-    // 搜索框和按钮常驻在第一行，不再依赖右上角的系统搜索按钮。
-    Row {
-      gap: 8
-      align: .center
-      padding: [env.safeTop + 10, lib.pageKeyline, 10, lib.pageKeyline]
-
-      // iOS 原生搜索框是灰底圆角、带放大镜和清除按钮的 UISearchTextField；
-      // 裸 UITextField 只有一圈旧式圆角边框，看着像拼上去的。这里自己
-      // 做出那层壳，输入本身仍然走原生 TextField。
-      Row {
-        gap: 6
-        align: .center
-        grow: 1
-        shrink: 1
-        basis: 0
-        height: 36
-        padding: [0, 10]
-        radius: 10
-        background: .secondaryBackground
-        Symbol(Icons.search) {
-          font: .subheadline
-          color: .secondaryLabel
-        }
-        TextField {
-          bind text: key
-          plain: true
-          grow: 1
-          shrink: 1
-          minWidth: 0
-          placeholder: "书名或作者"
-          autocapitalize: .off
-          autocorrect: .no
-          returnKey: .search
-          on submit { await run() }
-        }
-        if !key.isEmpty() {
-          Button("") {
-            icon: Icons.close
-            variant: .plain
-            on press { key = "" }
-          }
-        }
-      }
-
-      Button("搜索") {
-        variant: .tinted
-        on press { await run() }
-      }
-    }
 
     if allSources.isEmpty() {
       Column {
@@ -720,7 +749,7 @@ screen Search {
         padding: [24, 40, env.safeBottom + 24, 40]
         if busy {
           ProgressRing {}
-          Text("正在 {allSources.enabledCount()} 个书源里找…") {
+          Text("正在 {allSources.enabledCount()} 个书源里找…（{searched}/{allSources.enabledCount()}）") {
             font: .footnote
             color: .secondaryLabel
           }
@@ -754,6 +783,224 @@ screen Search {
               on open {
                 push(SearchBook(hit) {
                   on open(book) { emit open(book) }
+                })
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// 发现：带 exploreUrl 的书源。先列书源，再列它自己的分类；走的是
+/// 引擎的 `legado_explore`，和搜索共用同一套规则、JavaScript 和 cookie。
+screen Discover {
+  use allSources: sources.Sources
+
+  event open(book: lib.Book)
+
+  title: "发现"
+  let rows = exploreSources(allSources)
+
+  toolbar {
+    Button("搜索") {
+      icon: Icons.search
+      variant: .glass
+      tooltip: "搜索书源"
+      on press {
+        push(Search() {
+          on open(book) { emit open(book) }
+        })
+      }
+    }
+  }
+
+  View {
+    grow: 1
+    background: .background
+    if rows.isEmpty() {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        padding: [24, 40]
+        Symbol(Icons.globe) {
+          font: .title
+          color: .tertiaryLabel
+        }
+        Text("没有带发现页的书源") {
+          font: .headline
+        }
+        Text("这个书源的 exploreUrl 是空的，或者还没有启用。") {
+          font: .footnote
+          color: .secondaryLabel
+          textAlign: .center
+        }
+      }
+    } else {
+      List {
+        appearance: .plain
+        grow: 1
+        for row in rows key row.id {
+          Row {
+            gap: 12
+            align: .center
+            padding: [13, lib.pageKeyline]
+            on press {
+              push(DiscoverSource(row) {
+                on open(book) { emit open(book) }
+              })
+            }
+            Column {
+              grow: 1
+              gap: 3
+              Text(row.name) {
+                font: .body
+              }
+              Text(if row.group.isEmpty() { "{row.categories.count()} 个分类" } else { "{row.group} · {row.categories.count()} 个分类" }) {
+                font: .caption
+                color: .tertiaryLabel
+              }
+            }
+            Text("{row.categories.count()}") {
+              font: .caption
+              color: .tertiaryLabel
+            }
+            Symbol(Icons.disclosure) {
+              font: .caption
+              color: .tertiaryLabel
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// 发现页的第二层：一个书源自己的分类。
+screen DiscoverSource(row: ExploreSource) {
+  event open(book: lib.Book)
+
+  title: row.name
+
+  View {
+    grow: 1
+    background: .background
+    if row.categories.isEmpty() {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 10
+        padding: [24, 40]
+        Text("这个书源没有分类") {
+          font: .footnote
+          color: .secondaryLabel
+        }
+      }
+    } else {
+      List {
+        appearance: .plain
+        grow: 1
+        for (i, category) in row.categories.enumerated() key i {
+          Row {
+            gap: 10
+            align: .center
+            padding: [12, lib.pageKeyline]
+            on press {
+              push(DiscoverList(ExploreHit(sourceId: row.id, sourceName: row.name, category: category)) {
+                on open(book) { emit open(book) }
+              })
+            }
+            Text(category.title) {
+              font: .body
+              grow: 1
+              lines: 2
+            }
+            Symbol(Icons.disclosure) {
+              font: .caption
+              color: .tertiaryLabel
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// 一个发现分类里的书。点一本和搜索结果一样，进详情。
+screen DiscoverList(row: ExploreHit) {
+  use allSources: sources.Sources
+
+  event open(book: lib.Book)
+
+  title: row.category.title
+  let books = load booksOf(row)
+
+  async fn booksOf(the: ExploreHit) throws -> [sources.Book] {
+    let def = allSources.definitionOf(the.sourceId)
+    if def == none { throw Error("这个书源已经不在列表里了") }
+    return try await sources.explore(def!, the.category.url)
+  }
+
+  View {
+    grow: 1
+    background: .background
+    match books {
+      .pending => Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        ProgressRing {}
+        Text("正在打开「{row.category.title}」…") {
+          font: .footnote
+          color: .secondaryLabel
+        }
+      }
+      .failed(e) => Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        padding: [24, 40]
+        Text("这个分类没有打开") { font: .headline }
+        Text(e.message) {
+          font: .footnote
+          color: .secondaryLabel
+          textAlign: .center
+        }
+        Button("重试") {
+          on press { books.reload() }
+        }
+      }
+      .ready(list) => if list.isEmpty() {
+        Column {
+          grow: 1
+          justify: .center
+          align: .center
+          gap: 10
+          padding: [24, 40]
+          Symbol(Icons.globe) {
+            font: .title
+            color: .tertiaryLabel
+          }
+          Text("这个分类里没有书") {
+            font: .footnote
+            color: .secondaryLabel
+          }
+        }
+      } else {
+        List {
+          appearance: .plain
+          grow: 1
+          for (i, book) in list.enumerated() key i {
+            ExploreResultRow(row, book) {
+              on open {
+                push(SearchBook(Hit(sourceId: row.sourceId, sourceName: row.sourceName, book: book)) {
+                  on open(b) { emit open(b) }
                 })
               }
             }

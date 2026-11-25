@@ -20,17 +20,44 @@ test "a single source reads too" {
   expect(baseUrlOf(def) == "http://x.test")
 }
 
-test "the address fills in its templates" {
-  let list = try parseList(sample)
-  let def = try decodeSource(list[0])
-  let env = Env(base: baseUrlOf(def), key: "剑", page: 2, vars: varsOf(def))
-  let (target, _) = addressOf(def.searchUrl, def, env)
-  expect(target == "https://x.test/search?q=%E5%89%91&p=2")
-}
-
 test "headers and variables are JSON in a string" {
   let list = try parseList(sample)
   let def = try decodeSource(list[0])
   expect(headersOf(def).get("User-Agent") == "UA")
   expect(varsOf(def).get("host") == "h")
+}
+
+test "a source keeps the JSON the app doesn't interpret" {
+  let one = r#"{"bookSourceName":"一个","bookSourceUrl":"x.test","searchUrl":"/s?q={{key}}","loginUrl":"/login"}"#
+  let def = try decodeSource(try parseList(one)[0])
+  expect(def.raw.contains("\"loginUrl\""))
+  expect(def.raw.contains("x.test"))
+}
+
+test "exploreUrl reads its categories" {
+  let one = r#"{"bookSourceName":"一个","bookSourceUrl":"x.test","exploreUrl":"[{\"title\":\"玄幻\",\"url\":\"/list?p={{page}}\"},{\"title\":\"\",\"url\":\"/all\"}]"}"#
+  let def = try decodeSource(try parseList(one)[0])
+  let categories = exploreCategories(def)
+  expect(categories.count() == 2)
+  expect(categories[0].title == "玄幻")
+  expect(categories[0].url.contains("/list"))
+  expect(categories[1].title == "分类 2")
+}
+
+test "a plain exploreUrl is one category" {
+  let one = r#"{"bookSourceName":"一个","bookSourceUrl":"x.test","exploreUrl":"/all?p={{page}}"}"#
+  let def = try decodeSource(try parseList(one)[0])
+  let categories = exploreCategories(def)
+  expect(categories.count() == 1)
+  expect(categories[0].title == "发现")
+  expect(categories[0].url.contains("/all"))
+}
+
+test "exploreUrl also accepts a plain list of addresses" {
+  let one = r#"{"bookSourceName":"一个","bookSourceUrl":"x.test","exploreUrl":"[\"/a\",\"/b\"]"}"#
+  let def = try decodeSource(try parseList(one)[0])
+  let categories = exploreCategories(def)
+  expect(categories.count() == 2)
+  expect(categories[0].url == "/a")
+  expect(categories[1].url == "/b")
 }

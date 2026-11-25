@@ -756,10 +756,10 @@ component Reader(book: lib.Book) {
   /// 整本，windowBase 永远是 0。
   state windowBase = 0
   state windowTotal = 0
-  /// 这一窗里哪些章的正文已经在引擎里（全书章号），和取过但没取到的：换窗
-  /// 时清掉，取不到的不在同一窗里反复重试。
+  /// 这一窗里哪些章的正文已经在引擎里（全书章号）：换窗时清掉。取失败的
+  /// 章不在这里，下次翻到还会再试；不把“试过”提前记下来，否则一次取消
+  /// 就把它永久卡在占位上。
   state loadedChapters: [int] = []
-  state triedChapters: [int] = []
   /// 引擎里这些章的正文换过几次：每换一次，页和带子都该重画。
   state chapterRev = 0
   /// 在线书的目录（全书下标）；空的时候用引擎自己的目录。
@@ -1656,7 +1656,9 @@ component Reader(book: lib.Book) {
   }
 
   // 在线书：读到哪一章取哪一章，顺手取后面两章。整本不下载；一窗取完才换窗。
-  task("{spine}:{hereChapter}:{windowTick}:{columnReady}:{chapterRev}") {
+  // 这个 task 不跟 `chapterRev`：取到正文会写它，跟了就等于每次成功都
+  // 把自己重启、在 `await` 处取消掉，后面的 loadedChapters 来不及记。
+  task("{spine}:{hereChapter}:{windowTick}:{columnReady}") {
     if !windowed || engineId <= 0 { return }
     let at = if library.mode == "scroll" { hereChapter } else { windowBase + spine }
     await ensureChapter(at)
@@ -1760,9 +1762,8 @@ component Reader(book: lib.Book) {
     }
     windowBase = base
     loadedChapters = []
-    triedChapters = []
     // 要读的那一章先取：正文到了才排版，读者看不见占位。
-    if await loadChapter(target) {
+    if await loadChapter(target, redraw: false) {
       loadedChapters = loadedChapters + [target]
     } else {
       snackbar("这一章的正文没有读到")
@@ -1783,7 +1784,7 @@ component Reader(book: lib.Book) {
 
   /// 取一章的正文，填进引擎里它自己的位置：在线书从书源取，大 TXT 从文件
   /// 里读那一段。
-  async fn loadChapter(at: int) -> bool {
+  async fn loadChapter(at: int, redraw: bool = true) -> bool {
     if engineId <= 0 || at < 0 || at >= windowTotal { return false }
     let local = at - windowBase
     if local < 0 || local >= engine.chapterCount(engineId) { return false }
@@ -1800,7 +1801,7 @@ component Reader(book: lib.Book) {
     if engineId <= 0 || at - windowBase != local { return false }
     let body = lib.chapterBody(text ?? "", at: at)
     let ok = engine.replaceChapter(engineId, spine: local, title: chapterTitleOf(at), text: body)
-    if ok { chapterRev += 1 }
+    if ok && redraw { chapterRev += 1 }
     return ok
   }
 
@@ -1808,9 +1809,8 @@ component Reader(book: lib.Book) {
   /// 上。取过的章记得住，换窗时清空。
   async fn ensureChapter(at: int) {
     if !windowed || engineId <= 0 || at < 0 || at >= windowTotal { return }
-    if loadedChapters.contains(at) || triedChapters.contains(at) { return }
+    if loadedChapters.contains(at) { return }
     if online && windowMeta == none { return }
-    triedChapters = triedChapters + [at]
     if await loadChapter(at) {
       loadedChapters = loadedChapters + [at]
     }

@@ -38,19 +38,32 @@ nonExemptEncryption = "no"
 bookpage = "file:bookpage"
 
 [c]
-# swprintf/swscanf for asuka's own Windows host: see the C file's comment.
-sources = ["c/windows-legacy-stdio.c"]
+# legado-engine's C ABI (c/legado.c), and swprintf/swscanf for asuka's own
+# Windows host (c/windows-legacy-stdio.c).
+sources = ["c/*.c"]
 
 [c.prebuilt]
-linux-x64 = "lib/linux-x64/libebook_abi.a"
-macos-arm64 = "lib/macos-arm64/libebook_abi.a"
-macos-x64 = "lib/macos-x64/libebook_abi.a"
-ios-arm64 = "lib/ios-arm64/libebook_abi.a"
+# legado-engine (the online book sources' rules and JavaScript) is the second
+# library where it's built. The iOS simulator, Windows, Android and the web
+# have no build of it here: c/legado.c then compiles its calls as answers
+# saying so, and book sources say they aren't available on that platform.
+linux-x64 = ["lib/linux-x64/libebook_abi.a", "lib/linux-x64/liblegado_engine.a"]
+macos-arm64 = ["lib/macos-arm64/libebook_abi.a", "lib/macos-arm64/liblegado_engine.a"]
+macos-x64 = ["lib/macos-x64/libebook_abi.a", "lib/macos-x64/liblegado_engine.a"]
+ios-arm64 = ["lib/ios-arm64/libebook_abi.a", "lib/ios-arm64/liblegado_engine.a"]
 ios-simulator-arm64 = "lib/ios-simulator-arm64/libebook_abi.a"
 ios-simulator-x64 = "lib/ios-simulator-x64/libebook_abi.a"
 # Built for mingw (x86_64-pc-windows-gnu), the target asuka's Windows
 # build links with (see the note below); the release's is MSVC's .lib.
 windows-x64 = "lib/windows-x64/libebook_abi.a"
+
+# legado-engine's time zone comes from CoreFoundation on Apple (chrono's
+# iana-time-zone), so the app links it on both Apple targets.
+[c.ios]
+frameworks = ["CoreFoundation"]
+
+[c.macos]
+frameworks = ["CoreFoundation"]
 
 # Rust's std needs these on the desktops; Apple's SDK brings its own.
 [c.linux]

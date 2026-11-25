@@ -22,7 +22,7 @@ fn symbolName(apple: string, material: string) -> string {
 }
 
 struct Icons {
-  /// 三个标签页。
+  /// 三个标签页；搜索是导航栏右上角的一个按钮。
   let home = symbolName(apple: "house", material: "house")
   let shelf = symbolName(apple: "books.vertical", material: "book.closed")
   let search = symbolName(apple: "magnifyingglass", material: "magnifyingglass")

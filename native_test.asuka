@@ -1,0 +1,35 @@
+// 原生书源引擎：链接了它，规则和 JavaScript 就由 legado-engine 跑；没有它
+// 的平台（模拟器、Windows、Android、网页）这几条测试什么都不做。
+
+import std/json
+
+import ./sources
+
+let nativeSample = r#"{"bookSourceUrl":"https://x.test","bookSourceName":"测试"}"#
+
+test "the native engine runs a CSS rule" {
+  if !sources.nativeAvailable() { return }
+  let text = try sources.nativeEvalRule(nativeSample, ".row@text", "<div class='row'>Hello</div>", "https://x.test/")
+  expect(text == "Hello")
+}
+
+test "the native engine runs a JavaScript rule" {
+  if !sources.nativeAvailable() { return }
+  let text = try sources.nativeEvalRule(nativeSample, "@js:result.trim().toUpperCase()", "hello", "https://x.test/")
+  expect(text == "HELLO")
+}
+
+test "a source keeps the JSON it was imported from" {
+  let one = r#"{"bookSourceName":"一个","bookSourceUrl":"x.test","searchUrl":"/s?q={{key}}","loginUrl":"/login"}"#
+  let def = try sources.decodeSource(try json.parse(one))
+  expect(def.raw.contains("\"loginUrl\""))
+  expect(sources.sourceJSON(def) == def.raw)
+}
+
+test "the native engine turns chapter HTML into text" {
+  if !sources.nativeAvailable() { return }
+  let text = try sources.nativeEvalRule(nativeSample, "body", "<p>第一段</p><p>第二&amp;段</p>", "https://x.test/")
+  expect(text.contains("第一段"))
+  expect(text.contains("第二&段"))
+  expect(!text.contains("<p>"))
+}

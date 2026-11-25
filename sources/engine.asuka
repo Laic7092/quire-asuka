@@ -1,10 +1,11 @@
-// 一个书源能做的事：搜索、详情、目录、正文。顺序照 Legado 的来——搜索
-// 先取列表页，列表里的每一行再读字段；详情页补上搜索没给的，并说目录在
-// 哪一页；目录和正文都跟着 nextTocUrl / nextContentUrl 翻页，翻页有上限，
-// 免得一条永远回答“下一页”的规则把请求发个不停。
+// 一个书源能做的事：搜索、详情、目录、正文。全部交给 legado-engine：
+// Legado 的规则、QuickJS、cookie 和书源变量都在它那里。这个应用只把书源的
+// JSON、书和章节的字段递过去，再把回来的 JSON 变成界面用的结构。
+//
+// 没有这个库的平台（iOS 模拟器、Windows、Android、网页）由 c/legado.c
+// 编译成“不可用”；下面每个入口说清楚，而不是偷偷换成另一套规则实现。
 
 import std/json
-import std/url
 
 pub struct Book {
   name: string
@@ -15,6 +16,8 @@ pub struct Book {
   intro: string = ""
   coverUrl: string = ""
   bookUrl: string
+  /// 目录所在的那一页，详情页说过的话：目录和正文的规则要它。
+  tocUrl: string = ""
 }
 
 pub struct Info {
@@ -26,6 +29,11 @@ pub struct Info {
 pub struct Chapter {
   title: string
   url: string
+  /// 全书里的章号：正文规则里的 `chapter.index` 用它。
+  index: int = 0
+  isVip: bool = false
+  isPay: bool = false
+  isVolume: bool = false
 }
 
 /// A book's own page and its chapters, as the detail screen loads them.
@@ -34,232 +42,213 @@ pub struct Detail {
   chapters: [Chapter]
 }
 
-/// 书源在地址后面挂的请求设置：/search,{"method":"POST","body":"…"}。
-pub struct UrlOptions {
-  method: string = ""
-  body: string = ""
-  charset: string = ""
-  headers: [string: string] = [:]
-}
+/// 这个平台有没有可以工作的书源引擎。
+pub fn bookSourcesAvailable() -> bool = nativeAvailable()
 
-/// 一本书的地址：已经绝对的照原样，相对的按找到它的页面解析。
-pub fn resolveURL(base: string, ref: string) -> string {
-  let r = ref.trim()
-  if r.isEmpty() { return "" }
-  if r.contains("://") { return r }
-  if r.hasPrefix("//") {
-    if let u = url.parse(base) {
-      return "{u.scheme}:{r}"
-    }
-    return "https:{r}"
+fn unavailable() -> Error = Error("这个平台还没有书源引擎（legado-engine），暂时不能搜索书源")
+
+/// 原生引擎的空值是一个空字符串；规则没写时它给 null。
+fn maybe(v: string) -> string? = if v.isEmpty() { none } else { v }
+
+/// 原生引擎返回的一本书，补进搜索已经有的那本：引擎没给的字段不丢。
+fn mergeBook(from: Book, parsed: NativeBook) -> Book {
+  var book = from
+  if !parsed.name.trim().isEmpty() { book.name = parsed.name }
+  if !parsed.author.trim().isEmpty() { book.author = parsed.author }
+  if !parsed.bookUrl.trim().isEmpty() { book.bookUrl = parsed.bookUrl }
+  if let kind = parsed.kind {
+    if !kind.trim().isEmpty() { book.kind = kind }
   }
-  if base.isEmpty() { return r }
-  return url.resolve(base, r)
+  if let words = parsed.wordCount {
+    if !words.trim().isEmpty() { book.wordCount = words }
+  }
+  if let intro = parsed.intro {
+    if !intro.trim().isEmpty() { book.intro = intro }
+  }
+  if let cover = parsed.coverUrl {
+    if !cover.trim().isEmpty() { book.coverUrl = cover }
+  }
+  if let last = parsed.latestChapterTitle {
+    if !last.trim().isEmpty() { book.lastChapter = last }
+  }
+  if let toc = parsed.tocUrl {
+    if !toc.trim().isEmpty() { book.tocUrl = toc }
+  }
+  return book
 }
 
-fn envOf(s: BookSource, key: string, page: int) -> Env = Env(
-  base: baseUrlOf(s),
-  key: key,
-  page: max(1, page),
-  vars: varsOf(s),
+fn fromSearch(r: NativeSearchBook) -> Book = Book(
+  name: r.name,
+  author: r.author,
+  kind: r.kind ?? "",
+  wordCount: r.wordCount ?? "",
+  lastChapter: r.lastChapter ?? "",
+  intro: r.intro ?? "",
+  coverUrl: r.coverUrl ?? "",
+  bookUrl: r.bookUrl,
 )
 
-/// 地址里的模板填好，再把它后面的设置拿出来。
-pub fn addressOf(raw: string, s: BookSource, env: Env) -> (string, UrlOptions) {
-  let text = raw.trim()
-  // The address is expanded as a URL (its key percent-encoded), the
-  // settings after it as a body (a form value stays as it is).
-  var urlPart = text
-  var optPart = ""
-  if let at = text.find(r",{") {
-    urlPart = text.byteSlice(0, at)
-    optPart = text.byteSlice(at + 1, text.byteCount())
-  }
-  var target = expandKey(urlPart, env)
-  var opts = UrlOptions()
-  if !optPart.isEmpty() {
-    if let v = try? json.parse(expand(optPart, env)) {
-      if let o = v.asObject() {
-        opts.method = o.get("method")?.asString() ?? ""
-        opts.body = o.get("body")?.asString() ?? ""
-        opts.charset = o.get("charset")?.asString() ?? ""
-        if let hs = o.get("headers")?.asObject() {
-          for (k, val) in hs {
-            opts.headers[k] = legadoString(val)
-          }
+fn bookJSON(book: Book) -> string = json.encode(NativeBook(
+  name: book.name,
+  author: book.author,
+  bookUrl: book.bookUrl,
+  tocUrl: maybe(book.tocUrl),
+  coverUrl: maybe(book.coverUrl),
+  intro: maybe(book.intro),
+  kind: maybe(book.kind),
+  wordCount: maybe(book.wordCount),
+  latestChapterTitle: maybe(book.lastChapter),
+))
+
+fn chapterJSON(chapter: Chapter) -> string = json.encode(NativeChapter(
+  title: chapter.title,
+  url: chapter.url,
+  index: chapter.index,
+  isVip: chapter.isVip,
+  isPay: chapter.isPay,
+  isVolume: chapter.isVolume,
+))
+
+/// 正文有时是 HTML（`@html`、`all`，或脚本直接返回一段 HTML）。阅读器
+/// 只画文字，所以交给引擎自己的 HTML 解析器取文本：`body` 的 textNodes
+/// 会保留段落之间的换行，实体也会解码。规则本身仍然全在引擎里。
+fn looksLikeMarkup(text: string) -> bool {
+  let cs = text.chars()
+  var i = 0
+  while i + 1 < cs.count() {
+    if cs[i] == '<' {
+      var j = i + 1
+      if cs[j] == '/' { j += 1 }
+      if j < cs.count() && (cs[j].isLetter() || cs[j] == '!') {
+        var k = j
+        while k < cs.count() && k - i < 120 {
+          if cs[k] == '>' { return true }
+          k += 1
         }
       }
     }
+    i += 1
   }
-  var base = baseUrlOf(s)
-  if !base.isEmpty() && !base.hasSuffix("/") { base = base + "/" }
-  return (resolveURL(base, target.trim()), opts)
+  return false
 }
 
-fn legadoString(v: json.Value) -> string = match v {
-  .null => ""
-  .string(s) => s
-  .bool(b) => if b { "true" } else { "false" }
-  .int(n) => "{n}"
-  .float(f) => "{f}"
-  _ => "{v}"
+async fn plainText(s: BookSource, text: string) -> string {
+  if !looksLikeMarkup(text) { return text }
+  if let plain = try? await nativeEvalRuleAsync(sourceJSON(s), rule: "body", body: text) {
+    let trimmed = plain.trim()
+    if !trimmed.isEmpty() { return trimmed }
+  }
+  return text
 }
 
-async fn fetchDoc(s: BookSource, target: string, opts: UrlOptions, env: Env) throws -> (Doc, string) {
-  var headers = headersOf(s)
-  for (k, v) in opts.headers { headers[k] = v }
-  var page = Page(text: "", url: "", status: 0)
-  if !opts.body.trim().isEmpty() || opts.method.upper() == "POST" {
-    let body = expand(opts.body, env)
-    page = try await post(target, body, headers)
-  } else {
-    page = try await get(target, headers)
-  }
-  return (open(page.text, page.url), page.url)
-}
-
-/// 搜索：一页结果，每条一本书。没有规则、或者什么都没找到，都是空的。
-pub async fn search(s: BookSource, key: string, page: int) throws -> [Book] {
-  let raw = s.searchUrl.trim()
-  if raw.isEmpty() { throw Error("这个书源没有搜索规则") }
-  if raw.hasPrefix("@js:") || raw.hasPrefix("<js>") {
-    throw Error("这个书源的搜索地址是 JavaScript，Quire 不执行脚本书源")
-  }
-  let env = envOf(s, key, page)
-  let (target, opts) = addressOf(s.searchUrl, s, env)
-  if target.isEmpty() { throw Error("书源没有搜索地址") }
-  let (doc, at) = try await fetchDoc(s, target, opts, env)
-  let env2 = env.withURL(at)
-  let rows = eval(doc, s.searchRules().bookList, env2)
+async fn searchNative(s: BookSource, key: string, page: int) throws -> [Book] {
+  let text = try await nativeSearch(sourceJSON(s), key: key, page: page)
+  let rows: [NativeSearchBook] = try json.decode(text)
   var out: [Book] = []
-  for row in rows.docs {
-    let name = readFirst(row, s.searchRules().name, env2)
-    let bookUrl = resolveURL(at, readFirst(row, s.searchRules().bookUrl, env2))
-    if name.isEmpty() || bookUrl.isEmpty() { continue }
-    out.push(Book(
-      name: name,
-      author: readFirst(row, s.searchRules().author, env2),
-      kind: readFirst(row, s.searchRules().kind, env2),
-      wordCount: readFirst(row, s.searchRules().wordCount, env2),
-      lastChapter: readFirst(row, s.searchRules().lastChapter, env2),
-      intro: readOne(row, s.searchRules().intro, env2),
-      coverUrl: resolveURL(at, readFirst(row, s.searchRules().coverUrl, env2)),
-      bookUrl: bookUrl,
-    ))
+  for row in rows {
+    if row.name.trim().isEmpty() || row.bookUrl.trim().isEmpty() { continue }
+    out.push(fromSearch(row))
   }
   return out
 }
 
-fn pick(doc: Doc, ruleText: string, env: Env, was: string) -> string {
-  let got = readFirst(doc, ruleText, env)
-  return if got.isEmpty() { was } else { got }
+async fn exploreNative(s: BookSource, url: string) throws -> [Book] {
+  let text = try await nativeExplore(sourceJSON(s), url: url)
+  let rows: [NativeSearchBook] = try json.decode(text)
+  var out: [Book] = []
+  for row in rows {
+    if row.name.trim().isEmpty() || row.bookUrl.trim().isEmpty() { continue }
+    out.push(fromSearch(row))
+  }
+  return out
+}
+
+/// 搜索：一页结果，每条一本书。没有规则、或者什么都没找到，都是空的。
+pub async fn search(s: BookSource, key: string, page: int) throws -> [Book] {
+  if !bookSourcesAvailable() { throw unavailable() }
+  return try await searchNative(s, key, page)
+}
+
+/// 发现页的一个分类：和搜索一样，一条一本书。
+pub async fn explore(s: BookSource, url: string) throws -> [Book] {
+  if !bookSourcesAvailable() { throw unavailable() }
+  return try await exploreNative(s, url)
+}
+
+async fn infoNative(s: BookSource, bookUrl: string, from: Book) throws -> Info {
+  let text = try await nativeInfo(sourceJSON(s), bookUrl: bookUrl)
+  let parsed: NativeBook = try json.decode(text)
+  var book = mergeBook(from, parsed)
+  if book.bookUrl.trim().isEmpty() { book.bookUrl = bookUrl }
+  if book.tocUrl.trim().isEmpty() { book.tocUrl = book.bookUrl }
+  return Info(book: book, tocUrl: book.tocUrl)
 }
 
 /// 详情：详情页上有的字段补进来，搜索已经给的不再丢。
 pub async fn info(s: BookSource, bookUrl: string, from: Book) throws -> Info {
-  let env = envOf(s, "", 1)
-  let (doc, at) = try await fetchDoc(s, bookUrl, UrlOptions(), env)
-  let env2 = env.withURL(at)
-  if !s.infoRules().init.trim().isEmpty() {
-    eval(doc, s.infoRules().init, env2)
-  }
-  var book = from
-  book.name = pick(doc, s.infoRules().name, env2, from.name)
-  book.author = pick(doc, s.infoRules().author, env2, from.author)
-  book.kind = pick(doc, s.infoRules().kind, env2, from.kind)
-  book.wordCount = pick(doc, s.infoRules().wordCount, env2, from.wordCount)
-  book.lastChapter = pick(doc, s.infoRules().lastChapter, env2, from.lastChapter)
-  book.intro = pick(doc, s.infoRules().intro, env2, from.intro)
-  let cover = readFirst(doc, s.infoRules().coverUrl, env2)
-  if !cover.isEmpty() { book.coverUrl = resolveURL(at, cover) }
-  let toc = readFirst(doc, s.infoRules().tocUrl, env2)
-  return Info(book: book, tocUrl: if toc.isEmpty() { at } else { resolveURL(at, toc) })
+  if !bookSourcesAvailable() { throw unavailable() }
+  return try await infoNative(s, bookUrl, from)
 }
 
 /// 详情页和目录一起取：一本书点开后要的东西。
 pub async fn detailOf(s: BookSource, book: Book) throws -> Detail {
   let own = try await info(s, book.bookUrl, book)
-  let chapters = try await toc(s, own.tocUrl)
+  let chapters = try await tocOf(s, own.book)
   return Detail(info: own, chapters: chapters)
 }
 
-/// 目录：一章一项，跟着 nextTocUrl 翻页，最多 40 页。
-pub async fn toc(s: BookSource, tocUrl: string) throws -> [Chapter] {
-  if s.tocRules().chapterList.trim().isEmpty() { throw Error("这个书源没有目录规则") }
+async fn tocNative(s: BookSource, book: Book) throws -> [Chapter] {
+  let text = try await nativeToc(sourceJSON(s), bookJson: bookJSON(book))
+  let rows: [NativeChapter] = try json.decode(text)
   var out: [Chapter] = []
-  var seen: Set<string> = Set<string>()
-  var next = tocUrl
-  var page = 0
-  while !next.isEmpty() && page < 40 {
-    if seen.contains(next) { break }
-    seen.insert(next)
-    let env = envOf(s, "", 1)
-    let (doc, at) = try await fetchDoc(s, next, UrlOptions(), env)
-    let env2 = env.withURL(at)
-    let rows = eval(doc, s.tocRules().chapterList, env2)
-    for row in rows.docs {
-      let title = readFirst(row, s.tocRules().chapterName, env2)
-      let target = resolveURL(at, readFirst(row, s.tocRules().chapterUrl, env2))
-      if target.isEmpty() { continue }
-      out.push(Chapter(
-        title: if title.isEmpty() { "第 {out.count() + 1} 章" } else { title },
-        url: target,
-      ))
-    }
-    let after = readFirst(doc, s.tocRules().nextTocUrl, env2)
-    let afterUrl = if after.isEmpty() { "" } else { resolveURL(at, after) }
-    next = if afterUrl == at { "" } else { afterUrl }
-    page += 1
+  for row in rows {
+    if row.url.trim().isEmpty() { continue }
+    out.push(Chapter(
+      title: if row.title.isEmpty() { "第 {out.count() + 1} 章" } else { row.title },
+      url: row.url,
+      index: row.index,
+      isVip: row.isVip,
+      isPay: row.isPay,
+      isVolume: row.isVolume,
+    ))
   }
+  if out.isEmpty() { throw Error("这个书源没有目录") }
   return out
 }
 
-/// 正文：一章的文字。一章分几页时跟着 nextContentUrl 翻，最后照书源的
-/// replaceRegex 逐行替换。
-pub async fn content(s: BookSource, chapterUrl: string) throws -> string {
-  let ruleText = s.contentRules().content.trim()
-  if ruleText.isEmpty() { throw Error("这个书源没有正文规则") }
-  if ruleText.hasPrefix("@js:") || ruleText.hasPrefix("<js>") {
-    throw Error("这一章的正文规则是 JavaScript，Quire 不执行脚本书源")
-  }
-  var parts: [string] = []
-  var seen: Set<string> = Set<string>()
-  var next = chapterUrl
-  var page = 0
-  while !next.isEmpty() && page < 10 {
-    if seen.contains(next) { break }
-    seen.insert(next)
-    let env = envOf(s, "", 1)
-    let (doc, at) = try await fetchDoc(s, next, UrlOptions(), env)
-    let env2 = env.withURL(at)
-    let body = readPlain(doc, ruleText, env2).trim()
-    if !body.isEmpty() { parts.push(body) }
-    let after = readFirst(doc, s.contentRules().nextContentUrl, env2)
-    let afterUrl = if after.isEmpty() { "" } else { resolveURL(at, after) }
-    next = if afterUrl == at { "" } else { afterUrl }
-    page += 1
-  }
-  if parts.isEmpty() { throw Error("这一章没有读到正文") }
-  var text = parts.joined(separator: "\n")
-  for entry in s.contentRules().replaceRegex.split("\n") {
-    let line = entry.trim()
-    if line.isEmpty() { continue }
-    let parts2 = line.split("##")
-    if parts2.count() < 2 || parts2[0].isEmpty() { continue }
-    text = applyReplace(text, Replace(pattern: parts2[0], replacement: parts2[1]))
-  }
+/// 目录：一章一项，跟着 nextTocUrl 翻页。
+pub async fn tocOf(s: BookSource, book: Book) throws -> [Chapter] {
+  if !bookSourcesAvailable() { throw unavailable() }
+  return try await tocNative(s, book)
+}
+
+async fn contentNative(s: BookSource, book: Book, chapter: Chapter) throws -> string {
+  let raw = try await nativeContent(
+    sourceJSON(s),
+    bookJson: bookJSON(book),
+    chapterJson: chapterJSON(chapter),
+  )
+  let text = await plainText(s, raw)
+  if text.trim().isEmpty() { throw Error("这一章没有读到正文") }
   return text
+}
+
+/// 正文：一章的文字。规则能读这本书（`book.name` 之类）和这一章。
+pub async fn contentOf(s: BookSource, book: Book, chapter: Chapter) throws -> string {
+  if !bookSourcesAvailable() { throw unavailable() }
+  return try await contentNative(s, book, chapter)
 }
 
 /// 一本书的所有章节连成的一段文字，给「加入书架」写成的 .txt 用：每章
 /// 一个标题、空行、正文。
 pub async fn wholeText(s: BookSource, tocUrl: string, limit: int = 0) throws -> string {
-  let chapters = try await toc(s, tocUrl)
+  let book = Book(name: "", bookUrl: tocUrl, tocUrl: tocUrl)
+  let chapters = try await tocOf(s, book)
   var out: [string] = []
   var count = 0
   for chapter in chapters {
     if limit > 0 && count >= limit { break }
-    let body = try? await content(s, chapter.url)
+    let body = try? await contentOf(s, book, chapter)
     if let text = body {
       out.push(chapter.title)
       out.push("")

@@ -3,8 +3,8 @@
 // JSON 一致；其余字段（登录、评论、回调）随原来的 JSON 一起保存，读的
 // 时候不解释。
 //
-// 规则本身在 rule.asuka 里执行；这个文件只把 JSON 读成结构，并回答书源
-// 的地址、请求头和它自己的变量。
+// 规则本身由 legado-engine 执行（sources/native.asuka）；这个文件只把
+// JSON 读成结构，并回答书源的地址、请求头和它自己的变量。
 
 import std/json
 
@@ -69,6 +69,9 @@ pub struct BookSource {
   ruleBookInfo: BookInfoRule? = none
   ruleToc: TocRule? = none
   ruleContent: ContentRule? = none
+  /// 导入时那段 JSON 的原文：原生引擎要它不认识的字段（登录、发现、
+  /// 变量等）一个也不丢。手工构造的书源是空的。
+  raw: string = ""
 
   pub fn searchRules() -> SearchRule = ruleSearch ?? SearchRule()
 
@@ -109,10 +112,58 @@ pub fn nameOf(v: json.Value) -> string {
 
 /// 一段书源 JSON 读成结构。读不出来时抛错，说哪个字段不对。
 pub fn decodeSource(v: json.Value) throws -> BookSource {
-  return try json.decode<BookSource>("{v}")
+  var source = try json.decode<BookSource>("{v}")
+  source.raw = "{v}"
+  return source
 }
 
 pub fn groupsOf(s: BookSource) -> [string] = s.bookSourceGroup.split(",").map(g => g.trim()).filter(g => !g.isEmpty())
+
+/// 发现页的一栏：Legado 的 `exploreUrl` 要么是一段 JSON 数组，要么是一个
+/// 地址。数组里每一项的 `url` 可以带 `{{page}}`，交给引擎展开。
+pub struct ExploreCategory {
+  title: string
+  url: string
+}
+
+pub fn exploreCategories(s: BookSource) -> [ExploreCategory] {
+  let raw = s.exploreUrl.trim()
+  if raw.isEmpty() { return [] }
+  var out: [ExploreCategory] = []
+  if let v = try? json.parse(raw) {
+    if let arr = v.asArray() {
+      for item in arr {
+        // 常见的是 {"title","url"}；也有书源只给一串地址。
+        if let plain = item.asString() {
+          let url = plain.trim()
+          if !url.isEmpty() {
+            out.push(ExploreCategory(title: "分类 {out.count() + 1}", url: url))
+          }
+          continue
+        }
+        let url = item.get("url")?.asString()?.trim() ?? ""
+        if url.isEmpty() { continue }
+        let name = item.get("title")?.asString()?.trim() ?? ""
+        out.push(ExploreCategory(
+          title: if name.isEmpty() { "分类 {out.count() + 1}" } else { name },
+          url: url,
+        ))
+      }
+    } else if v.asObject() != none {
+      let url = v.get("url")?.asString()?.trim() ?? ""
+      if !url.isEmpty() {
+        let name = v.get("title")?.asString()?.trim() ?? ""
+        out.push(ExploreCategory(
+          title: if name.isEmpty() { "发现" } else { name },
+          url: url,
+        ))
+      }
+    }
+  }
+  // 不是 JSON：整个 exploreUrl 就是一个分类的地址。
+  if out.isEmpty() { out.push(ExploreCategory(title: "发现", url: raw)) }
+  return out
+}
 
 /// 请求头写在 header 字段里，是一段 JSON 字符串。proxy 是连接设置，不是
 /// 一个请求头，不带上。

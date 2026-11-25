@@ -4,10 +4,12 @@
 *.jks
 *.keystore
 
-# The engine's static libraries (lib/<target>/libebook_abi.a, and Windows'
-# lib/<target>/ebook_abi.lib) and their header, downloaded by
-# .github/scripts/fetch-engine.sh: not the app's own sources under lib/.
+# The engines' static libraries (lib/<target>/libebook_abi.a, legado-engine's
+# liblegado_engine.a, and Windows' lib/<target>/ebook_abi.lib) and their
+# headers, downloaded or built by .github/scripts/fetch-engine.sh and
+# fetch-legado.sh: not the app's own sources under lib/.
 /lib/**/libebook_abi.a
+/lib/**/liblegado_engine.a
 /lib/**/ebook_abi.lib
 /lib/**/ebook_abi.h
 

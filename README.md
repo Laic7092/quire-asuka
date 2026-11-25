@@ -1,7 +1,8 @@
 # Quire
 
 Quire 是跨平台的本地阅读器，使用 [Asuka](https://asuka.egoist.dev) 编写：同一套源码构建 iOS、macOS、Linux、Android 与 Web 应用，界面由各平台原生控件实现。书籍解析、排版与光栅化由
-[ebook-engine](https://github.com/Laic7092/ebook-engine)（Rust）通过 C ABI 提供。
+[ebook-engine](https://github.com/Laic7092/ebook-engine)（Rust）通过 C ABI 提供；在线书源的规则与 JavaScript 由
+[legado-engine](https://github.com/Laic7092/legado-engine)（Rust + QuickJS）提供。
 
 ## 功能
 
@@ -15,7 +16,7 @@ Quire 是跨平台的本地阅读器，使用 [Asuka](https://asuka.egoist.dev) 
 - 格式：`.txt`、`.epub`。大 TXT（超过 8 MB 的 UTF-8）按章从文件里读，不整本进内存。
 - 同步：书架、进度、书签、笔记和排版设置随同步走；云端正文按内容 hash 存放，打开云端的书时才下载那一本。云端默认是坚果云，也可选其他 WebDAV 服务器。入口在书架右上角的云图标与「我 → 同步与备份」，可开启启动时自动同步、自动备份书籍，或手动「备份全部」；本地缓存可设上限并按最久未读清理。
   云端布局：`catalog.json` 放书架、进度和设置，`meta/<key>.json` 放每本书的书签、笔记与阅读统计，`blobs/<hash>` 放正文；只有打开某本书时才下载它的正文。
-- 搜索与书源：导入阅读3.0（Legado）书源 JSON（粘贴、链接或文件），在书源里搜书；详情、目录和正文都留在应用里。加入书架的是「在线书」：书架只记书源和书页，目录存一份，正文读到哪取到哪、整本从不下载——引擎里是一本流式书，目录的每一章先占好位置，读到哪一章才取哪一章的正文替换进去（一窗 40 章，读完一窗换下一窗，引擎和字体不重开）；书架上一枚小地球标出它。规则引擎原生支持 CSS、XPath、JSONPath、`##` 替换和 `{{…}}` 模板；需要执行 JavaScript 的书源只读到它们写死的部分。
+- 搜索与书源：导入阅读3.0（Legado）书源 JSON（粘贴、链接或文件），在书源里搜书；详情、目录和正文都留在应用里。加入书架的是「在线书」：书架只记书源和书页，目录存一份，正文读到哪取到哪、整本从不下载——引擎里是一本流式书，目录的每一章先占好位置，读到哪一章才取哪一章的正文替换进去（一窗 40 章，读完一窗换下一窗，引擎和字体不重开）；书架上一枚小地球标出它。书源规则和 JavaScript 由 legado-engine 执行：CSS、XPath、JSONPath、正则、`##` 替换、`{{…}}` 模板和 `@js:` / `<js>` 脚本，连同 cookie 与书源变量，都是 Legado 那一套。没有这个库的平台（iOS 模拟器、Windows、Android、网页）暂时没有书源搜索；等引擎支持这些目标，接入同一份 C ABI 就能用。带 `exploreUrl` 的书源会出现在「发现」里，按书源自己的分类浏览，不必先搜一个关键词。
 
 ## 平台
 
@@ -39,8 +40,14 @@ WebDAV 同步走 `std/http`：iOS / macOS 的 URLSession、Linux 的 libsoup 与
 
 ```text
 Asuka 应用
-  ├─ Tabs：首页 / 书架 / 搜索
+  ├─ Tabs：首页 / 书架 / 发现；搜索在发现页的导航栏右上角
   ├─ Shelf → Reader（根层覆盖页）
+  ├─ 搜索 / 书源（sources/）
+  │      │ C ABI：quire_legado_*
+  │      ▼
+  │   legado-engine
+  │      ├─ Legado 规则 + QuickJS
+  │      └─ 每源 HTTP / cookie / 变量
   ├─ Library store（书架、进度、书签、排版设置）
   │      │ WebDAV：PROPFIND / MKCOL / GET / PUT / DELETE
   │      ▼
@@ -93,14 +100,14 @@ BookPage（原生位图视图）
 
 | 路径 | 内容 |
 | --- | --- |
-| `app.asuka` | 根组件：三个标签页与阅读页覆盖层 |
+| `app.asuka` | 根组件：三个标签页（首页 / 书架 / 发现）与阅读页覆盖层 |
 | `icons.asuka` | 图标名：iOS/macOS 用 SF Symbols，其它平台用 Material Symbols |
 | `shelf.asuka` | 书架、封面、导入、删除、显示方式与排序 |
 | `reader.asuka` | 阅读器、翻页/滚动、目录、书签、选中与笔记、排版设置 |
 | `library.asuka` | 书架与阅读状态的持久化 store，以及按需下载、备份和缓存清理 |
-| `home.asuka` / `search.asuka` | 首页；搜索页：书源管理、导入、结果、详情与章节阅读 |
+| `home.asuka` / `search.asuka` | 首页；发现与搜索：书源管理、导入、结果、详情与章节阅读 |
 | `remote/` | 在线书的本机部分：目录、按章正文缓存、给引擎的三章窗口 |
-| `sources/` | 书源引擎：HTML/CSS/XPath/JSONPath 规则、Legado 书源格式、抓取与搜索/详情/目录/正文；书源的保存 |
+| `sources/` | 书源：Legado 书源格式、导入与保存，以及 legado-engine 的 C 绑定与搜索/详情/目录/正文调用 |
 | `stats.asuka` | 阅读统计页：总体数据、最近七天、每本书的记录 |
 | `sync.asuka` | 同步的文件格式与合并规则：catalog、每本书的 sidecar、删除记录 |
 | `webdav.asuka` | WebDAV 客户端：认证、列目录、上传/下载、删除 |
@@ -135,28 +142,43 @@ asuka fmt -w
 asuka dev
 ```
 
-`asuka test` 运行应用测试，`asuka test lib` 运行 `lib/` 包的解析与分页测试。
+`asuka test` 运行应用测试（含 `native_test.asuka` 里原生书源引擎的规则与 JavaScript 测试），`asuka test lib` 运行 `lib/` 包的解析与分页测试。
 
 ## 引擎
 
-预编译库来自 ebook-engine 的 GitHub Releases：
+两个引擎都来自各自的 GitHub Releases。ebook-engine 负责本地书的解析、排版、光栅化；
+legado-engine 负责在线书源的规则、JavaScript、cookie 与变量。
 
 ```sh
 # 默认使用最新非预发布版本
 .github/scripts/fetch-engine.sh linux-x64
+.github/scripts/fetch-legado.sh linux-x64
 
 # 固定版本
-ENGINE_VERSION=v0.3.0 .github/scripts/fetch-engine.sh linux-x64
+ENGINE_VERSION=v0.3.1 .github/scripts/fetch-engine.sh linux-x64
+LEGADO_VERSION=v0.2.0 .github/scripts/fetch-legado.sh linux-x64
 ```
 
-下载会校验 Release 中的 `SHA256SUMS`。需要从源码构建时：
+ebook-engine 的下载会校验 Release 中的 `SHA256SUMS`。需要从源码构建时：
 
 ```sh
 .github/scripts/build-engine.sh linux-x64 ../ebook-engine
+.github/scripts/build-legado.sh linux-x64 ../legado-engine
 ```
 
-CI 通过 `ENGINE_VERSION` 选择引擎版本，现在钉在 `v0.3.0`：这本书的应用按它的 C ABI
-写（稳定位置、流式章节、高度索引），换一个引擎版本得先确认那三样还在。
+CI 通过 `ENGINE_VERSION` / `LEGADO_VERSION` 选择版本，现在钉在 `v0.3.1` / `v0.2.0`：
+这本书的应用按 ebook-engine 的 C ABI 写（稳定位置、流式章节、高度索引），legado-engine
+则提供 `legado_open` / `legado_search` / `legado_info` / `legado_toc` / `legado_content`
+这几个调用。换版本得先确认这些还在。
+
+`asuka.toml` 的 `[c.prebuilt]` 里，`linux-x64`、`macos-arm64`、`macos-x64` 和
+`ios-arm64` 同时列出 `libebook_abi.a` 与 `liblegado_engine.a`；`ios-simulator-*` 和
+`windows-x64` 只有前者。`c/legado.c` 在没有后者的目标上把调用编译成“不可用”，
+`sources/engine.asuka` 于是直接说这个平台暂时不能搜索书源。
+
+两个静态库都带着 Rust 的 std，所以要来自同一套 Rust 工具链：要么都用 Release 的，
+要么都用 `build-engine.sh` / `build-legado.sh` 在本机编译。把 Release 的 ebook-engine
+和本机编译的 legado-engine 混在一起，链接器会报 `rust_eh_personality` 重复定义。
 
 ## iOS 构建
 
@@ -182,10 +204,19 @@ profile = "Quire Distribution"
 
 | 作业 | Runner | 内容 |
 | --- | --- | --- |
-| Tests | `ubuntu-latest` | 获取 `linux-x64` 引擎，运行 `asuka check`、`asuka test`、`asuka test lib` |
-| Unsigned IPA | `macos-latest` | 获取 `ios-arm64` 引擎，使用 Xcode 26+ 构建未签名设备 IPA |
+| Tests | `ubuntu-latest` | 获取 `linux-x64` 的两个引擎，运行 `asuka check`、`asuka test`、`asuka test lib` |
+| Unsigned IPA | `macos-latest` | 获取 `ios-arm64` 的两个引擎，使用 Xcode 26+ 构建未签名设备 IPA |
 
 未签名产物位于 `dist/Quire-unsigned.ipa`，作为 `ios-unsigned-ipa` artifact 上传。构建流程使用临时自签证书与 stub profile 完成 Asuka 的签名步骤，随后移除签名。
+
+同一套流程也写在仓库根目录的 `codemagic.yaml` 里，Codemagic（https://codemagic.io）可直接用它构建，与 GitHub Actions 并存：
+
+| Workflow | 机器 | 内容 |
+| --- | --- | --- |
+| `tests` | `mac_mini_m2`（Xcode 26.6） | 获取 `macos-arm64` 的两个引擎，运行 `asuka check`、`asuka test`、`asuka test lib` |
+| `ios-ipa` | 同上 | 获取 `ios-arm64` 的两个引擎，构建未签名设备 IPA，`dist/*-unsigned.ipa` 作为 build 的 artifact 下载 |
+
+接入步骤：在 Codemagic 里添加本仓库，它会读到 `codemagic.yaml`；自动构建还需在应用的 Webhooks 设置里建一个 webhook。只有 `.md` 改动的提交由 `when.changeset` 跳过。固定 Xcode 版本改 `definitions` 里的 `xcode`，固定引擎版本把 `ENGINE_VERSION` 写成 tag（如 `v0.2.0`）。
 
 安装方式：
 

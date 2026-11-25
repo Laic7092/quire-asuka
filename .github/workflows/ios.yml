@@ -8,10 +8,10 @@ name: iOS IPA
 #
 # The build needs Xcode 26 or newer, which is what asuka compiles against.
 #
-# Nothing here builds the book engine: it's released (ebook-engine's Releases)
+# Nothing here builds the engines: ebook-engine and legado-engine are released
 # with one static library per target, and both jobs download theirs — no Rust
-# toolchain, no cargo cache, no compile. ENGINE_VERSION is the release this
-# app is written against (see "引擎" in README.md).
+# toolchain, no cargo cache, no compile. ENGINE_VERSION and LEGADO_VERSION are
+# the releases this app is written against (see "引擎" in README.md).
 #
 # Two jobs, in parallel: the tests run where they're cheap (a Linux runner, on
 # the engine's Linux build), and the Mac runner only does what needs Xcode.
@@ -31,9 +31,11 @@ permissions:
   contents: read
 
 env:
-  # The engine release to build against: github.com/Laic7092/ebook-engine.
-  # `latest` follows the newest non-prerelease; a tag pins one.
-  ENGINE_VERSION: v0.3.0
+  # The engine releases to build against: github.com/Laic7092/ebook-engine and
+  # github.com/Laic7092/legado-engine. `latest` follows the newest
+  # non-prerelease; a tag pins one.
+  ENGINE_VERSION: v0.3.1
+  LEGADO_VERSION: v0.2.0
 
 # A newer push on the same branch cancels the run before it: a macOS runner is
 # the expensive part.
@@ -53,9 +55,11 @@ jobs:
       - name: Fetch the font
         run: bash .github/scripts/fetch-font.sh
 
-      # The tests link the engine, so they need it for their own machine.
-      - name: Fetch the engine
-        run: bash .github/scripts/fetch-engine.sh linux-x64
+      # The tests link the engines, so they need them for their own machine.
+      - name: Fetch the engines
+        run: |
+          bash .github/scripts/fetch-engine.sh linux-x64
+          bash .github/scripts/fetch-legado.sh linux-x64
 
       # Asuka's prebuilt libraries and the C it compiles: the same between
       # runs, so the test step doesn't download and build them again.
@@ -91,9 +95,13 @@ jobs:
       - name: Fetch the font
         run: bash .github/scripts/fetch-font.sh
 
-      # The device's library only: a simulator's is for whoever builds for one.
-      - name: Fetch the engine
-        run: bash .github/scripts/fetch-engine.sh ios-arm64
+      # The device's libraries only: a simulator's are for whoever builds for
+      # one (legado-engine doesn't release a simulator slice, and c/legado.c
+      # compiles its calls out there).
+      - name: Fetch the engines
+        run: |
+          bash .github/scripts/fetch-engine.sh ios-arm64
+          bash .github/scripts/fetch-legado.sh ios-arm64
 
       - name: Xcode
         run: |

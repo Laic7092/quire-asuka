@@ -1,6 +1,8 @@
 // Quire on Asuka: the shelf, and a reading page whose layout is the engine's
 // (ebook-engine, Rust, through its C ABI), drawn by each platform's own view.
 
+import std/fs
+
 import ./lib
 import ./sources
 
@@ -18,8 +20,8 @@ component Quire {
   /// not on paper that fills in after it.
   state readingMounted = false
   state readingShown = false
-  /// Which tab shows. The shelf is the one the app opens on; 首页 and 搜索
-  /// are placeholders for now.
+  /// Which tab shows. The shelf is the one the app opens on; 发现 is the
+  /// third tab, and its bar's top right opens 搜索.
   state tab = 1
 
   let paper = lib.paletteFor(library.theme).paper
@@ -60,6 +62,9 @@ component Quire {
   // if the reader asked for it, the shelf meets the server's.
   task {
     library.migratePaths()
+    // 原生书源引擎的 cookie 和书源变量放在应用目录里；没有这个库的平台
+    // 什么都不做，书源搜索会直接说这个平台暂时没有引擎。
+    sources.nativeOpen(fs.join([fs.appDir(), "legado"]))
     await library.loadCredentials()
     await library.seedSamples()
     if let s = allSources {
@@ -91,10 +96,10 @@ component Quire {
           }
         }
       }
-      Tab("搜索") {
-        icon: Icons.search
+      Tab("发现") {
+        icon: Icons.globe
         Stack {
-          Search() {
+          Discover() {
             on open(book) { await openBook(book) }
           }
         }
