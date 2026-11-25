@@ -1165,6 +1165,7 @@ screen Discover {
   event open(book: lib.Book)
 
   title: "发现"
+  let env = environment()
   // 书源列表是 load 的输入：导入、删除或改开关后，发现页立刻重读，
   // 不用退出这一页再进来。
   let sourceEntries = allSources.entries
@@ -1185,103 +1186,108 @@ screen Discover {
     }
   }
 
-  // 搜索是发现页的主动作，单独放：iPhone 上是导航栏右侧的高亮按钮，
-  // 不和导入、书源管理挤在同一组里。
-  primary {
-    Button("搜索") {
-      icon: Icons.search
-      tooltip: "搜索书源"
-      on press {
-        push(Search() {
-          on open(book) { emit open(book) }
-        })
-      }
-    }
-  }
-
   View {
     grow: 1
+    padding: [0, env.safeLeft, 0, env.safeRight]
     background: .background
-    match rows {
-      .pending => Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 12
-        ProgressRing {}
-        Text("正在读取书源的发现页…") {
-          font: .footnote
-          color: .secondaryLabel
+    Column {
+      grow: 1
+      // 搜索单独一条，放在页面的最上面。不放进 toolbar 的同一组，也不
+      // 用 primary：那在 iPhone 上是底部工具栏，会被 tab 栏压住。
+      Row {
+        padding: [8, lib.pageKeyline]
+        Button("搜索书源") {
+          icon: Icons.search
+          variant: .bordered
+          grow: 1
+          on press {
+            push(Search() {
+              on open(book) { emit open(book) }
+            })
+          }
         }
       }
-      .failed(e) => Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 12
-        padding: [24, 40]
-        Text("发现页没有读出来") { font: .headline }
-        Text(e.message) {
-          font: .footnote
-          color: .secondaryLabel
-          textAlign: .center
+      match rows {
+        .pending => Column {
+          grow: 1
+          justify: .center
+          align: .center
+          gap: 12
+          ProgressRing {}
+          Text("正在读取书源的发现页…") {
+            font: .footnote
+            color: .secondaryLabel
+          }
         }
-        Button("重试") {
-          on press { rows.reload() }
-        }
-      }
-      .ready(list) => if list.isEmpty() {
-        Column {
+        .failed(e) => Column {
           grow: 1
           justify: .center
           align: .center
           gap: 12
           padding: [24, 40]
-          Symbol(Icons.globe) {
-            font: .title
-            color: .tertiaryLabel
-          }
-          Text("没有带发现页的书源") {
-            font: .headline
-          }
-          Text("这个书源的 exploreUrl 是空的，或者还没有启用。导入或管理书源在右上角。") {
+          Text("发现页没有读出来") { font: .headline }
+          Text(e.message) {
             font: .footnote
             color: .secondaryLabel
             textAlign: .center
           }
+          Button("重试") {
+            on press { rows.reload() }
+          }
         }
-      } else {
-        List {
-          appearance: .plain
-          grow: 1
-          for row in list key row.id {
-            Row {
-              gap: 12
-              align: .center
-              padding: [13, lib.pageKeyline]
-              on press {
-                push(DiscoverSource(row) {
-                  on open(book) { emit open(book) }
-                })
-              }
-              Column {
-                grow: 1
-                gap: 3
-                Text(row.name) {
-                  font: .body
+        .ready(list) => if list.isEmpty() {
+          Column {
+            grow: 1
+            justify: .center
+            align: .center
+            gap: 12
+            padding: [24, 40]
+            Symbol(Icons.globe) {
+              font: .title
+              color: .tertiaryLabel
+            }
+            Text("没有带发现页的书源") {
+              font: .headline
+            }
+            Text("这个书源的 exploreUrl 是空的，或者还没有启用。导入或管理书源在右上角。") {
+              font: .footnote
+              color: .secondaryLabel
+              textAlign: .center
+            }
+          }
+        } else {
+          List {
+            appearance: .plain
+            grow: 1
+            for row in list key row.id {
+              Row {
+                gap: 12
+                align: .center
+                padding: [13, lib.pageKeyline]
+                on press {
+                  push(DiscoverSource(row) {
+                    on open(book) { emit open(book) }
+                  })
                 }
-                Text(if row.group.isEmpty() { "{row.categories.count()} 个分类" } else { "{row.group} · {row.categories.count()} 个分类" }) {
+                Column {
+                  grow: 1
+                  gap: 3
+                  Text(row.name) {
+                    font: .body
+                  }
+                  Text(if row.group.isEmpty() { "{row.categories.count()} 个分类" } else { "{row.group} · {row.categories.count()} 个分类" }) {
+                    font: .caption
+                    color: .tertiaryLabel
+                  }
+                }
+                Text("{row.categories.count()}") {
                   font: .caption
                   color: .tertiaryLabel
                 }
-              }
-              Text("{row.categories.count()}") {
-                font: .caption
-                color: .tertiaryLabel
-              }
-              Symbol(Icons.disclosure) {
-                font: .caption
-                color: .tertiaryLabel
+                Symbol(Icons.disclosure) {
+                  font: .caption
+                  color: .tertiaryLabel
+                }
               }
             }
           }
