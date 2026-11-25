@@ -221,6 +221,7 @@ component YearRow(book: lib.Book, reading: lib.Reading) {
 /// them; 关于 Quire is the one entry without a page yet.
 component Profile {
   use library: Library
+  let env = environment()
 
   /// Which page this sheet shows: its own list, or the WebDAV setup.
   state page = ""
@@ -256,7 +257,7 @@ component Profile {
   } else {
     Column {
       gap: 18
-      padding: lib.sheetPad(top: 20, bottom: 24, side: 20)
+      padding: lib.sheetPad(env, top: 20, bottom: 24, side: 20)
 
       Row {
         gap: 14

@@ -313,6 +313,7 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
   event dropBookmark(id: string)
   event dropNote(id: string)
   use library: Library
+  let env = environment()
 
   let rows = contentsRows(library.bookmarksOf(book), library.notesOf(book), items)
   let list = Ref()
@@ -331,7 +332,7 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
   Column {
     grow: 1
     gap: 0
-    padding: lib.sheetPad(top: 16, bottom: 0, side: 0)
+    padding: lib.sheetPad(env, top: 16, bottom: 0, side: 0)
     background: palette.paper
     Row {
       padding: [8, 20]
@@ -465,6 +466,7 @@ fn denorm(f: float, lo: float, hi: float) -> float = lo + f * (hi - lo)
 /// Everything a page is laid out with, so nothing has to be guessed at.
 component Appearance(typeface: string) {
   use library: Library
+  let env = environment()
 
   let palette = lib.paletteFor(library.theme)
   let papers = [
@@ -484,7 +486,7 @@ component Appearance(typeface: string) {
 
   Column {
     grow: 1
-    padding: lib.sheetPad(top: 24, bottom: 24, side: 24)
+    padding: lib.sheetPad(env, top: 24, bottom: 24, side: 24)
     gap: 16
     background: palette.paper
 
@@ -665,6 +667,7 @@ component Appearance(typeface: string) {
 /// has to say. A note already made can be taken off from here too.
 component NoteEditor(quote: string, draft: string, existing: bool) {
   use library: Library
+  let env = environment()
 
   let palette = lib.paletteFor(library.theme)
   state text = draft
@@ -674,7 +677,7 @@ component NoteEditor(quote: string, draft: string, existing: bool) {
 
   Column {
     grow: 1
-    padding: lib.sheetPad(top: 20, bottom: 20, side: 20)
+    padding: lib.sheetPad(env, top: 20, bottom: 20, side: 20)
     gap: 14
     background: palette.paper
 
@@ -900,7 +903,9 @@ component Reader(book: lib.Book) {
   /// fills, and pressing it again takes it back. These change once a screen,
   /// not once a scroll event.
   let marked = library.bookmarkAt(book.id, chapter: hereChapter, percent: herePercent)
-  let currentChapter = if library.mode == "scroll" { hereChapter } else { spine }
+  // 目录里的章号是全书（windowToc）的；窗口书架起来的书（在线书、大 TXT）
+  // 里 `spine` 只是这一窗的章号，要加回 windowBase 才是全书章号。
+  let currentChapter = if library.mode == "scroll" { hereChapter } else { windowBase + spine }
 
   // Opens where the book was left, in the chapter (spine) it was left in.
   // 在线书的 spine 要等窗口拼好才知道（openBook 里），这里只定本地书。
@@ -1800,7 +1805,9 @@ component Reader(book: lib.Book) {
     // 读的时候窗口可能已经换了：那一章的正文就不属于现在这本书了。
     if engineId <= 0 || at - windowBase != local { return false }
     let body = lib.chapterBody(text ?? "", at: at)
-    let ok = engine.replaceChapter(engineId, spine: local, title: chapterTitleOf(at), text: body)
+    // 在线书源给的正文通常没有章节标题；本地 TXT 的正文里本来就有那一行。
+    let filled = if online { lib.withChapterHeading(body, title: chapterTitleOf(at)) } else { body }
+    let ok = engine.replaceChapter(engineId, spine: local, title: chapterTitleOf(at), text: filled)
     if ok && redraw { chapterRev += 1 }
     return ok
   }

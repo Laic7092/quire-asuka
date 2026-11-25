@@ -9,7 +9,10 @@ pub let pageKeyline: float = if @platform == .iOS || @platform == .macOS { 24 } 
 /// A sheet's padding: its own, plus the landscape side insets. A sheet isn't
 /// a screen, so nothing pads its content for the notch; without this its rows
 /// run into the side edges when the phone is turned.
-pub fn sheetPad(top: float, bottom: float, side: float) -> Edges {
-  let env = environment()
+///
+/// The environment is handed in, not read here: a sheet's component reads it
+/// in a `let`, so turning the phone lays the sheet out again with the new
+/// insets instead of keeping the ones it opened with.
+pub fn sheetPad(env: Environment, top: float, bottom: float, side: float) -> Edges {
   return Edges(top: top, right: side + env.safeRight, bottom: bottom, left: side + env.safeLeft)
 }

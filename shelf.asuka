@@ -490,10 +490,11 @@ component DisplayOption(title: string, selected: bool) {
 /// system's menu from the bar button.
 component ShelfDisplay {
   use library: Library
+  let env = environment()
 
   Column {
     gap: 16
-    padding: lib.sheetPad(top: 22, bottom: 30, side: 22)
+    padding: lib.sheetPad(env, top: 22, bottom: 30, side: 22)
 
     Row {
       gap: 8
@@ -782,7 +783,10 @@ screen Shelf {
         List {
           grow: 1
           appearance: .bare
-          padding: [11, 0]
+          // 顶部不要再叠一层：第一行自己的 11 已经是它和导航栏的距离，
+          // 再加 List 的上内边距，两本书会离顶端太远。底部留着 11，
+          // 最后一行和 tab 栏之间就不贴着。
+          padding: [0, 0, 11, 0]
           for (i, row) in gridRows.enumerated() key i {
             Row {
               padding: [11, lib.pageKeyline]

@@ -89,3 +89,20 @@ test "a chapter that wasn't read says so instead of being empty" {
   expect(!text.isEmpty())
   expect(text.contains("第 5 章"))
 }
+
+test "an online chapter gets its title above the body" {
+  let body = chapterBody("甲。\n乙。", at: 0)
+  let filled = withChapterHeading(body, title: "第 1 章 起风了")
+  expect(filled == "第 1 章 起风了\n甲。\n乙。")
+}
+
+test "a chapter that already starts with a heading isn't given another" {
+  expect(withChapterHeading("第一章 起\n甲。", title: "第一章 起") == "第一章 起\n甲。")
+  expect(withChapterHeading("第 1 章 起风了\n甲。", title: "起风了") == "第 1 章 起风了\n甲。")
+}
+
+test "an empty online chapter still says what it has" {
+  let body = chapterBody("", at: 2)
+  let filled = withChapterHeading(body, title: "第 3 章 无题")
+  expect(filled.hasPrefix("第 3 章 无题\n"))
+}

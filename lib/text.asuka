@@ -245,6 +245,18 @@ pub fn chapterBody(text: string, at: int) -> string {
   return parts.joined(separator: "\n")
 }
 
+/// 在线书源的正文通常不带章节标题：引擎把章节标题只放进目录，不画进
+/// 正文。把标题补成正文的第一行；正文自己已经以标题行开头时不再补一次。
+pub fn withChapterHeading(text: string, title: string) -> string {
+  let heading = title.trim()
+  if heading.isEmpty() { return text }
+  let first = text.split("\n").map(l => l.trim()).find(l => !l.isEmpty()) ?? ""
+  if first == heading || looksLikeHeading(first) { return text }
+  let body = text.trim()
+  if body.isEmpty() { return heading }
+  return "{heading}\n{body}"
+}
+
 /// 一段原文的字，不含排版的断行。引擎给出的选区文本按排版的行断开（行与行
 /// 之间补了 `\n`），换字号以后同一段字的断行位置就变了；引文和高亮比对的是
 /// 字，不是断在哪儿。

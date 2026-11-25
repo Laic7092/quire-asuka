@@ -157,6 +157,7 @@ component BookRecordRow(book: lib.Book, record: lib.BookRecord, reading: lib.Rea
 /// 一本书自己的记录：累计、天数、第一次和最近一次，以及每天的明细。
 component BookRecordPage(book: lib.Book) {
   use library: Library
+  let env = environment()
 
   event back
 
@@ -171,7 +172,7 @@ component BookRecordPage(book: lib.Book) {
 
   Column {
     gap: 14
-    padding: lib.sheetPad(top: 22, bottom: 22, side: 20)
+    padding: lib.sheetPad(env, top: 22, bottom: 22, side: 20)
 
     Row {
       gap: 8
@@ -284,6 +285,7 @@ component BookRecordPage(book: lib.Book) {
 /// 阅读统计的入口：总体在上，点一本书进它自己的记录。
 component Stats {
   use library: Library
+  let env = environment()
 
   event close
 
@@ -321,7 +323,7 @@ component Stats {
   } else {
     Column {
       gap: 14
-      padding: lib.sheetPad(top: 22, bottom: 22, side: 20)
+      padding: lib.sheetPad(env, top: 22, bottom: 22, side: 20)
 
       Row {
         gap: 8

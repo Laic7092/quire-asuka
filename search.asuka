@@ -49,9 +49,10 @@ async fn exploreSourceOf(store: sources.Sources, e: sources.Entry) -> ExploreSou
   return none
 }
 
-async fn exploreSources(store: sources.Sources) -> [ExploreSource] {
+async fn exploreSources(store: sources.Sources, entries: [sources.Entry]) -> [ExploreSource] {
   // 分类可能要从地址取回来：一两个书源慢，不要挡住其余书源。
-  let rows = await all(store.enabled(), e => await exploreSourceOf(store, e), limit: 6)
+  let enabled = entries.filter(e => e.enabled)
+  let rows = await all(enabled, e => await exploreSourceOf(store, e), limit: 6)
   return rows.compactMap(r => r)
 }
 
@@ -463,6 +464,7 @@ component SourceFilterChip(title: string, selected: bool) {
 /// 「导入」进来。
 component SourceManager {
   use allSources: sources.Sources
+  let env = environment()
 
   state selecting = false
   state selected: [string] = []
@@ -539,7 +541,7 @@ component SourceManager {
   Column {
     grow: 1
     gap: 12
-    padding: lib.sheetPad(top: 22, bottom: 26, side: 22)
+    padding: lib.sheetPad(env, top: 22, bottom: 26, side: 22)
 
     Row {
       gap: 8
@@ -548,12 +550,16 @@ component SourceManager {
         font: .title3
         grow: 1
       }
-      Button(if selecting { "完成" } else { "选择" }) {
-        variant: .glass
-        on press {
-          selecting = !selecting
-          if !selecting { selected = [] }
-          moving = false
+      if !all.isEmpty() {
+        // 一直是「多选」，靠高亮表示开着：不再在「选择」和「完成」之间
+        // 秒切，手指按下去不会觉得按钮自己跳了一下。完成在下面那一条。
+        Button("多选") {
+          variant: if selecting { .tinted } else { .glass }
+          on press {
+            selecting = !selecting
+            if !selecting { selected = [] }
+            moving = false
+          }
         }
       }
       Button("") {
@@ -709,6 +715,13 @@ component SourceManager {
         Row {
           gap: 10
           align: .center
+          Button("完成") {
+            on press {
+              selecting = false
+              selected = []
+              moving = false
+            }
+          }
           Button(if allSelected { "全不选" } else { "全选" }) {
             on press { toggleAll() }
           }
@@ -740,6 +753,7 @@ component SourceManager {
 /// 导入书源：粘贴一段 JSON，或者从链接、文件取。
 component SourceImport {
   use allSources: sources.Sources
+  let env = environment()
 
   state mode = 0
   state text = ""
@@ -797,7 +811,7 @@ component SourceImport {
 
   Column {
     gap: 14
-    padding: lib.sheetPad(top: 22, bottom: 28, side: 22)
+    padding: lib.sheetPad(env, top: 22, bottom: 28, side: 22)
 
     Row {
       gap: 8
@@ -1151,18 +1165,17 @@ screen Discover {
   event open(book: lib.Book)
 
   title: "发现"
-  let rows = load exploreSources(allSources)
+  // 书源列表是 load 的输入：导入、删除或改开关后，发现页立刻重读，
+  // 不用退出这一页再进来。
+  let sourceEntries = allSources.entries
+  let rows = load exploreSources(allSources, sourceEntries)
 
   toolbar {
-    Button("搜索") {
-      icon: Icons.search
+    Button("书源管理") {
+      icon: Icons.contents
       variant: .glass
-      tooltip: "搜索书源"
-      on press {
-        push(Search() {
-          on open(book) { emit open(book) }
-        })
-      }
+      tooltip: "管理书源"
+      on press { present(SourceManager()) }
     }
     Button("导入") {
       icon: Icons.add
@@ -1170,11 +1183,19 @@ screen Discover {
       tooltip: "导入书源"
       on press { present(SourceImport()) }
     }
-    Button("书源管理") {
-      icon: Icons.contents
-      variant: .glass
-      tooltip: "管理书源"
-      on press { present(SourceManager()) }
+  }
+
+  // 搜索是发现页的主动作，单独放：iPhone 上是导航栏右侧的高亮按钮，
+  // 不和导入、书源管理挤在同一组里。
+  primary {
+    Button("搜索") {
+      icon: Icons.search
+      tooltip: "搜索书源"
+      on press {
+        push(Search() {
+          on open(book) { emit open(book) }
+        })
+      }
     }
   }
 
