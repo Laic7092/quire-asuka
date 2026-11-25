@@ -1,20 +1,21 @@
-test "a window keeps one chapter per heading" {
+test "a chapter goes to the engine one line a paragraph" {
+  let text = chapterBody("甲。\n\n  乙。  \n\n\n丙。", at: 0)
+  expect(text == "甲。\n乙。\n丙。")
+}
+
+test "a chapter that wasn't read says so instead of being empty" {
+  // 空正文会让引擎拒绝这一章（append/replace 都不收空串），所以没取到的章
+  // 得有字：读者至少知道是没取到，不是书上没写。
+  let text = chapterBody("   \n\n", at: 4)
+  expect(!text.isEmpty())
+  expect(text.contains("第 5 章"))
+}
+
+test "a chapter's title is the toc's when it reads as a heading" {
   var meta = Meta(sourceId: "x", bookUrl: "https://x/1", chapterCount: 2)
   meta.toc.push(TocEntry(title: "第一章 起", url: "https://x/1"))
   meta.toc.push(TocEntry(title: "起风了", url: "https://x/2"))
-  let text = windowText(meta, base: 0, bodies: ["甲。\n\n乙。", ""])
-  expect(text.contains("第一章 起"))
+  expect(headingOf(meta, 0) == "第一章 起")
   // 书源给的标题不像标题行时补一个，免得两章粘成一章。
-  expect(text.contains("第 2 章 起风了"))
-  expect(text.contains("甲。"))
-  // 没取到的那一章写成占位，整窗不因此失败。
-  expect(text.contains("没有读到"))
-}
-
-test "a window past the toc has nothing to add" {
-  var meta = Meta(sourceId: "x", bookUrl: "https://x/1", chapterCount: 1)
-  meta.toc.push(TocEntry(title: "第一章", url: "https://x/1"))
-  let text = windowText(meta, base: 1, bodies: ["多余的"])
-  expect(!text.contains("多余的"))
-  expect(text.isEmpty())
+  expect(headingOf(meta, 1) == "第 2 章 起风了")
 }

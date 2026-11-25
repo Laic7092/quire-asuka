@@ -56,8 +56,9 @@ test "the column's chapter tops are the sum of the ones before" {
   expect(id > 0)
   let count = engine.beginScroll(id, 390, 844, engine.Margins(top: 0, right: 24, bottom: 0, left: 24), 1.0, 1.6)
   expect(count > 1)
-  let total = engine.flowHeight(id)
-  expect(total > 0)
+  // 打开时就有总高：它是估计值，一本书不会为了滚动条排一整本。
+  let estimate = engine.flowHeight(id)
+  expect(estimate > 0)
 
   var sum = 0.0
   for c in 0..<count {
@@ -68,6 +69,8 @@ test "the column's chapter tops are the sum of the ones before" {
     expect(chapter.height > 0)
     sum += chapter.height
   }
+  // 每章都实测过之后，总高就是这些章的和：估计让位给了量出来的。
+  let total = engine.flowHeight(id)
   expect((sum - total).abs() < 0.01)
 
   // y → chapter, on both sides of a seam.

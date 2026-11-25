@@ -92,6 +92,10 @@ pub struct Reading {
   /// When the place was last kept, in unix seconds: 0 for a row written
   /// before the home page kept the time. It's what "recent" sorts by.
   updated: int = 0
+  /// The place as the engine names it (`spine:node:offset`): what to open at
+  /// when the type size has changed since. "" for a place kept before it could
+  /// be asked for, or by a book the engine doesn't anchor (an online one).
+  locator: string = ""
 
   pub fn label() -> string {
     if chapter <= 0 && percent <= 0 { return "未开始" }
@@ -101,12 +105,17 @@ pub struct Reading {
 }
 
 /// A bookmark: a place the reader kept in a book, as how far into its
-/// chapter it was made.
+/// chapter it was made — and, when the engine can name it, as the paragraph
+/// itself, which a type size or a page height can't move.
 pub struct Bookmark {
   id: string
   book: string
   chapter: int
   percent: float
+  /// `spine:node:offset`, from the engine: the same words on any screen.
+  /// "" for a place kept by a version that couldn't ask, or in a book the
+  /// engine doesn't anchor (an online one).
+  locator: string = ""
 }
 
 /// The shelf's books in the order the display menu chose: the most recently

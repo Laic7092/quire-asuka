@@ -231,6 +231,14 @@ fn isSentenceEnd(c: char) -> bool = sentenceEnds.contains("{c}")
 
 /// A heading: a short line without sentence punctuation, matching one of the
 /// shapes novels use, or one of the fixed ones (序, 楔子, 番外).
+/// 一段原文的字，不含排版的断行。引擎给出的选区文本按排版的行断开（行与行
+/// 之间补了 `\n`），换字号以后同一段字的断行位置就变了；引文和高亮比对的是
+/// 字，不是断在哪儿。
+pub fn squash(text: string) -> string {
+  if !text.contains("\n") { return text }
+  return text.split("\n").joined(separator: "")
+}
+
 pub fn looksLikeHeading(line: string) -> bool {
   let text = line.trim()
   if text.isEmpty() || text.count() > maxHeadingRunes { return false }

@@ -20,8 +20,8 @@ permissions:
 
 env:
   # The engine release to build against: github.com/Laic7092/ebook-engine.
-  # `latest` follows the newest non-prerelease; a tag pins one.
-  ENGINE_VERSION: latest
+  # Pinned: the app is written against this one's C ABI (see README).
+  ENGINE_VERSION: v0.3.0
 
 # A newer push on the same branch cancels the run before it.
 concurrency:

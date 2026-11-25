@@ -21,6 +21,25 @@ import ./sources
 /// Points the engine lays out at, before the reader's own size multiplies it.
 let baseSize = 19.0
 
+/// 在线书一次装进引擎的章数。引擎的书是流式的（章节只能往后加），所以窗口
+/// 是「从 base 起的这一批章」；读者走到窗口边上就换一窗——引擎和字体都还在，
+/// 换的只是章节表。一章一章地取，整本从不下载。
+let windowSpan = 40
+
+/// 窗口从要读的那一章前面几章开始：往回翻几章不用换窗。
+fn windowBaseFor(chapter: int) -> int {
+  if chapter <= 3 { return 0 }
+  return ((chapter - 3) / windowSpan) * windowSpan
+}
+
+/// 一窗几章：到目录末尾就少。
+fn windowCountOf(total: int, base: int) -> int {
+  var count = total - base
+  if count > windowSpan { count = windowSpan }
+  if count < 0 { count = 0 }
+  return count
+}
+
 /// 浮在页面上的控件离屏幕边缘的宽。阅读页铺满整屏（纸连状态栏底下都刷），
 /// 所以系统栏和安全区得自己让开：先加 safeLeft/safeRight，再留出系统栏那
 /// 样的 16pt。横屏的刘海也因此在外面。
@@ -243,6 +262,9 @@ struct ContentsRow {
   /// A note row's quote and what the reader wrote; "" for other rows.
   quote: string = ""
   text: string = ""
+  /// The place as the engine names it, when it could be asked: what puts a
+  /// bookmark back on its own paragraph after the type has been resized.
+  locator: string = ""
 }
 
 /// The contents sheet's rows: the bookmarks under a 书签 heading, the notes
@@ -256,6 +278,7 @@ fn contentsRows(marks: [lib.Bookmark], notes: [lib.Note], items: [engine.TocItem
       rows.push(ContentsRow(
         kind: .bookmark, title: markTitle(mark, items),
         chapter: mark.chapter, percent: mark.percent, index: 0, id: mark.id,
+        locator: mark.locator,
       ))
     }
     sections = true
@@ -265,7 +288,7 @@ fn contentsRows(marks: [lib.Bookmark], notes: [lib.Note], items: [engine.TocItem
     for note in notes {
       rows.push(ContentsRow(
         kind: .note, title: note.preview(), chapter: note.chapter, percent: note.percent,
-        index: 0, id: note.id, quote: note.quote, text: note.text,
+        index: 0, id: note.id, quote: note.quote, text: note.text, locator: note.locator,
       ))
     }
     sections = true
@@ -284,7 +307,7 @@ fn contentsRows(marks: [lib.Bookmark], notes: [lib.Note], items: [engine.TocItem
 
 component Contents(items: [engine.TocItem], at: int, book: string) {
   event pick(index: int)
-  event goBookmark(chapter: int, percent: float)
+  event goBookmark(chapter: int, percent: float, locator: string)
   event dropBookmark(id: string)
   event dropNote(id: string)
   use library: Library
@@ -345,7 +368,7 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
               gap: 10
               align: .center
               on press {
-                emit goBookmark(chapter: row.chapter, percent: row.percent)
+                emit goBookmark(chapter: row.chapter, percent: row.percent, locator: row.locator)
                 dismiss()
               }
               Text(row.title) {
@@ -373,7 +396,7 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
               gap: 10
               align: .center
               on press {
-                emit goBookmark(chapter: row.chapter, percent: row.percent)
+                emit goBookmark(chapter: row.chapter, percent: row.percent, locator: row.locator)
                 dismiss()
               }
               Column {
@@ -727,10 +750,16 @@ component Reader(book: lib.Book) {
   state warning = ""
   state fontName = ""
   state opened = false
-  /// 在线书：本机的 window.txt 从全书的第几章起，全书一共几章。本地书
-  /// 窗口就是整本，windowBase 永远是 0。
+  /// 在线书：本机的这一批章节从全书的第几章起，全书一共几章。本地书就是
+  /// 整本，windowBase 永远是 0。
   state windowBase = 0
   state windowTotal = 0
+  /// 这一窗里哪些章的正文已经在引擎里（全书章号），和取过但没取到的：换窗
+  /// 时清掉，取不到的不在同一窗里反复重试。
+  state loadedChapters: [int] = []
+  state triedChapters: [int] = []
+  /// 引擎里这些章的正文换过几次：每换一次，页和带子都该重画。
+  state chapterRev = 0
   /// 在线书的目录（全书下标）；空的时候用引擎自己的目录。
   state onlineToc: [engine.TocItem] = []
   /// 翻出窗口时要去的那一章；-1 是没有请求。它不能做 task 的 key：task
@@ -780,8 +809,17 @@ component Reader(book: lib.Book) {
   /// column exists all use this; a type change keeps the current place.
   state startChapter = -1
   state startWithin = 0.0
+  /// The place the reader asked for, in the column's own terms. A chapter's
+  /// top is an estimate until the bands around it have been laid out, so a
+  /// jump is made again once they have (see `settleAnchor`): the place doesn't
+  /// move, the page comes to it.
+  state anchorChapter = -1
+  state anchorWithin = 0.0
   /// A page-mode place to turn into a page once the chapter is laid out.
   state pendingPageFraction = -1.0
+  /// A kept place (a bookmark's, a note's, the saved reading position), as the
+  /// engine's stable address: applied once its chapter is laid out.
+  state pendingLocator = ""
   /// A link's anchor, applied once its chapter is laid out: a footnote's
   /// fragment is a line in the chapter the page is about to show.
   state pendingFragment = ""
@@ -945,6 +983,13 @@ component Reader(book: lib.Book) {
     } else {
       page = lib.resolve(page, pages)
     }
+    // A kept place is a paragraph, not a page: the page it falls on here is
+    // this type size's answer, and that is the whole point of keeping it so.
+    if !pendingLocator.isEmpty() {
+      let where = engine.locate(engineId, pendingLocator)
+      pendingLocator = ""
+      if where.page >= 0 && int(where.page) < pagesNow { page = int(where.page) }
+    }
     let path = fs.join([pagesDir(), "{book.id}-{spine}-{page}-{frame.width.int()}x{frame.height.int()}-{fileTag()}.eqp"])
     let ok = engine.renderPage(engineId, page, scale, lib.rgbaOf(palette.ink), lib.rgbaOf(palette.paper), false, path)
     if ok {
@@ -952,10 +997,38 @@ component Reader(book: lib.Book) {
       let info = engine.pageInfo(engineId, page)
       hereChapter = windowBase + spine
       herePercent = info.progress
-      library.save(book.id, windowBase + spine, info.progress)
+      library.save(book.id, windowBase + spine, info.progress, locator: placeLocator())
       announceReady()
       refreshMarks()
     }
+  }
+
+  /// The reader's place as the engine names it: a paragraph and a byte in it,
+  /// which a page height or a type size can't move. "" for an online book —
+  /// its spines are a window's, not the book's — and before anything is laid
+  /// out.
+  fn placeLocator() -> string {
+    if engineId <= 0 || online { return "" }
+    if library.mode == "scroll" {
+      if !columnReady || scrollHeight <= 0 { return "" }
+      let where = engine.flowHit(engineId, pageMargins.left + 2, contentY())
+      if where.spine < 0 { return "" }
+      let range = engine.locatorRange(engineId, where.line, where.byte, where.line, where.byte)
+      return range.split("|").first() ?? ""
+    }
+    if pages <= 0 { return "" }
+    return engine.locatorAt(engineId, page, pageMargins.left + 2, pageMargins.top + 2)
+  }
+
+  /// A kept place in the column: the line it names, in the book's flow. -1 when
+  /// the place isn't in that chapter.
+  fn locatorY(chapter: int, locator: string) -> float {
+    if engineId <= 0 || locator.isEmpty() { return -1 }
+    let ch = engine.flowChapter(engineId, chapter)
+    if !ch.ok { return -1 }
+    let where = engine.locate(engineId, locator)
+    if where.page < 0 { return -1 }
+    return engine.flowLineY(engineId, chapter, where.line)
   }
 
   /// The first page is on screen (or the book has none to put there): said
@@ -1004,11 +1077,6 @@ component Reader(book: lib.Book) {
     return y
   }
 
-  fn contentFraction() -> float {
-    if scrollHeight <= 0 { return 0 }
-    return contentY() / scrollHeight
-  }
-
   /// How far into its chapter the top line is (0…1). The chapter and its top
   /// are the engine's: the reader keeps no chapter table of its own.
   fn scrollWithin() -> float {
@@ -1032,15 +1100,24 @@ component Reader(book: lib.Book) {
 
   /// Opens the column: one call hands the engine the viewport and the type, and
   /// it keeps the chapter tops from then on. Heights are measured lazily — the
-  /// total is what the Scroll's content height is — and a chapter that fails to
-  /// lay out is height 0 without stopping the ones after it.
+  /// total starts as an estimate and becomes the truth a chapter at a time —
+  /// and a chapter that fails to lay out is height 0 without stopping the ones
+  /// after it.
   fn showScroll() {
+    // Where the reader is, in the old column's terms: a chapter and how far
+    // into it. A fraction of the whole book wouldn't survive the new heights,
+    // which is exactly what a type change brings.
+    let keepingPlace = columnReady && scrollHeight > 0
+    var keptChapter = -1
+    var keptWithin = 0.0
+    if keepingPlace {
+      let index = engine.flowSpineAt(engineId, contentY())
+      if index >= 0 {
+        keptChapter = index
+        keptWithin = scrollWithin()
+      }
+    }
     columnReady = false
-    // A new layout while the reader is already in place keeps the same place
-    // in the column. Opening, or a switch from pages, names a chapter and how
-    // far into it instead.
-    let keepingPlace = scrollHeight > 0
-    let keptFraction = contentFraction()
     let targetChapter = startChapter
     let targetWithin = startWithin
     let tile = scrollTileHeight()
@@ -1052,6 +1129,11 @@ component Reader(book: lib.Book) {
     )
     scrollTile = tile
     scrollTopPad = pageMargins.top
+    // The heights measured the last time this book was read on this screen at
+    // this type: the scrollbar starts where that reading left it, not on an
+    // estimate. (An online book's chapters change under it, and the engine's
+    // key says so: it would never match, so it isn't written.)
+    if !online { let _restored = engine.readScrollIndex(engineId, scrollIndexPath()) }
     let total = engine.flowHeight(engineId)
     scrollHeight = if count > 0 && total > 0 { total } else { 0 }
     columnReady = true
@@ -1071,30 +1153,53 @@ component Reader(book: lib.Book) {
       announceReady()
       return
     }
-    var target = 0.0
-    if keepingPlace {
-      target = keptFraction * scrollHeight
-    } else if targetChapter >= 0 {
-      let chapter = engine.flowChapter(engineId, targetChapter)
-      if chapter.ok {
-        target = chapter.top + targetWithin * chapter.height
-      }
-    }
-    if target < 0 { target = 0 }
-    if target > scrollHeight { target = scrollHeight }
     startChapter = -1
     startWithin = 0
     // Laid out, at this type and this size: a paper change from here on is
     // a new picture, not a new column.
     lastColumn = columnKey()
-    goToScrollY(scrollTopPad + target)
+    // A chapter's top is an estimate until the bands around it have been laid
+    // out, so the place is kept as an anchor as well: the scroll goes to the
+    // estimate now, and `settleAnchor` brings it to the measured top.
+    if keepingPlace && keptChapter >= 0 {
+      goToChapter(keptChapter, keptWithin)
+    } else if targetChapter >= 0 {
+      // A kept place names a paragraph: take it when that chapter still holds
+      // it, and the fraction when it doesn't (a place from before there were
+      // locators, or from another book).
+      let y = locatorY(targetChapter, pendingLocator)
+      if y >= 0 {
+        let ch = engine.flowChapter(engineId, targetChapter)
+        var within = targetWithin
+        if ch.height > 0 { within = (y - ch.top) / ch.height }
+        pendingLocator = ""
+        goToChapter(targetChapter, within)
+      } else {
+        pendingLocator = ""
+        goToChapter(targetChapter, targetWithin)
+      }
+    } else {
+      goToScrollY(scrollTopPad)
+    }
   }
 
-  /// Puts the Scroll at an absolute y in its own coordinates, and makes the
-  /// window there at once. The Scroll itself is moved by `scrollTick`'s task:
-  /// state changes can't wait for a layout, and a jump must not tear the
-  /// Scroll down and build it again.
-  fn goToScrollY(y: float) {
+  /// The heights measured for this book at this screen and this type. One file
+  /// a book: the engine checks the key inside it, so a file for another size or
+  /// another screen is simply not applied.
+  fn scrollIndexPath() -> string = fs.join([pagesDir(), "{book.id}.idx"])
+
+  /// Keeps them for the next open. Called where the place is saved (a scroll
+  /// that has settled) and when the page goes away.
+  fn keepColumnIndex() {
+    if online || engineId <= 0 || !columnReady || scrollHeight <= 0 { return }
+    try? fs.mkdirAll(pagesDir())
+    let _kept = engine.writeScrollIndex(engineId, scrollIndexPath())
+  }
+
+  /// Puts the Scroll at a flow y and makes the window there at once. The Scroll
+  /// itself is moved by `scrollTick`'s task: state changes can't wait for a
+  /// layout, and a jump must not tear the Scroll down and build it again.
+  fn scrollTo(y: float) {
     var target = y
     let min = scrollTopPad
     let max = scrollTopPad + scrollHeight
@@ -1106,6 +1211,51 @@ component Reader(book: lib.Book) {
     scrollTarget = target
     scrollTick += 1
     rememberScroll()
+  }
+
+  /// A flow y the reader asked for outright: nothing to come back to.
+  fn goToScrollY(y: float) {
+    anchorChapter = -1
+    scrollTo(y)
+  }
+
+  /// Puts the Scroll at a place in a chapter — a table of contents row, a
+  /// bookmark, the saved reading position — and remembers it as the anchor.
+  /// The chapter's top is an estimate until its neighbours have been laid out,
+  /// and the reader means the chapter, not the estimate.
+  fn goToChapter(chapter: int, within: float) {
+    if engineId <= 0 { return }
+    let ch = engine.flowChapter(engineId, chapter)
+    if !ch.ok || ch.height <= 0 { return }
+    var at = within
+    if at < 0 { at = 0 }
+    if at > 1 { at = 1 }
+    anchorChapter = chapter
+    anchorWithin = at
+    scrollTo(scrollTopPad + ch.top + at * ch.height)
+  }
+
+  /// After the bands around the anchor have been laid out, its chapter's top is
+  /// measured: put the reader on it. Before this, a jump to a chapter landed
+  /// wherever the estimate of the chapters before it was wrong by.
+  fn settleAnchor() {
+    if anchorChapter < 0 || engineId <= 0 { return }
+    let chapter = anchorChapter
+    let within = anchorWithin
+    anchorChapter = -1
+    let ch = engine.flowChapter(engineId, chapter)
+    if !ch.ok || ch.height <= 0 { return }
+    scrollTo(scrollTopPad + ch.top + within * ch.height)
+  }
+
+  /// The flow's height as the engine measures it now. Chapters are measured as
+  /// the reader reaches them, so the total grows into the truth; the Scroll's
+  /// content size has to follow it, or the end of the book sits at the wrong y.
+  fn refreshColumn() {
+    if engineId <= 0 || !columnReady { return }
+    let total = engine.flowHeight(engineId)
+    if total <= 0 || (total - scrollHeight).abs() < 1 { return }
+    scrollHeight = total
   }
 
   /// A band is smaller than the viewport: one screen per bitmap makes every
@@ -1162,7 +1312,12 @@ component Reader(book: lib.Book) {
   fn savePlace() {
     if scrollHeight <= 0 { return }
     let index = engine.flowSpineAt(engineId, contentY())
-    if index >= 0 { library.save(book.id, windowBase + index, scrollWithin()) }
+    if index >= 0 {
+      library.save(book.id, windowBase + index, scrollWithin(), locator: placeLocator())
+    }
+    // The same settle that writes the place writes what the column cost to
+    // measure: the next open starts on real heights, not estimates.
+    keepColumnIndex()
   }
 
   /// Keeps a bookmark at the exact line at the top, not at a band boundary.
@@ -1174,7 +1329,7 @@ component Reader(book: lib.Book) {
       chapter = windowBase + (if index >= 0 { index } else { hereChapter - windowBase })
     }
     let percent = if library.mode == "scroll" { scrollWithin() } else { herePercent }
-    if library.toggleBookmark(book.id, chapter: chapter, percent: percent) {
+    if library.toggleBookmark(book.id, chapter: chapter, percent: percent, locator: placeLocator()) {
       snackbar("已加书签")
     } else {
       snackbar("已删除书签")
@@ -1276,8 +1431,9 @@ component Reader(book: lib.Book) {
     selRects = []
   }
 
-  /// 这一页上已有笔记的高亮。笔记按章和行号存：排版没变时引擎重新选中
-  /// 同一段原文，和存下的引文对得上才画；换了字号或屏幕、行号对不上的，
+  /// 这一页上已有笔记的高亮。笔记存的是引擎的稳定地址（段 + 段内字节）
+  /// —— 排版变了，地址还指着同一段原文，所以按地址重新选中再画；只有老
+  /// 笔记（没有地址）才退回当时的行号。两种都用引文校一遍：对不上就不画，
   /// 宁可不画，也不把高亮画到别的字上。
   fn refreshMarks() {
     if engineId <= 0 || library.mode != "page" || pages <= 0 {
@@ -1286,9 +1442,27 @@ component Reader(book: lib.Book) {
     }
     var next: [PageMark] = []
     for note in library.notesInChapter(book.id, chapter: windowBase + spine) {
-      let count = engine.selectLines(engineId, note.startLine, note.startByte, note.endLine, note.endByte)
+      var aLine = note.startLine
+      var aByte = note.startByte
+      var bLine = note.endLine
+      var bByte = note.endByte
+      if !note.locator.isEmpty() {
+        let start = engine.locate(engineId, note.locator)
+        if start.page < 0 { continue }
+        aLine = start.line
+        aByte = start.byte
+        if !note.endLocator.isEmpty() {
+          let end = engine.locate(engineId, note.endLocator)
+          if end.page >= 0 {
+            bLine = end.line
+            bByte = end.byte
+          }
+        }
+      }
+      let count = engine.selectLines(engineId, aLine, aByte, bLine, bByte)
       if count <= 0 { continue }
-      if engine.selectionText(engineId) != note.quote { continue }
+      // 比的是字，不是断行：同一段原文换一个字号就断在别处，字没变。
+      if lib.squash(engine.selectionText(engineId)) != lib.squash(note.quote) { continue }
       var i = 0
       for rect in engine.selectionRects(engineId) {
         if rect.page != page { continue }
@@ -1303,11 +1477,21 @@ component Reader(book: lib.Book) {
   fn keepSelection(text: string) {
     if !selOn || engineId <= 0 { return }
     let percent = engine.progress(engineId, selStartLine)
+    // 两端也存成引擎的稳定地址：以后换字号、换屏幕，高亮还落在同一段原文上。
+    var startLocator = ""
+    var endLocator = ""
+    if !online {
+      let range = engine.locatorRange(engineId, selStartLine, selStartByte, selEndLine, selEndByte)
+      let parts = range.split("|")
+      startLocator = parts.first() ?? ""
+      if parts.count() > 1 { endLocator = parts[1] }
+    }
     let _kept = library.addNote(
       book.id, chapter: windowBase + spine,
       startLine: selStartLine, startByte: selStartByte,
       endLine: selEndLine, endByte: selEndByte,
-      percent: percent, quote: selText, text: text,
+      percent: percent, quote: lib.squash(selText), text: text,
+      locator: startLocator, endLocator: endLocator,
     )
     clearSelection()
     refreshMarks()
@@ -1443,6 +1627,13 @@ component Reader(book: lib.Book) {
         announceReady()
       }
     }
+
+    // Laying these bands out measured the chapters they touch: the column's
+    // height is more true than it was, and the place the reader asked for now
+    // has a measured top to land on. Both follow from the same pass, in this
+    // order — the new total first, then the place inside it.
+    refreshColumn()
+    settleAnchor()
   }
 
   // A fling crosses tiles. Save once it has been quiet for a moment; the
@@ -1451,6 +1642,15 @@ component Reader(book: lib.Book) {
     if library.mode != "scroll" || !columnReady || placeTick == 0 { return }
     await sleep(250ms)
     savePlace()
+  }
+
+  // 在线书：读到哪一章取哪一章，顺手取后面两章。整本不下载；一窗取完才换窗。
+  task("{spine}:{hereChapter}:{windowTick}:{columnReady}:{chapterRev}") {
+    if !online || engineId <= 0 { return }
+    let at = if library.mode == "scroll" { hereChapter } else { windowBase + spine }
+    await ensureChapter(at)
+    await ensureChapter(at + 1)
+    await ensureChapter(at + 2)
   }
 
   // The Scroll is moved here, after it has its new content height: a jump is
@@ -1478,26 +1678,37 @@ component Reader(book: lib.Book) {
   }
 
   /// The paper a page was drawn on, as its file name says it: the same lines on
-  /// another paper are another file, and must be.
-  fn fileTag() -> string = if windowBase > 0 { "{layoutTag()}-{library.theme}-w{windowBase}" } else { "{layoutTag()}-{library.theme}" }
+  /// another paper are another file, and must be. An online book adds the
+  /// version of the text in the engine: when a chapter's body arrives, the pages
+  /// drawn from the placeholder are not the pages of the chapter.
+  fn fileTag() -> string {
+    let rev = if online { "-r{chapterRev}" } else { "" }
+    let win = if windowBase > 0 { "-w{windowBase}" } else { "" }
+    return "{layoutTag()}{rev}{win}-{library.theme}"
+  }
 
   /// The column a layout produced: what a new layout would give the same
   /// answer to. The paper is not in it — it neither moves a line nor changes
-  /// a chapter's height.
-  fn columnKey() -> string = "{layoutTag()}:{frame.width.int()}x{frame.height.int()}"
+  /// a chapter's height. An online book's text changes under the column, so
+  /// the version is.
+  fn columnKey() -> string {
+    let rev = if online { ":r{chapterRev}" } else { "" }
+    return "{layoutTag()}:{frame.width.int()}x{frame.height.int()}{rev}"
+  }
 
-  /// 在线书：目录本机有就够，窗口按要读的那一章现取现拼。
-  async fn openOnline() throws -> string {
+  /// 在线书：引擎里是一本「流式书」——目录先按章占好位置（标题已经有了，
+  /// 正文还没取），读到哪一章才取哪一章的正文，替换进它自己的位置。整本不
+  /// 下载；换窗也不重开引擎，字体还在，不会又加载一次。
+  async fn openOnline() throws {
     let found = allSources?.definitionOf(book.sourceId)
     if found == none { throw Error("这本书的书源不在列表里了，先导入书源") }
-    let def = found
     var meta = remote.readMeta(book.id)
     if meta == none {
-      meta = try await remote.fetchMeta(def!, sources.Book(name: book.title, author: book.author, bookUrl: book.bookUrl))
+      meta = try await remote.fetchMeta(found!, sources.Book(name: book.title, author: book.author, bookUrl: book.bookUrl))
       if let m = meta { remote.writeMeta(book.id, m) }
     }
     if meta == none { throw Error("这本书的目录没有读到") }
-    windowTotal = meta!.chapterCount
+    windowTotal = meta!.toc.count()
     var whole: [engine.TocItem] = []
     for (i, entry) in meta!.toc.enumerated() {
       whole.push(engine.TocItem(title: entry.title, spine: i, depth: 0))
@@ -1506,11 +1717,66 @@ component Reader(book: lib.Book) {
     var target = saved.chapter
     if target < 0 { target = 0 }
     if windowTotal > 0 && target >= windowTotal { target = windowTotal - 1 }
-    let (base, path) = try await remote.materialize(def!, id: book.id, meta: meta!, base: target, count: 3)
-    windowBase = base
-    spine = target - base
+    try await buildWindow(base: windowBaseFor(target), target: target)
+    spine = target - windowBase
     if spine < 0 { spine = 0 }
-    return path
+  }
+
+  /// 正文还没到的章在引擎里的样子：章号得先占住，全书的目录才对得上。
+  fn placeholderOf(at: int) -> string = "第 {at + 1} 章的正文正在取…"
+
+  /// 在引擎里摆好一窗：从 base 起的章按目录标题占好位置，再把要读的那一章
+  /// 的正文填进去，其余的读到再填。
+  async fn buildWindow(base: int, target: int) throws {
+    let def = allSources?.definitionOf(book.sourceId)
+    let meta = remote.readMeta(book.id)
+    if def == none || meta == none { throw Error("这本书的目录读不到了") }
+    if engineId <= 0 { throw Error("引擎里没有这本书") }
+    let count = windowCountOf(windowTotal, base: base)
+    if count <= 0 { throw Error("这一章不在这本书里") }
+    // 换窗只是换章节表：字体、书、引擎都还在。
+    let _cleared = engine.clearChapters(engineId)
+    for k in 0..<count {
+      let at = base + k
+      let _n = engine.appendChapter(engineId, title: remote.headingOf(meta!, at), text: placeholderOf(at))
+    }
+    windowBase = base
+    loadedChapters = []
+    triedChapters = []
+    // 要读的那一章先取：正文到了才排版，读者看不见占位。
+    if await loadChapter(def!, meta!, target) {
+      loadedChapters = loadedChapters + [target]
+    } else {
+      snackbar("这一章没有取到，网络可能断了")
+    }
+  }
+
+  /// 取一章的正文（全书的章号），填进引擎里它自己的位置。
+  async fn loadChapter(def: sources.BookSource, meta: remote.Meta, at: int) -> bool {
+    if engineId <= 0 || at < 0 || at >= windowTotal { return false }
+    let local = at - windowBase
+    if local < 0 || local >= engine.chapterCount(engineId) { return false }
+    let text = try? await remote.chapterText(def, id: book.id, meta: meta, at: at)
+    // 取的时候窗口可能已经换了：那一章的正文就不属于现在这本书了。
+    if engineId <= 0 || at - windowBase != local { return false }
+    let body = remote.chapterBody(text ?? "", at: at)
+    let ok = engine.replaceChapter(engineId, spine: local, title: remote.headingOf(meta, at), text: body)
+    if ok { chapterRev += 1 }
+    return ok
+  }
+
+  /// 读到一章，就取这一章的正文，顺手把后面两章也取了：翻页不停在「正在取」
+  /// 上。取过的章记得住，换窗时清空。
+  async fn ensureChapter(at: int) {
+    if !online || engineId <= 0 || at < 0 || at >= windowTotal { return }
+    if loadedChapters.contains(at) || triedChapters.contains(at) { return }
+    let def = allSources?.definitionOf(book.sourceId)
+    let meta = remote.readMeta(book.id)
+    if def == none || meta == none { return }
+    triedChapters = triedChapters + [at]
+    if await loadChapter(def!, meta!, at) {
+      loadedChapters = loadedChapters + [at]
+    }
   }
 
   /// 字体：应用的衬线字体先试，平台的不行再找一个文件。
@@ -1541,35 +1807,18 @@ component Reader(book: lib.Book) {
     if switching { return }
     switching = true
     defer { switching = false }
-    let def = allSources?.definitionOf(book.sourceId)
-    let meta = remote.readMeta(book.id)
-    if def == none || meta == none {
-      error = "这本书的目录读不到了"
-      return
-    }
-    // 往回翻时从上一章起拼，落在它的最后一页。
+    // 往回翻时落在上一章的末尾。
     let atEnd = windowEnd
-    let got = try? await remote.materialize(def!, id: book.id, meta: meta!, base: target, count: 3)
-    if got == none {
-      error = "这一章没有取到，网络可能断了"
+    do {
+      try await buildWindow(base: windowBaseFor(target), target: target)
+    } catch e {
+      error = e.message
+      windowTarget = -1
       return
     }
-    let (base, path) = got!
-    if engineId > 0 {
-      engine.close(engineId)
-      engineId = -1
-    }
-    let id = engine.open(path)
-    if id <= 0 {
-      error = "打不开这一章：{engine.lastError()}"
-      return
-    }
-    engineId = id
-    mountFace(id)
-    windowBase = base
-    spine = target - base
+    spine = target - windowBase
     if spine < 0 { spine = 0 }
-    let count = engine.chapterCount(id)
+    let count = engine.chapterCount(engineId)
     if count > 0 && spine >= count { spine = count - 1 }
     page = if atEnd { -1 } else { 0 }
     if windowPercent >= 0 {
@@ -1597,17 +1846,30 @@ component Reader(book: lib.Book) {
   async fn openBook() throws {
     if opened { return }
     opened = true
-    let file = if online { try await openOnline() } else { try await bookFileOf(book) }
-    if !fs.exists(file) {
-      error = "找不到《{book.title}》的文件"
-      announceReady()
-      return
-    }
-    let id = engine.open(file)
-    if id <= 0 {
-      error = "打不开这本书：{engine.lastError()}"
-      announceReady()
-      return
+    var id = -1
+    if online {
+      // 在线书没有整本字节：引擎里先是一本空书，章节按窗推给它。
+      id = engine.newBook(book.title)
+      if id <= 0 {
+        error = "打不开这本书：{engine.lastError()}"
+        announceReady()
+        return
+      }
+    } else {
+      let file = try await bookFileOf(book)
+      if !fs.exists(file) {
+        error = "找不到《{book.title}》的文件"
+        announceReady()
+        return
+      }
+      id = engine.open(file)
+      if id <= 0 {
+        error = "打不开这本书：{engine.lastError()}"
+        announceReady()
+        return
+      }
+      let named = engine.title(id)
+      if !named.isEmpty() { shownTitle = named }
     }
     engineId = id
     let now = time.now().unix()
@@ -1617,22 +1879,21 @@ component Reader(book: lib.Book) {
       countedTo = now
     }
     mountFace(id)
-    if !online {
-      let named = engine.title(id)
-      if !named.isEmpty() { shownTitle = named }
-    }
-    let count = engine.chapterCount(id)
-    // Where the book was left: a chapter and how far into it. Both modes
-    // take that as their place. 在线书的 spine 已经是窗口里的下标。
+    var firstChapter = saved.chapter
+    if firstChapter < 0 { firstChapter = 0 }
     if online {
-      if count > 0 && spine >= count { spine = count - 1 }
-      startChapter = spine
+      // 目录在 meta 里，窗口从要读的那一章附近起。
+      try await openOnline()
+      firstChapter = spine
     } else {
-      if count > 0 && spine >= count { spine = 0 }
-      startChapter = if saved.chapter > 0 { saved.chapter } else { 0 }
-      if count > 0 && startChapter >= count { startChapter = count - 1 }
+      let count = engine.chapterCount(id)
+      if count > 0 && firstChapter >= count { firstChapter = 0 }
     }
+    // Where the book was left: a chapter and how far into it — and the
+    // paragraph it names, when there is one.
+    startChapter = firstChapter
     startWithin = if saved.percent < 0 { 0 } else if saved.percent > 1 { 1 } else { saved.percent }
+    pendingLocator = saved.locator
     if library.mode == "page" { pendingPageFraction = startWithin }
     try await spawn { try fs.mkdirAll(pagesDir()) }
     // Off the main thread, once a book opens: the cache is for the reading that
@@ -1644,7 +1905,7 @@ component Reader(book: lib.Book) {
   // One pass for every change: the chapter, the page, the view's size, the
   // size of the type, the paper, the reading mode. The engine's layout is
   // idempotent, so this is only as expensive as the page it produces.
-  task("{spine}:{page}:{frame.width}:{frame.height}:{library.size}:{library.line}:{library.margins}:{library.letter}:{library.word}:{library.theme}:{library.mode}") {
+  task("{spine}:{page}:{frame.width}:{frame.height}:{library.size}:{library.line}:{library.margins}:{library.letter}:{library.word}:{library.theme}:{library.mode}:{chapterRev}") {
     if frame.width <= 32 { return }
     // A new paper is another picture of the column the reader is in, not
     // another layout: the band task follows the new tag by itself and the
@@ -1722,14 +1983,12 @@ component Reader(book: lib.Book) {
     }
     if local < 0 || local >= count { return }
     if library.mode == "scroll" {
-      // The engine owns the chapter's top, and asking for one measures the
-      // chapters before it: no table of our own to look it up in.
+      // The engine owns the chapter's top. Asking for it measures that chapter
+      // — the ones before it may still be estimates — so the place is kept as
+      // an anchor and put right once its neighbours have been laid out.
       if columnReady && scrollHeight > 0 {
-        let chapter = engine.flowChapter(engineId, local)
-        if chapter.ok {
-          goToScrollY(scrollTopPad + chapter.top)
-          return
-        }
+        goToChapter(local, 0)
+        return
       }
       // Not laid out yet: the next layout takes this as its place.
       startChapter = local
@@ -1740,9 +1999,9 @@ component Reader(book: lib.Book) {
     page = 0
   }
 
-  /// A bookmark's place: a chapter, and how far into it. A table of contents
-  /// row is a chapter's start; this is anywhere in it.
-  fn goTo(chapter: int, percent: float) {
+  /// A bookmark's place: a chapter, and how far into it (or the paragraph it
+  /// names). A table of contents row is a chapter's start; this is anywhere.
+  fn goTo(chapter: int, percent: float, locator: string = "") {
     touch()
     clearSelection()
     let count = engine.chapterCount(engineId)
@@ -1760,21 +2019,29 @@ component Reader(book: lib.Book) {
     if local < 0 || local >= count { return }
     if library.mode == "scroll" {
       if columnReady && scrollHeight > 0 {
-        var target = at * scrollHeight
-        let ch = engine.flowChapter(engineId, local)
-        if ch.ok { target = ch.top + at * ch.height }
-        goToScrollY(scrollTopPad + target)
+        let y = locatorY(local, locator)
+        if y >= 0 {
+          let ch = engine.flowChapter(engineId, local)
+          var within = at
+          if ch.height > 0 { within = (y - ch.top) / ch.height }
+          goToChapter(local, within)
+          return
+        }
+        goToChapter(local, at)
       } else {
         startChapter = local
         startWithin = at
+        pendingLocator = locator
       }
       return
     }
     let same = local == spine
     spine = local
     page = 0
-    // Page mode: the fraction is within this chapter, so it is the page.
+    // Page mode: the fraction is within this chapter, so it is the page — and
+    // a paragraph, when there is one, is the page it lands on here.
     pendingPageFraction = at
+    pendingLocator = locator
     if same { show() }
   }
 
@@ -1813,13 +2080,14 @@ component Reader(book: lib.Book) {
   /// so this is a scrollTo, not a new layout.
   fn goLinkScroll(chapter: int, fragment: string) {
     if columnReady && scrollHeight > 0 {
+      let ch = engine.flowChapter(engineId, chapter)
       var y = -1.0
       if !fragment.isEmpty() { y = engine.flowAnchorY(engineId, chapter, fragment) }
-      if y < 0 {
-        let ch = engine.flowChapter(engineId, chapter)
-        y = if ch.ok { ch.top } else { 0.0 }
-      }
-      goToScrollY(scrollTopPad + y)
+      if y < 0 && ch.ok { y = ch.top }
+      if y < 0 { return }
+      var within = 0.0
+      if ch.height > 0 { within = (y - ch.top) / ch.height }
+      goToChapter(chapter, within)
       return
     }
     startChapter = chapter
@@ -2069,7 +2337,7 @@ component Reader(book: lib.Book) {
               on pick(i) {
                 if i >= 0 && i < tocItems.count() { jump(tocItems[i].spine) }
               }
-              on goBookmark(chapter, percent) { goTo(chapter, percent) }
+              on goBookmark(chapter, percent, locator) { goTo(chapter, percent, locator: locator) }
               on dropBookmark(id) { library.removeBookmark(id) }
               on dropNote(id) {
                 library.removeNote(id)

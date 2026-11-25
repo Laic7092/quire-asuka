@@ -53,6 +53,13 @@ extern fn eb_plain_resolved_fragment(id: Int32) -> CString
 extern fn eb_plain_fragment_line(id: Int32, fragment: CString) -> Int32
 
 extern fn eb_plain_open(data: bytes, name: CString?) -> Int32
+/// A book the app feeds chapter by chapter: no file, no whole-book scan.
+extern fn eb_plain_new_book(title: CString) -> Int32
+extern fn eb_plain_append_chapter(id: Int32, title: CString, text: CString) -> Int32
+extern fn eb_plain_replace_chapter(id: Int32, spine: UInt32, title: CString, text: CString) -> Int32
+extern fn eb_plain_clear_chapters(id: Int32) -> Int32
+/// A chapter's content version: what a page of it was drawn from.
+extern fn eb_plain_chapter_rev(id: Int32, spine: UInt32) -> UInt64
 extern fn eb_plain_close(id: Int32) -> Int32
 extern fn eb_plain_last_error() -> CString
 extern fn eb_plain_title(id: Int32) -> CString
@@ -139,6 +146,17 @@ extern fn eb_plain_scroll_hit(id: Int32, x: Float32, y: Float32) -> ScrollLoc
 extern fn eb_plain_scroll_line_y(id: Int32, spine: UInt32, line: UInt32) -> Float32
 extern fn eb_plain_scroll_anchor_y(id: Int32, spine: UInt32, fragment: CString) -> Float32
 extern fn eb_plain_scroll_progress(id: Int32, y: Float32) -> Float32
+/// 本次会话量过的章高：下次在同样的屏、同样的字下打开，滚动条直接是这个精度。
+extern fn eb_plain_scroll_index_write(id: Int32, path: CString) -> Int32
+extern fn eb_plain_scroll_index_read(id: Int32, path: CString) -> Int32
+/// 稳定位置：`spine:node:offset`，换字号、换页高都还指向同一段原文。
+extern fn eb_plain_locator_at(id: Int32, page: UInt32, x: Float32, y: Float32) -> CString
+extern fn eb_plain_locator_range(
+  id: Int32, aPage: UInt32, aLine: UInt32, aByte: UInt32,
+  bPage: UInt32, bLine: UInt32, bByte: UInt32,
+) -> CString
+extern fn eb_plain_locate(id: Int32, locator: CString) -> Loc
+
 extern fn eb_plain_hit(id: Int32, page: UInt32, x: Float32, y: Float32) -> Loc
 extern fn eb_plain_progress(id: Int32, page: UInt32, line: UInt32, byte: UInt32) -> Float32
 extern fn eb_plain_select(
@@ -196,6 +214,47 @@ pub fn registerFirstFont(id: int, paths: [string]) -> bool {
     if registerFont(id, path: path) { return true }
   }
   return false
+}
+
+/// ---- A book the app feeds ----
+///
+/// An online source has no file to open and no whole book to download: its
+/// chapters arrive one at a time, in the order a reader reaches them. This is
+/// the engine's side of that — a book with a title and no chapters, chapters
+/// appended as they come, and each one replaceable in place. A chapter keeps
+/// its index, so a table of contents is the book's own order.
+
+/// An empty book, ready for `appendChapter`. -1 when the engine refused it.
+pub fn newBook(title: string) -> int {
+  let name = if title.isEmpty() { "未命名" } else { title }
+  return int(eb_plain_new_book(name))
+}
+
+/// Adds a chapter at the end. Its text is one line a paragraph. Returns the
+/// new chapter count, -1/-2 when it didn't fit.
+pub fn appendChapter(id: int, title: string, text: string) -> int {
+  if id <= 0 || text.isEmpty() { return -1 }
+  return int(eb_plain_append_chapter(i32(clamping: id), title, text))
+}
+
+/// Replaces one chapter's text, keeping its index and the chapters after it.
+/// Its pages and its height are laid out again the next time it's shown.
+pub fn replaceChapter(id: int, spine: int, title: string, text: string) -> bool {
+  if id <= 0 || spine < 0 || text.isEmpty() { return false }
+  return eb_plain_replace_chapter(i32(clamping: id), u32(clamping: spine), title, text) == 0
+}
+
+/// Takes every chapter away, for a new window of the same book.
+pub fn clearChapters(id: int) -> bool {
+  if id <= 0 { return false }
+  return eb_plain_clear_chapters(i32(clamping: id)) == 0
+}
+
+/// A chapter's content version: a page or a band drawn from an older one is
+/// stale, and its file name says so. 0 when there's no such chapter.
+pub fn chapterRev(id: int, spine: int) -> u64 {
+  if id <= 0 || spine < 0 { return 0 }
+  return eb_plain_chapter_rev(i32(clamping: id), u32(clamping: spine))
 }
 
 /// A page's margins, in points: the text's column, not the screen's edges.
@@ -293,8 +352,8 @@ pub fn beginScroll(id: int, width: float, height: float, margins: Margins, fontS
   ))
 }
 
-/// One chapter's place in the column. Asking for chapter i measures 0…i, so a
-/// host may spread the work over frames; `flowHeight` measures the whole book.
+/// One chapter's place in the column. Asking for chapter i measures that
+/// chapter, and only that one: the ones before it may still be estimates.
 pub fn flowChapter(id: int, index: int) -> FlowChapter {
   let c = eb_plain_scroll_chapter(i32(clamping: id), u32(clamping: index))
   return FlowChapter(
@@ -303,9 +362,26 @@ pub fn flowChapter(id: int, index: int) -> FlowChapter {
   )
 }
 
-/// The column's total height in points (the scroll container's content size).
-/// Measured on the first call; -1 when there's no session.
+/// The column's total height in points (the scroll container's content size):
+/// the measured chapters, and estimates for the ones not laid out yet. It grows
+/// into the truth as the reader goes, and "问一次量整本" never happens again.
+/// -1 when there's no session.
 pub fn flowHeight(id: int) -> float = eb_plain_scroll_total_height(i32(clamping: id))
+
+/// Writes the heights measured so far, so the next open at this screen and this
+/// type starts where this one ended. The engine checks the key inside: another
+/// book, screen, type or font is not applied.
+pub fn writeScrollIndex(id: int, path: string) -> bool {
+  if id <= 0 { return false }
+  return eb_plain_scroll_index_write(i32(clamping: id), path) >= 0
+}
+
+/// Reads them back. False when the file is for another screen, type, font or
+/// book: the column then works from its own estimates.
+pub fn readScrollIndex(id: int, path: string) -> bool {
+  if id <= 0 { return false }
+  return eb_plain_scroll_index_read(i32(clamping: id), path) == 1
+}
 
 /// The chapter a flow y falls in; -1 past the end or with no session.
 pub fn flowSpineAt(id: int, y: float) -> int = int(eb_plain_scroll_spine_at(i32(clamping: id), y))
@@ -335,6 +411,43 @@ pub fn flowProgress(id: int, y: float) -> float = eb_plain_scroll_progress(i32(c
 
 /// Where this point in the page falls in the text.
 pub fn hit(id: int, page: int, x: float, y: float) -> Loc = eb_plain_hit(i32(clamping: id), u32(clamping: page), x, y)
+
+/// A stable place in the text, laid out at the type size in hand.
+pub struct Place {
+  /// -1: the place isn't in the chapter the engine has now.
+  page: int
+  line: int
+  byte: int
+}
+
+/// This point of a page as a stable place: `spine:node:offset`. The page, the
+/// line and the type size all change with the reader's settings; the paragraph
+/// and the byte in it don't, so a bookmark kept as one of these still means the
+/// same words after a resize. "" when nothing is there.
+pub fn locatorAt(id: int, page: int, x: float, y: float) -> string {
+  if id <= 0 { return "" }
+  return eb_plain_locator_at(i32(clamping: id), u32(clamping: page), x, y)
+}
+
+/// Two ends of a selection as one stable range: `a|b`, with the ends in the
+/// text's own order. Both are lines of the chapter the engine laid out last —
+/// a page's lines, as `hit` gives them. "" when they have no place to anchor to.
+pub fn locatorRange(id: int, aLine: int, aByte: int, bLine: int, bByte: int) -> string {
+  if id <= 0 { return "" }
+  return eb_plain_locator_range(
+    i32(clamping: id),
+    0, u32(clamping: aLine), u32(clamping: aByte),
+    0, u32(clamping: bLine), u32(clamping: bByte),
+  )
+}
+
+/// A stable place as the page, line and byte it falls on in the chapter the
+/// engine laid out last. `page` is -1 when it isn't that chapter.
+pub fn locate(id: int, locator: string) -> Place {
+  if id <= 0 || locator.isEmpty() { return Place(page: -1, line: 0, byte: 0) }
+  let where = eb_plain_locate(i32(clamping: id), locator)
+  return Place(page: int(where.page), line: int(where.line), byte: int(where.byte))
+}
 
 /// One rectangle of a selection, in page points.
 pub struct Rect {

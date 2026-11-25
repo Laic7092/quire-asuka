@@ -1,0 +1,113 @@
+// 稳定位置（`spine:node:offset`）：书签、笔记和阅读进度按它存，换字号、
+// 换页高、换屏幕都还落在同一段原文上。这是阅读页那几条路径的地基，所以
+// 单独测：一个地方、一段区间，在两种排版下必须是同一段字。
+
+import std/embed
+import std/fs
+
+import ./engine
+import ./lib
+
+let locatorFace = embed.bytes("fonts/NotoSerifSC-Regular.woff")
+let locatorMargins = engine.Margins(top: 28, right: 30, bottom: 28, left: 30)
+
+/// 样书，带字体，像阅读页那样打开。
+fn locatorSample() -> int {
+  let books = samples()
+  let book = books.find(b => b.title == "散文選") ?? books[0]
+  let path = fs.join([fs.appDir(), "locator.txt"])
+  do { try fs.writeText(path, text: book.raw) } catch {}
+  let id = engine.open(path)
+  let _font = engine.registerFontBytes(id, data: locatorFace)
+  return id
+}
+
+/// 一个字符串的字节区间里的那段字。
+fn sliceBytes(text: string, start: int, end: int) -> string = text.byteSlice(start, end)
+
+test "a place kept as a locator is the same words at another type size" {
+  let id = locatorSample()
+  expect(id > 0)
+  let pages = engine.layout(id, 0, 390, 844, locatorMargins, 1.0, 1.6)
+  expect(pages > 0)
+
+  // 第一页上的一个点：那里的字，和它的稳定位置。
+  let at = engine.hit(id, 0, 60, 200)
+  expect(at.page >= 0)
+  let lineBefore = engine.lineText(id, int(at.line))
+  let wordBefore = lib.wordAt(lineBefore, int(at.byte))
+  expect(wordBefore.end > wordBefore.start)
+  let word = sliceBytes(lineBefore, wordBefore.start, wordBefore.end)
+  let locator = engine.locatorAt(id, 0, 60, 200)
+  expect(!locator.isEmpty())
+
+  // 大一号的字：行、页、页码全都变了，位置没变。
+  let bigger = engine.layout(id, 0, 390, 844, locatorMargins, 1.4, 1.6)
+  expect(bigger > 0)
+  let where = engine.locate(id, locator)
+  expect(where.page >= 0)
+  let lineAfter = engine.lineText(id, where.line)
+  let wordAfter = lib.wordAt(lineAfter, where.byte)
+  expect(sliceBytes(lineAfter, wordAfter.start, wordAfter.end) == word)
+
+  // 同一句话在另一章里找不到：位置说的是章、段和段内字节，三个都在。
+  let _other = engine.layout(id, 1, 390, 844, locatorMargins, 1.4, 1.6)
+  expect(engine.locate(id, locator).page < 0)
+  engine.close(id)
+}
+
+test "a selection kept as a locator range is the same text at another type size" {
+  let id = locatorSample()
+  expect(id > 0)
+  let _pages = engine.layout(id, 0, 390, 844, locatorMargins, 1.0, 1.6)
+
+  // 一段选区：从一行的中间到几行之后。
+  let from = engine.hit(id, 0, 70, 210)
+  let to = engine.hit(id, 0, 320, 330)
+  expect(from.page >= 0 && to.page >= 0)
+  let made = engine.select(id, from, to)
+  expect(made > 0)
+  let quote = engine.selectionText(id)
+  expect(!quote.isEmpty())
+  let range = engine.locatorRange(id, aLine: int(from.line), aByte: int(from.byte), bLine: int(to.line), bByte: int(to.byte))
+  let parts = range.split("|")
+  expect(parts.count() == 2)
+  // 空区间也能取到位置：一个书签就是一个端点。
+  let point = engine.locatorRange(id, aLine: int(from.line), aByte: int(from.byte), bLine: int(from.line), bByte: int(from.byte))
+  expect(point.split("|").first() == parts[0])
+
+  // 换排版：两端的行号都对不上了，地址还指着这两端。
+  let _wider = engine.layout(id, 0, 390, 844, locatorMargins, 1.4, 2.0)
+  let start = engine.locate(id, parts[0])
+  let end = engine.locate(id, parts[1])
+  expect(start.page >= 0 && end.page >= 0)
+  let again = engine.selectLines(id, start.line, start.byte, end.line, end.byte)
+  expect(again > 0)
+  // 选区文本按排版断行：比的是字，不是断在哪儿。
+  expect(lib.squash(engine.selectionText(id)) == lib.squash(quote))
+
+  engine.close(id)
+}
+
+test "a place names the paragraph and a byte in it" {
+  let id = locatorSample()
+  expect(id > 0)
+  let _pages = engine.layout(id, 0, 390, 844, locatorMargins, 1.0, 1.6)
+  // 同一行上的两个点：段相同，段内字节不同 —— 位置细到字，不是细到段。
+  let a = engine.locatorAt(id, 0, 40, 150)
+  let b = engine.locatorAt(id, 0, 200, 150)
+  expect(!a.isEmpty() && !b.isEmpty())
+  expect(a != b)
+  let pa = a.split(":")
+  let pb = b.split(":")
+  expect(pa.count() == 3 && pb.count() == 3)
+  expect(pa[0] == pb[0])
+  expect(pa[1] == pb[1])
+  expect(pa[2] != pb[2])
+
+  // 地址 → 页/行/字节 → 同一个点 → 同一个地址：这一条路得能来回走。
+  let back = engine.locate(id, a)
+  expect(back.page >= 0)
+  expect(engine.locatorAt(id, back.page, 40, 150) == a)
+  engine.close(id)
+}

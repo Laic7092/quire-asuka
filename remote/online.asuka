@@ -122,51 +122,19 @@ pub fn headingOf(meta: Meta, at: int) -> string {
   return "第 {at + 1} 章 {title}"
 }
 
-/// 把窗口的几章拼成一段给引擎看的文字。bodies 与 base 起逐章对应；
-/// 空的那一章写成占位，不让整段窗口失败。
-pub fn windowText(meta: Meta, base: int, bodies: [string]) -> string {
+/// 一章给引擎看的正文：一行一段（引擎的 TXT 规则：换行就是分段）。
+/// 一章都没取到时写成占位，读者看得见「这一章没有读到」，而不是一整章空白。
+pub fn chapterBody(text: string, at: int) -> string {
   var parts: [string] = []
-  for k in 0..<bodies.count() {
-    let at = base + k
-    if at < 0 || at >= meta.toc.count() { continue }
-    parts.push(headingOf(meta, at))
-    parts.push("")
-    let body = bodies[k].trim()
-    if body.isEmpty() {
-      parts.push("（这一章没有读到。翻回去再试一次，或者换一个书源。）")
-    } else {
-      for line in body.split("\n") {
-        let text = line.trim()
-        if text.isEmpty() { continue }
-        parts.push(text)
-        parts.push("")
-      }
-    }
+  for line in text.split("\n") {
+    let one = line.trim()
+    if one.isEmpty() { continue }
+    parts.push(one)
+  }
+  if parts.isEmpty() {
+    return "（第 {at + 1} 章没有读到。翻回去再试一次，或者换一个书源。）"
   }
   return parts.joined(separator: "\n")
-}
-
-/// 物化一个窗口：从 base 起的 count 章（不足 count 就是到目录末尾）。
-/// 返回实际的第一章和窗口文件；一章都取不到时也写占位，阅读页至少能
-/// 打开。
-pub async fn materialize(def: sources.BookSource, id: string, meta: Meta, base: int, count: int = 3) throws -> (int, string) {
-  let total = meta.chapterCount
-  if total <= 0 { throw Error("这本书的目录是空的") }
-  var from = base
-  if from < 0 { from = 0 }
-  if from >= total { from = total - 1 }
-  var to = from + count
-  if to > total { to = total }
-  var bodies: [string] = []
-  for at in from..<to {
-    let got = try? await chapterText(def, id, meta, at: at)
-    bodies.push(got ?? "")
-  }
-  let text = windowText(meta, base: from, bodies: bodies)
-  try await spawn { try fs.mkdirAll(dirOf(id)) }
-  let path = windowPath(id)
-  try await spawn { try fs.writeText(path, text: text) }
-  return (from, path)
 }
 
 /// 封面：书源的图存进 covers/，之后跟本地书的封面走同一条同步。
@@ -196,5 +164,6 @@ pub fn bytesOf(id: string) -> int {
 /// 清掉一本书的正文缓存，目录留着：下次打开再按章取。
 pub fn dropChapters(id: string) {
   try? fs.remove(chaptersDir(id))
+  // 旧版本的窗口文件：已经是整本的摘录，没有用处。
   try? fs.remove(windowPath(id))
 }

@@ -544,15 +544,17 @@ pub store Library {
   }
 
   /// Keeps a place. The one already there (if any) stays: a bookmark is a
-  /// place, not a count.
-  pub fn addBookmark(book: string, chapter: int, percent: float) {
+  /// place, not a count. `locator` is the engine's own address for it, when
+  /// the reader could ask: it's what puts the bookmark back on the same words
+  /// after the type has been resized.
+  pub fn addBookmark(book: string, chapter: int, percent: float, locator: string = "") {
     if bookmarkAt(book, chapter, percent) != none { return }
     var at = percent
     if at < 0 { at = 0 }
     if at > 1 { at = 1 }
     bookmarks.push(lib.Bookmark(
       id: "{book}:{chapter}:{(at * 10000).int()}",
-      book: book, chapter: chapter, percent: at,
+      book: book, chapter: chapter, percent: at, locator: locator,
     ))
     touchDoc(book)
   }
@@ -564,12 +566,12 @@ pub store Library {
 
   /// The bookmark button's one action: keep the place, or take back the one it
   /// finds there. True when it kept one.
-  pub fn toggleBookmark(book: string, chapter: int, percent: float) -> bool {
+  pub fn toggleBookmark(book: string, chapter: int, percent: float, locator: string = "") -> bool {
     if let mark = bookmarkAt(book, chapter: chapter, percent: percent) {
       removeBookmark(mark.id)
       return false
     }
-    addBookmark(book, chapter: chapter, percent: percent)
+    addBookmark(book, chapter: chapter, percent: percent, locator: locator)
     return true
   }
 
@@ -593,7 +595,11 @@ pub store Library {
 
   /// Keeps a selection as a note (or a highlight, with no text). The place
   /// already kept there is the same note, changed. Returns its id.
-  pub fn addNote(book: string, chapter: int, startLine: int, startByte: int, endLine: int, endByte: int, percent: float, quote: string, text: string) -> string {
+  ///
+  /// `locator`/`endLocator` are the engine's stable addresses for the two ends:
+  /// with them the highlight is drawn on the same words after a resize, and
+  /// the line numbers are only a fallback for notes kept before there were any.
+  pub fn addNote(book: string, chapter: int, startLine: int, startByte: int, endLine: int, endByte: int, percent: float, quote: string, text: string, locator: string = "", endLocator: string = "") -> string {
     let id = lib.noteId(book, chapter: chapter, startLine: startLine, startByte: startByte)
     var at = percent
     if at < 0 { at = 0 }
@@ -607,6 +613,8 @@ pub store Library {
       kept.percent = at
       kept.quote = quote
       kept.text = text
+      kept.locator = locator
+      kept.endLocator = endLocator
       kept.deleted = false
       kept.updated = nextStamp(kept.updated)
       notes[i] = kept
@@ -615,7 +623,8 @@ pub store Library {
       notes.push(lib.Note(
         id: id, book: book, chapter: chapter,
         startLine: startLine, startByte: startByte, endLine: endLine, endByte: endByte,
-        percent: at, quote: quote, text: text, created: now, updated: now,
+        percent: at, locator: locator, endLocator: endLocator,
+        quote: quote, text: text, created: now, updated: now,
       ))
     }
     touchDoc(book)
@@ -663,8 +672,8 @@ pub store Library {
   }
 
   /// The further one reads, the fewer bytes get written: one row a book.
-  pub fn save(id: string, chapter: int, percent: float) {
-    let row = lib.Reading(id: id, chapter: chapter, percent: percent, updated: time.now().unix())
+  pub fn save(id: string, chapter: int, percent: float, locator: string = "") {
+    let row = lib.Reading(id: id, chapter: chapter, percent: percent, updated: time.now().unix(), locator: locator)
     var next: [lib.Reading] = []
     var replaced = false
     for old in readings {

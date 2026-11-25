@@ -4,7 +4,7 @@
 # Nothing here builds the book engine: it's released (ebook-engine's
 # Releases) with one static library per target, and each workflow downloads
 # the one it links — no Rust toolchain, no cargo cache, no compile.
-# ENGINE_VERSION is `latest` by default; pin a tag (v0.2.0) to freeze one.
+# ENGINE_VERSION is the engine release this app is written against (README).
 #
 # Codemagic reads this file from the repository root; automatic builds also
 # need a webhook created under the app's Webhooks settings. Docs ignore
@@ -54,7 +54,7 @@ workflows:
     environment:
       <<: *xcode
       vars:
-        ENGINE_VERSION: latest
+        ENGINE_VERSION: v0.3.0
     cache: *asuka_cache
     when: *skip_docs
     triggering:
@@ -95,7 +95,7 @@ workflows:
     environment:
       <<: *xcode
       vars:
-        ENGINE_VERSION: latest
+        ENGINE_VERSION: v0.3.0
     cache: *asuka_cache
     when: *skip_docs
     triggering:
