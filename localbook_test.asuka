@@ -1,0 +1,126 @@
+// 大 TXT 按章读：切章规则和引擎的一致（章号对不上，书签就挪位），字节
+// 范围不多不少，一行太长时在字符边界上断开。这里测的是索引本身，不涉及
+// 阅读页。
+
+import std/fs
+
+import ./engine
+import ./lib
+import ./localbook
+
+/// 一本小说样子的短文本：三个标题，每章几段。
+fn novelText() -> string {
+  var parts: [string] = []
+  parts.push("第1章 起")
+  parts.push("")
+  parts.push("甲。")
+  parts.push("乙丙。")
+  parts.push("")
+  parts.push("第2章 承")
+  parts.push("")
+  parts.push("丁戊己。")
+  parts.push("")
+  parts.push("第3章 转")
+  parts.push("")
+  parts.push("庚辛壬癸。")
+  return parts.joined(separator: "\n")
+}
+
+fn writeTemp(name: string, text: string) -> string {
+  let path = fs.join([fs.tempDir(), name])
+  try? fs.writeText(path, text: text)
+  return path
+}
+
+test "the chapters are where the engine puts them" {
+  let path = writeTemp("quire-index.txt", text: novelText())
+  let ours = try await localbook.indexOf(path)
+  // 引擎整本打开这本书，切出来的章数就是我们的段数。
+  let id = engine.open(path)
+  expect(id > 0)
+  expect(engine.chapterCount(id) == ours.count())
+  expect(ours.count() == 3)
+
+  // 每段的范围正好是那一章的字节：不少一个字节，也不多带下一章的标题。
+  let first = try await localbook.bodyOf(path, ours[0])
+  let second = try await localbook.bodyOf(path, ours[1])
+  let third = try await localbook.bodyOf(path, ours[2])
+  expect(first.hasPrefix("第1章 起"))
+  expect(first.contains("乙丙。"))
+  expect(!first.contains("第2章"))
+  expect(second.hasPrefix("第2章 承"))
+  expect(second.contains("丁戊己。"))
+  expect(!second.contains("第3章"))
+  expect(third.hasPrefix("第3章 转"))
+  expect(third.hasSuffix("庚辛壬癸。"))
+  // 段首尾相接，正好是整本。
+  expect(first + second + third == novelText())
+  engine.close(id)
+}
+
+test "a Windows file's lines don't shift the next chapter" {
+  let crlf = novelText().replace("\n", "\r\n")
+  let path = writeTemp("quire-index-crlf.txt", text: crlf)
+  let ours = try await localbook.indexOf(path)
+  expect(ours.count() == 3)
+  // 章首是「第」，不是被 \r 挤过去的半个字。
+  let second = try await localbook.bodyOf(path, ours[1])
+  expect(second.hasPrefix("第2章"))
+  expect(second.contains("丁戊己。"))
+  expect(!second.contains("第3章"))
+}
+
+test "a text with no headings is one chapter" {
+  let path = writeTemp("quire-index-plain.txt", text: "甲。\n乙。\n丙。")
+  let ours = try await localbook.indexOf(path)
+  expect(ours.count() == 1)
+  expect(try await localbook.bodyOf(path, ours[0]) == "甲。\n乙。\n丙。")
+}
+
+test "a line longer than a chapter is cut on a character boundary" {
+  // 300 KB 的一行，一个字三个字节：断开处必须在字与字之间，否则正文会
+  // 变成替换符，读出来的字节也对不上。
+  let line = "字".repeat(100_000)
+  let path = writeTemp("quire-index-long.txt", text: line)
+  let ours = try await localbook.indexOf(path)
+  expect(ours.count() >= 3)
+  var whole = ""
+  for chapter in ours {
+    expect(chapter.length <= localbook.chapterLimit)
+    expect(chapter.length > 0)
+    let text = try await localbook.bodyOf(path, chapter)
+    // 每一段都是完整的字，没有半个字。
+    expect(text.count() == text.byteCount() / 3)
+    whole += text
+  }
+  expect(whole == line)
+}
+
+test "a chapter is read as paragraphs, and the last line counts" {
+  let path = writeTemp("quire-index-tail.txt", text: "第1章 起\n甲。\n\n乙。")
+  let ours = try await localbook.indexOf(path)
+  expect(ours.count() == 1)
+  let raw = try await localbook.bodyOf(path, ours[0])
+  expect(lib.chapterBody(raw, at: 0) == "第1章 起\n甲。\n乙。")
+}
+
+test "only a big UTF-8 text is read a chapter at a time" {
+  let small = writeTemp("quire-small.txt", text: novelText())
+  expect(!await localbook.streams(small))
+
+  // 够大，是 UTF-8：按章读。
+  let big = "第 1 章 题目\n\n这一段有一些字，够用来凑一本书。\n".repeat(120_000)
+  expect(big.byteCount() > localbook.bigTextBytes)
+  let bigPath = writeTemp("quire-big.txt", text: big)
+  expect(await localbook.streams(bigPath))
+  let ours = try await localbook.indexOf(bigPath)
+  expect(ours.count() >= 40_000)
+
+  // 够大，但不是 UTF-8（GBK 的「第」）：仍旧整本交给引擎。一次拼好，
+  // 不要一个字节一个字节地 concat——bytes 是值，那样是平方级的复制。
+  let gbkPath = fs.join([fs.tempDir(), "quire-gbk.txt"])
+  let gbk = bytes([0xb5, 0xda]).concat("这一章是 GBK 的。".repeat(600_000).bytes())
+  try? fs.write(gbkPath, data: gbk)
+  expect(!await localbook.streams(gbkPath))
+  try? fs.remove(gbkPath)
+}

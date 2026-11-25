@@ -15,6 +15,7 @@ import bookpage
 
 import ./lib
 import ./engine
+import ./localbook
 import ./remote
 import ./sources
 
@@ -26,10 +27,11 @@ let baseSize = 19.0
 /// 换的只是章节表。一章一章地取，整本从不下载。
 let windowSpan = 40
 
-/// 窗口从要读的那一章前面几章开始：往回翻几章不用换窗。
+/// 一章所在的窗口从全书的第几章起：一窗 `windowSpan` 章，窗口不跨块——
+/// 换窗时章号按块算，读者要的那一章一定在窗口里。
 fn windowBaseFor(chapter: int) -> int {
-  if chapter <= 3 { return 0 }
-  return ((chapter - 3) / windowSpan) * windowSpan
+  if chapter <= 0 { return 0 }
+  return (chapter / windowSpan) * windowSpan
 }
 
 /// 一窗几章：到目录末尾就少。
@@ -761,7 +763,7 @@ component Reader(book: lib.Book) {
   /// 引擎里这些章的正文换过几次：每换一次，页和带子都该重画。
   state chapterRev = 0
   /// 在线书的目录（全书下标）；空的时候用引擎自己的目录。
-  state onlineToc: [engine.TocItem] = []
+  state windowToc: [engine.TocItem] = []
   /// 翻出窗口时要去的那一章；-1 是没有请求。它不能做 task 的 key：task
   /// 一开始就把它清掉会取消自己（下一个 await 处就断），换窗口永远不发生。
   state windowTarget = -1
@@ -773,6 +775,15 @@ component Reader(book: lib.Book) {
   state windowPercent = -1.0
   state switching = false
   let online = !book.sourceId.isEmpty()
+  /// 窗口式阅读：正文一章一章地交给引擎 —— 在线书从书源取，大 TXT 从文件
+  /// 里读。两者的章节表都是全书的一段，章号按全书算；小书仍旧整本打开。
+  state windowed = !book.sourceId.isEmpty()
+  /// 大 TXT 的目录：每章从文件第几字节起、多长。换窗时按它推章节表。
+  state localChapters: [localbook.ChapterAt] = []
+  /// 本地书那条文件路径（大 TXT 按章读它）。
+  state bookFilePath = ""
+  /// 在线书这一窗的目录：占位和补正文都要它，换窗时读一次。
+  state windowMeta: remote.Meta? = none
   /// `ready` is said once, however many pages follow it.
   state announced = false
   state shownTitle = book.title
@@ -869,7 +880,7 @@ component Reader(book: lib.Book) {
   let scale = if env.scale > 0 { env.scale } else { 2.0 }
   let pageMargins = marginsOf(frame.width, frame.height, library.margins, env)
   let saved = library.readingOf(book.id)
-  let tocItems = if online { onlineToc } else { engine.contents(engineId) }
+  let tocItems = if windowed { windowToc } else { engine.contents(engineId) }
   let scrollList = Ref()
 
   let heading = if shownTitle.isEmpty() { book.title } else { shownTitle }
@@ -894,7 +905,7 @@ component Reader(book: lib.Book) {
   // Opens where the book was left, in the chapter (spine) it was left in.
   // 在线书的 spine 要等窗口拼好才知道（openBook 里），这里只定本地书。
   task {
-    if !online {
+    if !windowed {
       spine = if saved.chapter > 0 { saved.chapter } else { 0 }
     }
   }
@@ -1008,7 +1019,7 @@ component Reader(book: lib.Book) {
   /// its spines are a window's, not the book's — and before anything is laid
   /// out.
   fn placeLocator() -> string {
-    if engineId <= 0 || online { return "" }
+    if engineId <= 0 || windowed { return "" }
     if library.mode == "scroll" {
       if !columnReady || scrollHeight <= 0 { return "" }
       let where = engine.flowHit(engineId, pageMargins.left + 2, contentY())
@@ -1133,7 +1144,7 @@ component Reader(book: lib.Book) {
     // this type: the scrollbar starts where that reading left it, not on an
     // estimate. (An online book's chapters change under it, and the engine's
     // key says so: it would never match, so it isn't written.)
-    if !online { let _restored = engine.readScrollIndex(engineId, scrollIndexPath()) }
+    if !windowed { let _restored = engine.readScrollIndex(engineId, scrollIndexPath()) }
     let total = engine.flowHeight(engineId)
     scrollHeight = if count > 0 && total > 0 { total } else { 0 }
     columnReady = true
@@ -1191,7 +1202,7 @@ component Reader(book: lib.Book) {
   /// Keeps them for the next open. Called where the place is saved (a scroll
   /// that has settled) and when the page goes away.
   fn keepColumnIndex() {
-    if online || engineId <= 0 || !columnReady || scrollHeight <= 0 { return }
+    if windowed || engineId <= 0 || !columnReady || scrollHeight <= 0 { return }
     try? fs.mkdirAll(pagesDir())
     let _kept = engine.writeScrollIndex(engineId, scrollIndexPath())
   }
@@ -1301,7 +1312,7 @@ component Reader(book: lib.Book) {
     }
     // 在线书的窗口不长：滚到这一窗的底，还有下一章就去拼下一窗。
     let count = engine.chapterCount(engineId)
-    if online && windowTarget < 0 && !switching && columnReady && windowBase + count < windowTotal {
+    if windowed && windowTarget < 0 && !switching && columnReady && windowBase + count < windowTotal {
       if contentY() + frame.height >= scrollHeight - 2 {
         windowEnd = false
         requestWindow(windowBase + count)
@@ -1480,7 +1491,7 @@ component Reader(book: lib.Book) {
     // 两端也存成引擎的稳定地址：以后换字号、换屏幕，高亮还落在同一段原文上。
     var startLocator = ""
     var endLocator = ""
-    if !online {
+    if !windowed {
       let range = engine.locatorRange(engineId, selStartLine, selStartByte, selEndLine, selEndByte)
       let parts = range.split("|")
       startLocator = parts.first() ?? ""
@@ -1646,7 +1657,7 @@ component Reader(book: lib.Book) {
 
   // 在线书：读到哪一章取哪一章，顺手取后面两章。整本不下载；一窗取完才换窗。
   task("{spine}:{hereChapter}:{windowTick}:{columnReady}:{chapterRev}") {
-    if !online || engineId <= 0 { return }
+    if !windowed || engineId <= 0 { return }
     let at = if library.mode == "scroll" { hereChapter } else { windowBase + spine }
     await ensureChapter(at)
     await ensureChapter(at + 1)
@@ -1682,7 +1693,7 @@ component Reader(book: lib.Book) {
   /// version of the text in the engine: when a chapter's body arrives, the pages
   /// drawn from the placeholder are not the pages of the chapter.
   fn fileTag() -> string {
-    let rev = if online { "-r{chapterRev}" } else { "" }
+    let rev = if windowed { "-r{chapterRev}" } else { "" }
     let win = if windowBase > 0 { "-w{windowBase}" } else { "" }
     return "{layoutTag()}{rev}{win}-{library.theme}"
   }
@@ -1692,7 +1703,7 @@ component Reader(book: lib.Book) {
   /// a chapter's height. An online book's text changes under the column, so
   /// the version is.
   fn columnKey() -> string {
-    let rev = if online { ":r{chapterRev}" } else { "" }
+    let rev = if windowed { ":r{chapterRev}" } else { "" }
     return "{layoutTag()}:{frame.width.int()}x{frame.height.int()}{rev}"
   }
 
@@ -1708,12 +1719,13 @@ component Reader(book: lib.Book) {
       if let m = meta { remote.writeMeta(book.id, m) }
     }
     if meta == none { throw Error("这本书的目录没有读到") }
+    windowMeta = meta
     windowTotal = meta!.toc.count()
     var whole: [engine.TocItem] = []
     for (i, entry) in meta!.toc.enumerated() {
       whole.push(engine.TocItem(title: entry.title, spine: i, depth: 0))
     }
-    onlineToc = whole
+    windowToc = whole
     var target = saved.chapter
     if target < 0 { target = 0 }
     if windowTotal > 0 && target >= windowTotal { target = windowTotal - 1 }
@@ -1728,9 +1740,15 @@ component Reader(book: lib.Book) {
   /// 在引擎里摆好一窗：从 base 起的章按目录标题占好位置，再把要读的那一章
   /// 的正文填进去，其余的读到再填。
   async fn buildWindow(base: int, target: int) throws {
-    let def = allSources?.definitionOf(book.sourceId)
-    let meta = remote.readMeta(book.id)
-    if def == none || meta == none { throw Error("这本书的目录读不到了") }
+    if online {
+      windowMeta = remote.readMeta(book.id)
+      if windowMeta == none { throw Error("这本书的目录读不到了") }
+      if allSources?.definitionOf(book.sourceId) == none {
+        throw Error("这本书的书源不在列表里了，先导入书源")
+      }
+    } else if localChapters.isEmpty() {
+      throw Error("这本书的目录还没读出来")
+    }
     if engineId <= 0 { throw Error("引擎里没有这本书") }
     let count = windowCountOf(windowTotal, base: base)
     if count <= 0 { throw Error("这一章不在这本书里") }
@@ -1738,29 +1756,50 @@ component Reader(book: lib.Book) {
     let _cleared = engine.clearChapters(engineId)
     for k in 0..<count {
       let at = base + k
-      let _n = engine.appendChapter(engineId, title: remote.headingOf(meta!, at), text: placeholderOf(at))
+      let _n = engine.appendChapter(engineId, title: chapterTitleOf(at), text: placeholderOf(at))
     }
     windowBase = base
     loadedChapters = []
     triedChapters = []
     // 要读的那一章先取：正文到了才排版，读者看不见占位。
-    if await loadChapter(def!, meta!, target) {
+    if await loadChapter(target) {
       loadedChapters = loadedChapters + [target]
     } else {
-      snackbar("这一章没有取到，网络可能断了")
+      snackbar("这一章的正文没有读到")
     }
   }
 
-  /// 取一章的正文（全书的章号），填进引擎里它自己的位置。
-  async fn loadChapter(def: sources.BookSource, meta: remote.Meta, at: int) -> bool {
+  /// 目录里第 `at` 章的标题：书源给的，或者文本里那一行。
+  fn chapterTitleOf(at: int) -> string {
+    if online {
+      if let meta = windowMeta { return remote.headingOf(meta, at) }
+      return "第 {at + 1} 章"
+    }
+    if at >= 0 && at < localChapters.count() {
+      return localbook.titleOf(localChapters[at], at: at)
+    }
+    return "第 {at + 1} 章"
+  }
+
+  /// 取一章的正文，填进引擎里它自己的位置：在线书从书源取，大 TXT 从文件
+  /// 里读那一段。
+  async fn loadChapter(at: int) -> bool {
     if engineId <= 0 || at < 0 || at >= windowTotal { return false }
     let local = at - windowBase
     if local < 0 || local >= engine.chapterCount(engineId) { return false }
-    let text = try? await remote.chapterText(def, id: book.id, meta: meta, at: at)
-    // 取的时候窗口可能已经换了：那一章的正文就不属于现在这本书了。
+    var text: string? = none
+    if online {
+      let def = allSources?.definitionOf(book.sourceId)
+      if let d = def, let meta = windowMeta {
+        text = try? await remote.chapterText(d, id: book.id, meta: meta, at: at)
+      }
+    } else if at < localChapters.count() {
+      text = try? await localbook.bodyOf(bookFilePath, chapter: localChapters[at])
+    }
+    // 读的时候窗口可能已经换了：那一章的正文就不属于现在这本书了。
     if engineId <= 0 || at - windowBase != local { return false }
-    let body = remote.chapterBody(text ?? "", at: at)
-    let ok = engine.replaceChapter(engineId, spine: local, title: remote.headingOf(meta, at), text: body)
+    let body = lib.chapterBody(text ?? "", at: at)
+    let ok = engine.replaceChapter(engineId, spine: local, title: chapterTitleOf(at), text: body)
     if ok { chapterRev += 1 }
     return ok
   }
@@ -1768,15 +1807,35 @@ component Reader(book: lib.Book) {
   /// 读到一章，就取这一章的正文，顺手把后面两章也取了：翻页不停在「正在取」
   /// 上。取过的章记得住，换窗时清空。
   async fn ensureChapter(at: int) {
-    if !online || engineId <= 0 || at < 0 || at >= windowTotal { return }
+    if !windowed || engineId <= 0 || at < 0 || at >= windowTotal { return }
     if loadedChapters.contains(at) || triedChapters.contains(at) { return }
-    let def = allSources?.definitionOf(book.sourceId)
-    let meta = remote.readMeta(book.id)
-    if def == none || meta == none { return }
+    if online && windowMeta == none { return }
     triedChapters = triedChapters + [at]
-    if await loadChapter(def!, meta!, at) {
+    if await loadChapter(at) {
       loadedChapters = loadedChapters + [at]
     }
+  }
+
+  /// 大 TXT：扫一遍文件得到目录（章号、标题、字节范围），之后和在线书走同
+  /// 一条窗口路，只是「取正文」是从文件里读。
+  async fn openLocalStream() throws {
+    let index = try await localbook.indexOf(bookFilePath)
+    if index.isEmpty() || (index.count() == 1 && index[0].length == 0) {
+      throw Error("《{book.title}》里没有可读的文字")
+    }
+    localChapters = index
+    windowTotal = index.count()
+    var whole: [engine.TocItem] = []
+    for (i, chapter) in index.enumerated() {
+      whole.push(engine.TocItem(title: localbook.titleOf(chapter, at: i), spine: i, depth: 0))
+    }
+    windowToc = whole
+    var target = saved.chapter
+    if target < 0 { target = 0 }
+    if target >= windowTotal { target = 0 }
+    try await buildWindow(base: windowBaseFor(target), target: target)
+    spine = target - windowBase
+    if spine < 0 { spine = 0 }
   }
 
   /// 字体：应用的衬线字体先试，平台的不行再找一个文件。
@@ -1850,11 +1909,6 @@ component Reader(book: lib.Book) {
     if online {
       // 在线书没有整本字节：引擎里先是一本空书，章节按窗推给它。
       id = engine.newBook(book.title)
-      if id <= 0 {
-        error = "打不开这本书：{engine.lastError()}"
-        announceReady()
-        return
-      }
     } else {
       let file = try await bookFileOf(book)
       if !fs.exists(file) {
@@ -1862,12 +1916,21 @@ component Reader(book: lib.Book) {
         announceReady()
         return
       }
-      id = engine.open(file)
-      if id <= 0 {
-        error = "打不开这本书：{engine.lastError()}"
-        announceReady()
-        return
+      bookFilePath = file
+      // 大 TXT 不整本进内存：扫一遍得到章号，正文按章从文件里读。
+      if await localbook.streams(file) {
+        windowed = true
+        id = engine.newBook(if book.title.isEmpty() { "未命名" } else { book.title })
+      } else {
+        id = engine.open(file)
       }
+    }
+    if id <= 0 {
+      error = "打不开这本书：{engine.lastError()}"
+      announceReady()
+      return
+    }
+    if !windowed {
       let named = engine.title(id)
       if !named.isEmpty() { shownTitle = named }
     }
@@ -1881,9 +1944,9 @@ component Reader(book: lib.Book) {
     mountFace(id)
     var firstChapter = saved.chapter
     if firstChapter < 0 { firstChapter = 0 }
-    if online {
-      // 目录在 meta 里，窗口从要读的那一章附近起。
-      try await openOnline()
+    if windowed {
+      // 目录是全书的一份（书源给的，或者扫出来的），窗口从要读的那一章起。
+      if online { try await openOnline() } else { try await openLocalStream() }
       firstChapter = spine
     } else {
       let count = engine.chapterCount(id)
@@ -1945,7 +2008,7 @@ component Reader(book: lib.Book) {
     let count = engine.chapterCount(engineId)
     let place = lib.forward(spine, page, pages, count)
     // 这一窗读完了，而全书还有：去拼下一窗，不把「窗口的末页」当「全书的墨尾」。
-    if online && place.spine == spine && place.page == page && windowBase + count < windowTotal {
+    if windowed && place.spine == spine && place.page == page && windowBase + count < windowTotal {
       windowEnd = false
       requestWindow(windowBase + count)
       return
@@ -1957,7 +2020,7 @@ component Reader(book: lib.Book) {
   fn back() {
     touch()
     clearSelection()
-    if online && spine == 0 && page <= 0 && windowBase > 0 {
+    if windowed && spine == 0 && page <= 0 && windowBase > 0 {
       windowEnd = true
       requestWindow(windowBase - 1)
       return
@@ -1976,7 +2039,7 @@ component Reader(book: lib.Book) {
     clearSelection()
     let count = engine.chapterCount(engineId)
     let local = index - windowBase
-    if online && (local < 0 || local >= count) {
+    if windowed && (local < 0 || local >= count) {
       windowEnd = false
       requestWindow(index)
       return
@@ -2010,7 +2073,7 @@ component Reader(book: lib.Book) {
     var at = percent
     if at < 0 { at = 0 }
     if at > 1 { at = 1 }
-    if online && (local < 0 || local >= count) {
+    if windowed && (local < 0 || local >= count) {
       windowPercent = at
       windowEnd = false
       requestWindow(chapter)

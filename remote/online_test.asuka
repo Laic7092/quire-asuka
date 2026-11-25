@@ -1,16 +1,3 @@
-test "a chapter goes to the engine one line a paragraph" {
-  let text = chapterBody("甲。\n\n  乙。  \n\n\n丙。", at: 0)
-  expect(text == "甲。\n乙。\n丙。")
-}
-
-test "a chapter that wasn't read says so instead of being empty" {
-  // 空正文会让引擎拒绝这一章（append/replace 都不收空串），所以没取到的章
-  // 得有字：读者至少知道是没取到，不是书上没写。
-  let text = chapterBody("   \n\n", at: 4)
-  expect(!text.isEmpty())
-  expect(text.contains("第 5 章"))
-}
-
 test "a chapter's title is the toc's when it reads as a heading" {
   var meta = Meta(sourceId: "x", bookUrl: "https://x/1", chapterCount: 2)
   meta.toc.push(TocEntry(title: "第一章 起", url: "https://x/1"))

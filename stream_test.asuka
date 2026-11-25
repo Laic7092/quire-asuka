@@ -5,7 +5,7 @@
 import std/embed
 
 import ./engine
-import ./remote
+import ./lib
 
 let streamFace = embed.bytes("fonts/NotoSerifSC-Regular.woff")
 
@@ -110,7 +110,7 @@ test "a window's chapters are a slice of the book's" {
 
 test "a chapter's text reaches the engine as paragraphs" {
   let id = streamBook("在线书")
-  let text = remote.chapterBody("  第一段。\n\n第二段。  \n", at: 0)
+  let text = lib.chapterBody("  第一段。\n\n第二段。  \n", at: 0)
   expect(text == "第一段。\n第二段。")
   let _n = engine.appendChapter(id, title: "第一章", text: text)
   expect(engine.layout(id, 0, 390, 844, streamMargins, 1.0, 1.6) > 0)

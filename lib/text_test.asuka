@@ -77,3 +77,15 @@ test "openText keeps the chapters" {
   expect(book.chapters.count() == 1)
   expect(book.chars() > 0)
 }
+
+test "a chapter goes to the engine one line a paragraph" {
+  expect(chapterBody("甲。\n\n  乙。  \n\n\n丙。", at: 0) == "甲。\n乙。\n丙。")
+}
+
+test "a chapter that wasn't read says so instead of being empty" {
+  // 空正文会让引擎拒绝这一章（append/replace 都不收空串），所以没取到的章
+  // 得有字：读者至少知道是没取到，不是书上没写。
+  let text = chapterBody("   \n\n", at: 4)
+  expect(!text.isEmpty())
+  expect(text.contains("第 5 章"))
+}

@@ -231,6 +231,20 @@ fn isSentenceEnd(c: char) -> bool = sentenceEnds.contains("{c}")
 
 /// A heading: a short line without sentence punctuation, matching one of the
 /// shapes novels use, or one of the fixed ones (序, 楔子, 番外).
+/// 一章给引擎看的正文：一行一段（引擎的 TXT 规则：换行就是分段）。一章
+/// 里一个字都没有时写成占位，让读者看见「这一章没有读到」，而不是一整章
+/// 空白。
+pub fn chapterBody(text: string, at: int) -> string {
+  var parts: [string] = []
+  for line in text.split("\n") {
+    let one = line.trim()
+    if one.isEmpty() { continue }
+    parts.push(one)
+  }
+  if parts.isEmpty() { return "（第 {at + 1} 章没有读到。）" }
+  return parts.joined(separator: "\n")
+}
+
 /// 一段原文的字，不含排版的断行。引擎给出的选区文本按排版的行断开（行与行
 /// 之间补了 `\n`），换字号以后同一段字的断行位置就变了；引文和高亮比对的是
 /// 字，不是断在哪儿。

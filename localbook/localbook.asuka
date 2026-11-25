@@ -1,0 +1,195 @@
+// 本地的大 TXT：整本读进内存、整本解码、整本切章的代价，一本 300 MB 的书
+// 付不起——宿主一份（`fs.read`）、引擎一份（它的 C ABI 只收 bytes）、解码
+// 后的字符串又一份。这里把它当在线书读：开书扫一遍文件，只记下每章的字节
+// 范围（几万个整数），读到哪一章才从文件里读那一段，推给引擎的流式书。
+//
+// 切章规则照引擎的 TXT 抄（`split_chapters`）：认得出的标题行另起一章，一章
+// 到 128 KB 就在行边界上断开。所以同一个文件，走这条路和整本交给引擎得到
+// 的章号一样，老书签不会因为我们换了读法而挪位。
+
+import std/fs
+
+/// 一章在文件里的位置。
+pub struct ChapterAt {
+  /// 标题行（"第 3 章 归途"）；没有标题的是 ""。
+  title: string
+  /// 起始字节。
+  start: int
+  /// 多少字节。
+  length: int
+}
+
+/// 一章最多这么多字节，和引擎的 TXT 一样。
+pub let chapterLimit = 128 * 1024
+
+/// 这么大的 TXT 才按章读：小书整本打开更快，也少一次扫描。
+pub let bigTextBytes = 8_000_000
+
+/// 一次读多少字节去扫。比一章的上限大，所以一章的边界总落在同一块里。
+let scanChunk = 262_144
+
+/// 引擎认的标题行：短，且是「第…章/回/节/卷」或 Chapter/Part 开头。这里
+/// 和 `ebook-format` 的 `is_heading` 逐条对齐——章号一旦对不上，书签就挪位。
+fn isHeading(text: string) -> bool {
+  let count = text.count()
+  if count == 0 || count > 40 { return false }
+  let trimmed = text.trimStart()
+  if trimmed.hasPrefix("第") &&
+    (trimmed.contains("章") || trimmed.contains("回") ||
+      trimmed.contains("节") || trimmed.contains("卷")) {
+    return true
+  }
+  let lower = trimmed.lower()
+  return lower.hasPrefix("chapter") || lower.hasPrefix("part ")
+}
+
+/// 这个文件按章读吗：是 TXT、够大、而且是 UTF-8。
+///
+/// 引擎整本打开时会按字节猜编码（GBK、Big5 都认）；按章读是逐章解码的，
+/// 只做 UTF-8。所以别的编码的书仍旧整本交给引擎：慢一点，但字是对的。
+pub async fn streams(path: string) -> bool {
+  if !path.lower().hasSuffix(".txt") { return false }
+  let info = try? await spawn { try fs.stat(path) }
+  if info == none { return false }
+  if info!.size < bigTextBytes { return false }
+  let head = try? await headOf(path, count: 65_536)
+  if head == none { return false }
+  // 不是合法的 UTF-8 就整块被替换成 U+FFFD：一本书的头一段几乎不可能
+  // 全是替换符，除非编码本来就不是 UTF-8。头一段可能正好切在一个字中间，
+  // 所以最后那个替换符不算数。
+  let chars = head!.chars()
+  var end = chars.count()
+  if end > 0 && chars[end - 1].code() == 0xfffd { end -= 1 }
+  return !chars.slice(0, end).any(c => c.code() == 0xfffd)
+}
+
+/// 文件开头的一段，按 UTF-8 解出来。
+async fn headOf(path: string, count: int) throws -> string {
+  let f = try await fs.open(path)
+  defer { try? await f.close() }
+  let data = try await f.read(count)
+  return data.string()
+}
+
+/// 扫一遍文件，得到每一章的字节范围。一次读一块，内存只占一块；行是在字节
+/// 上断的（`\n`），所以 `\r\n` 的文件也不会错位。
+pub async fn indexOf(path: string) throws -> [ChapterAt] {
+  var out: [ChapterAt] = []
+  let f = try await fs.open(path)
+  defer { try? await f.close() }
+  /// 这一章从哪儿开始、标题是什么、有没有正文。
+  var chapterStart = 0
+  var chapterTitle = ""
+  var hasContent = false
+  /// 正在读的这一行的起点；`data[0]` 和已经读过的字节数。
+  var lineStart = 0
+  var dataStart = 0
+  var carry: bytes = bytes()
+  var done = false
+  while !done {
+    let chunk = try await f.read(scanChunk)
+    done = chunk.isEmpty()
+    let data = if carry.isEmpty() { chunk } else { carry.concat(chunk) }
+    let size = data.count()
+    // 这一块在哪儿停：块尾可能正好切在一个字中间（`File.read` 一读多少
+    // 字节由系统说了算），那个字留给下一块，免得两边各解出一个坏字。
+    var end = size
+    if end > 0 {
+      var back = 0
+      while back < 3 && end - 1 - back > 0 && (data[end - 1 - back] & 0xc0) == 0x80 { back += 1 }
+      let start = end - 1 - back
+      let lead = data[start]
+      let width = if lead < 0x80 { 1 } else if lead < 0xe0 { 2 } else if lead < 0xf0 { 3 } else { 4 }
+      if start + width > end { end = start }
+    }
+    var i = 0
+    while i < end {
+      let at = dataStart + i
+      if data[i] == 0x0a {
+        // 一行读完（行尾的 \r 交给 trim）；这一行的结尾就是下一行的起点。
+        let text = data.slice(lineStart - dataStart, i).string().trim()
+        if !text.isEmpty() {
+          // 和引擎一样：这一行读进来之后到了上限，就在这一行的开头断开。
+          let tooLong = hasContent && (at + 1) - chapterStart >= chapterLimit
+          if (isHeading(text) && hasContent) || tooLong {
+            out.push(ChapterAt(title: chapterTitle, start: chapterStart, length: lineStart - chapterStart))
+            hasContent = false
+          }
+          if !hasContent {
+            chapterStart = lineStart
+            chapterTitle = text
+            hasContent = true
+          }
+        }
+        i += 1
+        lineStart = at + 1
+        continue
+      }
+      // 一行自己就超过一章的上限（整本没有换行的 TXT）：在字符边界上断开。
+      // UTF-8 的续字节是 0b10xxxxxx，断开处不能落在它们中间。
+      if at - chapterStart >= chapterLimit {
+        // 往前退到这个字的开头（`data` 总是从字边界开始，所以退得到）。
+        var cut = i
+        while cut > 0 && (data[cut] & 0xc0) == 0x80 { cut -= 1 }
+        out.push(ChapterAt(title: chapterTitle, start: chapterStart, length: dataStart + cut - chapterStart))
+        chapterStart = dataStart + cut
+        chapterTitle = ""
+        hasContent = true
+        lineStart = chapterStart
+        i = cut
+        continue
+      }
+      i += 1
+    }
+    carry = data.slice(i, size)
+    dataStart += i
+  }
+  // 最后一行没有换行结尾，也得算进去。
+  let tailStart = dataStart
+  let tailEnd = dataStart + carry.count()
+  let tail = carry.string().trim()
+  if !tail.isEmpty() {
+    let tooLong = hasContent && tailEnd - chapterStart >= chapterLimit
+    if (isHeading(tail) && hasContent) || tooLong {
+      out.push(ChapterAt(title: chapterTitle, start: chapterStart, length: tailStart - chapterStart))
+      hasContent = false
+    }
+    if !hasContent {
+      chapterStart = tailStart
+      chapterTitle = tail
+      hasContent = true
+    }
+  }
+  if hasContent {
+    out.push(ChapterAt(title: chapterTitle, start: chapterStart, length: tailEnd - chapterStart))
+  }
+  if out.isEmpty() {
+    out.push(ChapterAt(title: "", start: 0, length: 0))
+  }
+  return out
+}
+
+/// 一章的正文，从文件里读那一段（不多读一个字）。
+pub async fn bodyOf(path: string, chapter: ChapterAt) throws -> string {
+  if chapter.length <= 0 { return "" }
+  let f = try await fs.open(path)
+  defer { try? await f.close() }
+  let _from = try await f.seek(chapter.start)
+  var out: bytes = bytes()
+  var left = chapter.length
+  while left > 0 {
+    let want = if left < scanChunk { left } else { scanChunk }
+    let chunk = try await f.read(want)
+    if chunk.isEmpty() { break }
+    out = out.concat(chunk)
+    left -= chunk.count()
+  }
+  return out.string()
+}
+
+/// 一章的标题：标题行，或者「第 N 章」。引擎的目录只拿它显示。
+pub fn titleOf(chapter: ChapterAt, at: int) -> string {
+  let title = chapter.title.trim()
+  if title.isEmpty() { return "第 {at + 1} 章" }
+  return title
+}

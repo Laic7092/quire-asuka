@@ -8,6 +8,7 @@ import std/fs
 
 import ./engine
 import ./lib
+import ./localbook
 
 /// The app as it runs: the shelf, and the reader over it.
 component Harness {
@@ -1056,4 +1057,46 @@ test "坚果云和其他 WebDAV 各留各的配置" {
   expect(library.davFolderNow() == "nut-folder")
   expect(library.webServer == "https://dav.example.com/dav/")
   expect(library.webAccount == "web@example.com")
+}
+
+/// 一本超过「按章读」门槛的本地大书：重复的章节，够 8 MB。
+fn writeBigText(name: string, chapters: int) -> (string, string) {
+  let dir = fs.join([fs.appDir(), "books"])
+  try? fs.mkdirAll(dir)
+  let path = fs.join([dir, name])
+  let text = "第 1 章 起\n\n这一段有一些字，够用来凑一本大书。\n\n".repeat(chapters)
+  try? fs.writeText(path, text: text)
+  return (path, text)
+}
+
+test "a big text is read a chapter at a time, not as one blob" {
+  let (path, text) = writeBigText(name: "quire-big-local.txt", chapters: 200_000)
+  // 整本一次读进来是这本书的内存：它得走按章读那条路。
+  expect(text.byteCount() > localbook.bigTextBytes)
+  let library = Library()
+  let book = lib.Book(id: "quire-big-local.txt", title: "大书", author: "", chapters: [], path: path)
+  let app = mount(Reader(book), provide: library)
+  await app.idle()
+  await sleep(900ms)
+  await app.idle()
+  app.expect("BookPage")
+  // 窗口式的页名带着这一章正文的版本（`-r3`）：整本打开的书没有这个。
+  let dir = fs.join([fs.appDir(), "pages"])
+  let pages = (try? fs.walk(dir))?.filter(e => !e.isDir && e.name.hasPrefix("quire-big-local") && e.name.hasSuffix("-paper.eqp")) ?? []
+  expect(!pages.isEmpty())
+  expect(pages.all(p => p.name.contains("-r")))
+  expect(library.readingOf("quire-big-local.txt").chapter == 0)
+}
+
+test "a big text opens at the chapter it was left in" {
+  let (path, _text) = writeBigText(name: "quire-big-local2.txt", chapters: 200_000)
+  let library = Library()
+  library.save("quire-big-local2.txt", 37_001, 0)
+  let book = lib.Book(id: "quire-big-local2.txt", title: "大书", author: "", chapters: [], path: path)
+  let app = mount(Reader(book), provide: library)
+  await app.idle()
+  await sleep(900ms)
+  await app.idle()
+  // 全书的章号：窗口从第 36960 章起，读者在第 37001 章。
+  expect(library.readingOf("quire-big-local2.txt").chapter == 37_001)
 }

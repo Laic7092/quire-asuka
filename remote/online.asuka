@@ -122,21 +122,6 @@ pub fn headingOf(meta: Meta, at: int) -> string {
   return "第 {at + 1} 章 {title}"
 }
 
-/// 一章给引擎看的正文：一行一段（引擎的 TXT 规则：换行就是分段）。
-/// 一章都没取到时写成占位，读者看得见「这一章没有读到」，而不是一整章空白。
-pub fn chapterBody(text: string, at: int) -> string {
-  var parts: [string] = []
-  for line in text.split("\n") {
-    let one = line.trim()
-    if one.isEmpty() { continue }
-    parts.push(one)
-  }
-  if parts.isEmpty() {
-    return "（第 {at + 1} 章没有读到。翻回去再试一次，或者换一个书源。）"
-  }
-  return parts.joined(separator: "\n")
-}
-
 /// 封面：书源的图存进 covers/，之后跟本地书的封面走同一条同步。
 pub async fn fetchCover(def: sources.BookSource, url: string, into: string) throws -> bool {
   if url.trim().isEmpty() { return false }
