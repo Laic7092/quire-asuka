@@ -7,6 +7,7 @@
 // JSON 读成结构，并回答书源的地址、请求头和它自己的变量。
 
 import std/json
+import std/regex
 
 pub struct SearchRule {
   bookList: string = ""
@@ -126,11 +127,11 @@ pub struct ExploreCategory {
   url: string
 }
 
-/// 一段分类文本读成分类：JSON 数组、单个对象，或一串地址。不是分类
-/// JSON 时返回空，由调用方决定这是不是一个书的列表。
-fn parseCategoryText(raw: string) -> [ExploreCategory] {
-  let t = raw.trim()
-  if t.isEmpty() { return [] }
+/// 书源里有几种写法：JSON 数组、单个对象，或者一行一个
+/// `标题::地址`。有些导出的 JSON 还留着最后一个逗号，也要认。
+let categoryTrailingComma = regex.must(r",\s*([\]\}])")
+
+fn parseCategoryJSON(t: string) -> [ExploreCategory] {
   var out: [ExploreCategory] = []
   if let v = try? json.parse(t) {
     if let arr = v.asArray() {
@@ -163,6 +164,46 @@ fn parseCategoryText(raw: string) -> [ExploreCategory] {
     }
   }
   return out
+}
+
+/// 一行一个分类：`玄幻::/category/xuanhuan/`。没有 `::` 的行也接受，
+/// 标题按顺序编号。
+fn parseCategoryLines(t: string) -> [ExploreCategory] {
+  let lines = t.lines().map(l => l.trim()).filter(l => !l.isEmpty() && !l.hasPrefix("#"))
+  // 单行、又没有 `标题::地址` 的，是一个书的列表地址，不是分类表；
+  // 交给调用方去取，取回来再看它是不是分类 JSON。
+  if lines.count() < 2 && !lines.any(l => l.contains("::")) { return [] }
+  var out: [ExploreCategory] = []
+  for row in lines {
+    if let at = row.find("::") {
+      let title = row.byteSlice(0, at).trim()
+      let url = row.byteSlice(at + 2, row.byteCount()).trim()
+      if url.isEmpty() { continue }
+      out.push(ExploreCategory(
+        title: if title.isEmpty() { "分类 {out.count() + 1}" } else { title },
+        url: url,
+      ))
+    } else if row.contains("://") || row.hasPrefix("/") {
+      out.push(ExploreCategory(title: "分类 {out.count() + 1}", url: row))
+    }
+  }
+  return out
+}
+
+/// 一段分类文本读成分类：JSON 数组、单个对象，或一串 `标题::地址`。
+/// 不是分类文本时返回空，由调用方决定这是不是一个书的列表地址。
+fn parseCategoryText(raw: string) -> [ExploreCategory] {
+  let t = raw.trim()
+  if t.isEmpty() { return [] }
+  let direct = parseCategoryJSON(t)
+  if !direct.isEmpty() { return direct }
+  // 导出的 JSON 偶尔有一个多余的尾逗号：去掉它再读一次。
+  let loose = categoryTrailingComma.replace(t, with: "$1")
+  if loose != t {
+    let fixed = parseCategoryJSON(loose)
+    if !fixed.isEmpty() { return fixed }
+  }
+  return parseCategoryLines(t)
 }
 
 pub fn exploreCategories(s: BookSource) -> [ExploreCategory] {

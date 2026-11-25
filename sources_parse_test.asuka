@@ -1,0 +1,31 @@
+// 发现页的分类有几种写法：JSON、带尾逗号的 JSON，以及一行一个
+// `标题::地址`。这几种都要读得出来，不然发现页会多出一层“发现”。
+
+import ./sources
+
+test "an exploreUrl that is one line per category reads its categories" {
+  let text = r#"{"bookSourceName":"快眼","bookSourceUrl":"http://www.botaodz.com/","exploreUrl":"全部::/category/all/\n玄幻::/category/xuanhuan/\n都市::/category/dushi/"}"#
+  let def = try sources.decodeSource(try sources.parseList(text)[0])
+  let categories = sources.exploreCategories(def)
+  expect(categories.count() == 3)
+  expect(categories[0].title == "全部")
+  expect(categories[0].url == "/category/all/")
+  expect(categories[2].title == "都市")
+}
+
+test "an exploreUrl with a trailing comma still reads as JSON" {
+  let text = r#"{"bookSourceName":"穿越","bookSourceUrl":"http://www.kk169.org","exploreUrl":"[{\"title\":\"玄幻·魔法\",\"url\":\"book/sort1/0/{{page}}.html\"},{\"title\":\"武侠·修真\",\"url\":\"book/sort2/0/{{page}}.html\"},]"}"#
+  let def = try sources.decodeSource(try sources.parseList(text)[0])
+  let categories = sources.exploreCategories(def)
+  expect(categories.count() == 2)
+  expect(categories[0].title == "玄幻·魔法")
+  expect(categories[1].url == r"book/sort2/0/{{page}}.html")
+}
+
+test "a plain URL is still the one category it was" {
+  let text = r#"{"bookSourceName":"一个","bookSourceUrl":"x.test","exploreUrl":"/all?p={{page}}"}"#
+  let def = try sources.decodeSource(try sources.parseList(text)[0])
+  let categories = sources.exploreCategories(def)
+  expect(categories.count() == 1)
+  expect(categories[0].title == "发现")
+}
