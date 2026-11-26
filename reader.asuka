@@ -175,6 +175,14 @@ fn signedPercent(v: float) -> string {
 /// The page files: one a book, chapter, page and size, next to the app's data.
 fn pagesDir() -> string = fs.join([fs.appDir(), "pages"])
 
+/// The engine's own caches, as a size a reader can read.
+fn cacheText(bytes: int) -> string {
+  if bytes <= 0 { return "0 MB" }
+  let mb = (bytes + 999_999) / 1_000_000
+  if mb < 1024 { return "{mb} MB" }
+  return "{mb / 1024} GB"
+}
+
 /// How many bytes of page files the app keeps. They are a cache — a page is a
 /// few milliseconds to draw — so running over this costs one window's drawing,
 /// not correctness. Reading a book for an hour writes a couple of gigabytes of
@@ -244,12 +252,21 @@ fn markTitle(mark: lib.Bookmark, items: [engine.TocItem]) -> string {
 }
 
 /// What a row of the contents sheet is: a section's name, a place the reader
-/// kept, or a chapter.
+/// kept, a chapter, or one of this chapter's pictures.
 enum ContentsRowKind {
   header
   bookmark
   note
   chapter
+  image
+}
+
+/// The chapter's picture with this engine id; none when it isn't there.
+fn imageOf(images: [engine.ImageInfo], id: int) -> engine.ImageInfo? {
+  for image in images {
+    if image.id == id { return image }
+  }
+  return none
 }
 
 /// One row of the contents sheet, all three kinds: a List's rows come from a
@@ -267,11 +284,13 @@ struct ContentsRow {
   /// The place as the engine names it, when it could be asked: what puts a
   /// bookmark back on its own paragraph after the type has been resized.
   locator: string = ""
+  /// An image row's place in the chapter's list.
+  image: int = -1
 }
 
 /// The contents sheet's rows: the bookmarks under a 书签 heading, the notes
-/// under a 笔记 one, then the table of contents under its own.
-fn contentsRows(marks: [lib.Bookmark], notes: [lib.Note], items: [engine.TocItem]) -> [ContentsRow] {
+/// under a 笔记 one, this chapter's pictures, then the table of contents.
+fn contentsRows(marks: [lib.Bookmark], notes: [lib.Note], items: [engine.TocItem], images: [engine.ImageInfo] = []) -> [ContentsRow] {
   var rows: [ContentsRow] = []
   var sections = false
   if !marks.isEmpty() {
@@ -295,6 +314,18 @@ fn contentsRows(marks: [lib.Bookmark], notes: [lib.Note], items: [engine.TocItem
     }
     sections = true
   }
+  if !images.isEmpty() {
+    rows.push(ContentsRow(kind: .header, title: "本章图片", chapter: 0, percent: 0, index: 0, id: "h.images"))
+    for (i, image) in images.enumerated() {
+      let name = if image.alt.isEmpty() { lib.fileName(image.src) } else { image.alt }
+      rows.push(ContentsRow(
+        kind: .image, title: name, chapter: 0, percent: 0, index: i, id: "i.{i}",
+        text: if image.width > 0 { "{image.width} × {image.height}" } else { "" },
+        image: image.id,
+      ))
+    }
+    sections = true
+  }
   if sections {
     rows.push(ContentsRow(kind: .header, title: "目录", chapter: 0, percent: 0, index: 0, id: "h.toc"))
   }
@@ -307,15 +338,16 @@ fn contentsRows(marks: [lib.Bookmark], notes: [lib.Note], items: [engine.TocItem
   return rows
 }
 
-component Contents(items: [engine.TocItem], at: int, book: string) {
+component Contents(items: [engine.TocItem], at: int, book: string, images: [engine.ImageInfo] = []) {
   event pick(index: int)
   event goBookmark(chapter: int, percent: float, locator: string)
   event dropBookmark(id: string)
   event dropNote(id: string)
+  event image(index: int)
   use library: Library
   let env = environment()
 
-  let rows = contentsRows(library.bookmarksOf(book), library.notesOf(book), items)
+  let rows = contentsRows(library.bookmarksOf(book), library.notesOf(book), items, images)
   let list = Ref()
   let palette = lib.paletteFor(library.theme)
 
@@ -442,6 +474,33 @@ component Contents(items: [engine.TocItem], at: int, book: string) {
               color: palette.muted
             }
           }
+          .image => Row {
+            padding: [12, 20]
+            gap: 10
+            align: .center
+            on press {
+              emit image(row.image)
+              dismiss()
+            }
+            Symbol(Icons.image) {
+              font: .body
+              color: palette.muted
+            }
+            Column {
+              grow: 1
+              gap: 2
+              Text(row.title) {
+                lines: 1
+                color: palette.ink
+              }
+              if !row.text.isEmpty() {
+                Text(row.text) {
+                  font: .caption
+                  color: palette.muted
+                }
+              }
+            }
+          }
         }
       }
     }
@@ -464,7 +523,7 @@ fn denorm(f: float, lo: float, hi: float) -> float = lo + f * (hi - lo)
 
 /// Type size, line spacing, the margins, the letter spacing, and the paper.
 /// Everything a page is laid out with, so nothing has to be guessed at.
-component Appearance(typeface: string) {
+component Appearance(typeface: string, cacheBytes: int = 0) {
   use library: Library
   let env = environment()
 
@@ -660,6 +719,12 @@ component Appearance(typeface: string) {
         color: palette.muted
       }
     }
+    if cacheBytes > 0 {
+      Text("引擎缓存：{cacheText(cacheBytes)}") {
+        font: .footnote
+        color: palette.muted
+      }
+    }
   }
 }
 
@@ -735,6 +800,56 @@ component NoteEditor(quote: string, draft: string, existing: bool) {
   }
 }
 
+/// One picture of the chapter at its original resolution: the engine writes
+/// it as an EQP1 file, which is what BookPage already draws. The view keeps
+/// the image's own proportions; a tap anywhere or 关闭 puts it away.
+component ImageViewer(path: string, pixelsW: int, pixelsH: int) {
+  let env = environment()
+  state frame = Frame()
+
+  fn fitted() -> (float, float) {
+    let maxW = max(80.0, frame.width - env.safeLeft - env.safeRight - 24)
+    let maxH = max(80.0, frame.height - env.safeTop - env.safeBottom - 96)
+    if pixelsW <= 0 || pixelsH <= 0 { return (maxW, maxH) }
+    var w = maxW
+    var h = w * float(pixelsH) / float(pixelsW)
+    if h > maxH {
+      h = maxH
+      w = h * float(pixelsW) / float(pixelsH)
+    }
+    return (w, h)
+  }
+
+  let box = fitted()
+
+  View {
+    grow: 1
+    background: #101014
+    on layout(f) { frame = f }
+    Column {
+      grow: 1
+      align: .center
+      justify: .center
+      gap: 12
+      padding: [12, 0]
+      View {
+        width: box.0
+        height: box.1
+        clip: true
+        bookpage.BookPage(path: path) {
+          grow: 1
+          on press { dismiss() }
+        }
+      }
+      Button("关闭") {
+        variant: .glass
+        color: #f4efe6
+        on press { dismiss() }
+      }
+    }
+  }
+}
+
 component Reader(book: lib.Book) {
   use library: Library
   use allSources: sources.Sources?
@@ -745,7 +860,7 @@ component Reader(book: lib.Book) {
   /// shows the layer then, so its open animation ends on a page.
   event ready
 
-  state engineId = -1
+  state engineId: engine.Engine? = none
   state spine = 0
   state page = 0
   state pages = 1
@@ -930,10 +1045,8 @@ component Reader(book: lib.Book) {
     screen.setBars(style: .auto, hideStatus: false, hideNavigation: false)
     if library.mode == "scroll" { savePlace() }
     flushSession()
-    if engineId > 0 {
-      engine.close(engineId)
-      engineId = -1
-    }
+    // The handle is a value: letting go of it closes the book.
+    engineId = none
   }
 
   /// 读了一页、翻了一页、滚动了一下：这一段还算在读。
@@ -954,7 +1067,7 @@ component Reader(book: lib.Book) {
   /// 把从上次记下到现在的阅读时间写进 store。空闲超过五分钟只算到
   /// 最后一次活动后五分钟；关页和每分钟各写一次。
   fn flushSession() {
-    if engineId <= 0 || sessionAt == 0 { return }
+    if !engine.isOpen(engineId) || sessionAt == 0 { return }
     let now = time.now().unix()
     var until = now
     if now - activeAt > 300 { until = activeAt + 300 }
@@ -967,7 +1080,7 @@ component Reader(book: lib.Book) {
 
   /// Actually lays the chapter out and rasterizes the page.
   fn show() {
-    if engineId <= 0 || frame.width <= 32 || frame.height <= 64 { return }
+    if !engine.isOpen(engineId) || frame.width <= 32 || frame.height <= 64 { return }
     // A new page, size or type: a selection belongs to the layout it was made
     // in, so it goes before this one is drawn.
     clearSelection()
@@ -1024,7 +1137,7 @@ component Reader(book: lib.Book) {
   /// its spines are a window's, not the book's — and before anything is laid
   /// out.
   fn placeLocator() -> string {
-    if engineId <= 0 || windowed { return "" }
+    if !engine.isOpen(engineId) || windowed { return "" }
     if library.mode == "scroll" {
       if !columnReady || scrollHeight <= 0 { return "" }
       let where = engine.flowHit(engineId, pageMargins.left + 2, contentY())
@@ -1036,10 +1149,55 @@ component Reader(book: lib.Book) {
     return engine.locatorAt(engineId, page, pageMargins.left + 2, pageMargins.top + 2)
   }
 
+  /// The chapter whose pictures the contents sheet lists: the one laid out in
+  /// page mode, the one under the reader in the column.
+  fn imageChapterNow() -> int {
+    if library.mode == "scroll" && columnReady {
+      let chapter = engine.flowSpineAt(engineId, contentY())
+      if chapter >= 0 { return chapter }
+    }
+    return spine
+  }
+
+  /// This chapter's pictures (the engine names them, originals included).
+  fn chapterImagesNow() -> [engine.ImageInfo] {
+    if !engine.isOpen(engineId) { return [] }
+    let chapter = imageChapterNow()
+    if library.mode == "scroll" {
+      // Asking for the chapter measures it, so `images()` answers for it.
+      let ch = engine.flowChapter(engineId, chapter)
+      if !ch.ok { return [] }
+    } else if engine.lastChapter(engineId) != chapter {
+      return []
+    }
+    return engine.images(engineId)
+  }
+
+  /// One picture of the chapter, at its original resolution.
+  fn showImage(imageId: int) {
+    let images = chapterImagesNow()
+    if let image = imageOf(images, id: imageId) {
+      showPicture(image)
+    }
+  }
+
+  fn showPicture(image: engine.ImageInfo) {
+    let chapter = imageChapterNow()
+    let path = fs.join([pagesDir(), "img-{book.id}-{chapter}-{image.id}-{fileTag()}.eqp"])
+    if !fs.exists(path) {
+      try? fs.mkdirAll(pagesDir())
+      if !engine.writeImage(engineId, imageId: image.id, path: path) {
+        snackbar("这张图打不开")
+        return
+      }
+    }
+    present(ImageViewer(path: path, pixelsW: image.width, pixelsH: image.height))
+  }
+
   /// A kept place in the column: the line it names, in the book's flow. -1 when
   /// the place isn't in that chapter.
   fn locatorY(chapter: int, locator: string) -> float {
-    if engineId <= 0 || locator.isEmpty() { return -1 }
+    if !engine.isOpen(engineId) || locator.isEmpty() { return -1 }
     let ch = engine.flowChapter(engineId, chapter)
     if !ch.ok { return -1 }
     let where = engine.locate(engineId, locator)
@@ -1207,7 +1365,7 @@ component Reader(book: lib.Book) {
   /// Keeps them for the next open. Called where the place is saved (a scroll
   /// that has settled) and when the page goes away.
   fn keepColumnIndex() {
-    if windowed || engineId <= 0 || !columnReady || scrollHeight <= 0 { return }
+    if windowed || !engine.isOpen(engineId) || !columnReady || scrollHeight <= 0 { return }
     try? fs.mkdirAll(pagesDir())
     let _kept = engine.writeScrollIndex(engineId, scrollIndexPath())
   }
@@ -1240,7 +1398,7 @@ component Reader(book: lib.Book) {
   /// The chapter's top is an estimate until its neighbours have been laid out,
   /// and the reader means the chapter, not the estimate.
   fn goToChapter(chapter: int, within: float) {
-    if engineId <= 0 { return }
+    if !engine.isOpen(engineId) { return }
     let ch = engine.flowChapter(engineId, chapter)
     if !ch.ok || ch.height <= 0 { return }
     var at = within
@@ -1255,7 +1413,7 @@ component Reader(book: lib.Book) {
   /// measured: put the reader on it. Before this, a jump to a chapter landed
   /// wherever the estimate of the chapters before it was wrong by.
   fn settleAnchor() {
-    if anchorChapter < 0 || engineId <= 0 { return }
+    if anchorChapter < 0 || !engine.isOpen(engineId) { return }
     let chapter = anchorChapter
     let within = anchorWithin
     anchorChapter = -1
@@ -1268,7 +1426,7 @@ component Reader(book: lib.Book) {
   /// the reader reaches them, so the total grows into the truth; the Scroll's
   /// content size has to follow it, or the end of the book sits at the wrong y.
   fn refreshColumn() {
-    if engineId <= 0 || !columnReady { return }
+    if !engine.isOpen(engineId) || !columnReady { return }
     let total = engine.flowHeight(engineId)
     if total <= 0 || (total - scrollHeight).abs() < 1 { return }
     scrollHeight = total
@@ -1356,7 +1514,7 @@ component Reader(book: lib.Book) {
   /// 手指近的那一端，让这一端跟到手指下，另一端不动。
   fn beginSelection(x: float, y: float) {
     touch()
-    if library.mode != "page" || engineId <= 0 || pages <= 0 { return }
+    if library.mode != "page" || !engine.isOpen(engineId) || pages <= 0 { return }
     let loc = engine.hit(engineId, page, x, y)
     if loc.page < 0 { return }
     let line = int(loc.line)
@@ -1401,7 +1559,7 @@ component Reader(book: lib.Book) {
 
   /// 按住拖：远的那一端跟到手指下的字。
   fn extendSelection(x: float, y: float) {
-    if !selOn || engineId <= 0 { return }
+    if !selOn || !engine.isOpen(engineId) { return }
     let loc = engine.hit(engineId, page, x, y)
     if loc.page < 0 { return }
     selFocusLine = int(loc.line)
@@ -1411,23 +1569,23 @@ component Reader(book: lib.Book) {
 
   /// 两端的引擎选区 → 当前页上要画的矩形和要存的位置。
   fn updateSelection() {
-    let count = engine.selectLines(engineId, selAnchorLine, selAnchorByte, selFocusLine, selFocusByte)
-    if count <= 0 {
+    let sel = engine.selectLines(engineId, selAnchorLine, selAnchorByte, selFocusLine, selFocusByte)
+    if sel == none {
       // 焦点还在锚点那个字里：这一帧没有可扩的区间。选区留着，等手指
       // 移出这个字再扩；把它当成「取消」会让一次微小的左右抖动清掉
       // 整个选区。取消只有「取消」按钮和点选区外面两种。
       return
     }
-    let start = engine.selectionStart(engineId)
-    let end = engine.selectionEnd(engineId)
+    let start = engine.selectionStart(sel)
+    let end = engine.selectionEnd(sel)
     selStartLine = int(start.line)
     selStartByte = int(start.byte)
     selEndLine = int(end.line)
     selEndByte = int(end.byte)
-    selText = engine.selectionText(engineId)
+    selText = engine.selectionText(sel)
     var rects: [PageMark] = []
     var i = 0
-    for rect in engine.selectionRects(engineId) {
+    for rect in engine.selectionRects(sel) {
       if rect.page != page { continue }
       rects.push(PageMark(key: "s.{i}", x: rect.x, y: rect.y, w: rect.w, h: rect.h))
       i += 1
@@ -1452,7 +1610,7 @@ component Reader(book: lib.Book) {
   /// 笔记（没有地址）才退回当时的行号。两种都用引文校一遍：对不上就不画，
   /// 宁可不画，也不把高亮画到别的字上。
   fn refreshMarks() {
-    if engineId <= 0 || library.mode != "page" || pages <= 0 {
+    if !engine.isOpen(engineId) || library.mode != "page" || pages <= 0 {
       marks = []
       return
     }
@@ -1475,12 +1633,12 @@ component Reader(book: lib.Book) {
           }
         }
       }
-      let count = engine.selectLines(engineId, aLine, aByte, bLine, bByte)
-      if count <= 0 { continue }
+      let sel = engine.selectLines(engineId, aLine, aByte, bLine, bByte)
+      if sel == none { continue }
       // 比的是字，不是断行：同一段原文换一个字号就断在别处，字没变。
-      if lib.squash(engine.selectionText(engineId)) != lib.squash(note.quote) { continue }
+      if lib.squash(engine.selectionText(sel)) != lib.squash(note.quote) { continue }
       var i = 0
-      for rect in engine.selectionRects(engineId) {
+      for rect in engine.selectionRects(sel) {
         if rect.page != page { continue }
         next.push(PageMark(key: "m.{note.id}.{i}", x: rect.x, y: rect.y, w: rect.w, h: rect.h))
         i += 1
@@ -1491,7 +1649,7 @@ component Reader(book: lib.Book) {
 
   /// 现在的选区存成一条笔记（`text` 为空时是一条高亮）。
   fn keepSelection(text: string) {
-    if !selOn || engineId <= 0 { return }
+    if !selOn || !engine.isOpen(engineId) { return }
     let percent = engine.progress(engineId, selStartLine)
     // 两端也存成引擎的稳定地址：以后换字号、换屏幕，高亮还落在同一段原文上。
     var startLocator = ""
@@ -1627,12 +1785,12 @@ component Reader(book: lib.Book) {
       if !next[i].path.isEmpty() { continue }
       let tile = next[i]
       let file = fileOf(tile)
-      let _drawn = await spawn {
-        return engine.flowBand(
-          id: id, y: tile.y, height: tile.height, scale: scaleNow,
-          ink: ink, paper: paper, bold: false, path: file,
-        )
-      }
+      // The engine's handle is a value, and values don't cross to `spawn`:
+      // a band is drawn here, on the main thread, as a page already is.
+      let _drawn = engine.flowBand(
+        id: engineId, y: tile.y, height: tile.height, scale: scaleNow,
+        ink: ink, paper: paper, bold: false, path: file,
+      )
       // The paper can change while a band is being drawn. That band belongs
       // to the screen the reader has already left: the task that follows the
       // new paper draws it again, so this pass must not put it back.
@@ -1664,7 +1822,7 @@ component Reader(book: lib.Book) {
   // 这个 task 不跟 `chapterRev`：取到正文会写它，跟了就等于每次成功都
   // 把自己重启、在 `await` 处取消掉，后面的 loadedChapters 来不及记。
   task("{spine}:{hereChapter}:{windowTick}:{columnReady}") {
-    if !windowed || engineId <= 0 { return }
+    if !windowed || !engine.isOpen(engineId) { return }
     let at = if library.mode == "scroll" { hereChapter } else { windowBase + spine }
     await ensureChapter(at)
     await ensureChapter(at + 1)
@@ -1756,7 +1914,7 @@ component Reader(book: lib.Book) {
     } else if localChapters.isEmpty() {
       throw Error("这本书的目录还没读出来")
     }
-    if engineId <= 0 { throw Error("引擎里没有这本书") }
+    if !engine.isOpen(engineId) { throw Error("引擎里没有这本书") }
     let count = windowCountOf(windowTotal, base: base)
     if count <= 0 { throw Error("这一章不在这本书里") }
     // 换窗只是换章节表：字体、书、引擎都还在。
@@ -1790,7 +1948,7 @@ component Reader(book: lib.Book) {
   /// 取一章的正文，填进引擎里它自己的位置：在线书从书源取，大 TXT 从文件
   /// 里读那一段。
   async fn loadChapter(at: int, redraw: bool = true) -> bool {
-    if engineId <= 0 || at < 0 || at >= windowTotal { return false }
+    if !engine.isOpen(engineId) || at < 0 || at >= windowTotal { return false }
     let local = at - windowBase
     if local < 0 || local >= engine.chapterCount(engineId) { return false }
     var text: string? = none
@@ -1803,7 +1961,7 @@ component Reader(book: lib.Book) {
       text = try? await localbook.bodyOf(bookFilePath, chapter: localChapters[at])
     }
     // 读的时候窗口可能已经换了：那一章的正文就不属于现在这本书了。
-    if engineId <= 0 || at - windowBase != local { return false }
+    if !engine.isOpen(engineId) || at - windowBase != local { return false }
     let body = lib.chapterBody(text ?? "", at: at)
     // 在线书源给的正文通常没有章节标题；本地 TXT 的正文里本来就有那一行。
     let filled = if online { lib.withChapterHeading(body, title: chapterTitleOf(at)) } else { body }
@@ -1815,7 +1973,7 @@ component Reader(book: lib.Book) {
   /// 读到一章，就取这一章的正文，顺手把后面两章也取了：翻页不停在「正在取」
   /// 上。取过的章记得住，换窗时清空。
   async fn ensureChapter(at: int) {
-    if !windowed || engineId <= 0 || at < 0 || at >= windowTotal { return }
+    if !windowed || !engine.isOpen(engineId) || at < 0 || at >= windowTotal { return }
     if loadedChapters.contains(at) { return }
     if online && windowMeta == none { return }
     if await loadChapter(at) {
@@ -1846,7 +2004,7 @@ component Reader(book: lib.Book) {
   }
 
   /// 字体：应用的衬线字体先试，平台的不行再找一个文件。
-  fn mountFace(id: int) {
+  fn mountFace(id: engine.Engine?) {
     if engine.registerFontBytes(id, data: bundledFace) {
       fontName = "Noto Serif SC"
     } else {
@@ -1882,6 +2040,12 @@ component Reader(book: lib.Book) {
       windowTarget = -1
       return
     }
+    // 上一窗的章节已经换掉了：它们的 IR、断行和图片可以提前还，别等到
+    // 引擎自己的预算才想起。只在确实积了一些的时候做，免得把刚热起来的
+    // 字体位图再扔一次。
+    if engine.memoryBytes(engineId) > 24_000_000 {
+      let _trimmed = engine.trimMemory(engineId)
+    }
     spine = target - windowBase
     if spine < 0 { spine = 0 }
     let count = engine.chapterCount(engineId)
@@ -1912,7 +2076,7 @@ component Reader(book: lib.Book) {
   async fn openBook() throws {
     if opened { return }
     opened = true
-    var id = -1
+    var id: engine.Engine? = none
     if online {
       // 在线书没有整本字节：引擎里先是一本空书，章节按窗推给它。
       id = engine.newBook(book.title)
@@ -1932,7 +2096,7 @@ component Reader(book: lib.Book) {
         id = engine.open(file)
       }
     }
-    if id <= 0 {
+    if !engine.isOpen(id) {
       error = "打不开这本书：{engine.lastError()}"
       announceReady()
       return
@@ -2120,7 +2284,7 @@ component Reader(book: lib.Book) {
   fn follow(href: string) {
     touch()
     clearSelection()
-    if engineId <= 0 || href.isEmpty() { return }
+    if !engine.isOpen(engineId) || href.isEmpty() { return }
     let target = engine.resolveLink(engineId, href)
     if !target.ok { return }
     if target.external {
@@ -2169,7 +2333,7 @@ component Reader(book: lib.Book) {
   /// order matters, linkAt reads the last layout), and chapter.top makes the
   /// flow y the chapter's own.
   fn linkAtFlow(x: float, flowY: float) -> string {
-    if engineId <= 0 { return "" }
+    if !engine.isOpen(engineId) { return "" }
     let spine = engine.flowSpineAt(engineId, flowY)
     if spine < 0 { return "" }
     let chapter = engine.flowChapter(engineId, spine)
@@ -2388,7 +2552,7 @@ component Reader(book: lib.Book) {
           icon: Icons.typography
           variant: .glass
           label: "排版"
-          on press { present(Appearance(typeface: fontName)) }
+          on press { present(Appearance(typeface: fontName, cacheBytes: engine.memoryBytes(engineId))) }
         }
         Button("") {
           icon: if marked != none { Icons.bookmarkFilled } else { Icons.bookmark }
@@ -2403,7 +2567,7 @@ component Reader(book: lib.Book) {
           label: "目录"
           tooltip: "目录"
           on press {
-            present(Contents(tocItems, currentChapter, book.id) {
+            present(Contents(tocItems, currentChapter, book.id, images: chapterImagesNow()) {
               on pick(i) {
                 if i >= 0 && i < tocItems.count() { jump(tocItems[i].spine) }
               }
@@ -2413,6 +2577,7 @@ component Reader(book: lib.Book) {
                 library.removeNote(id)
                 refreshMarks()
               }
+              on image(i) { showImage(i) }
             })
           }
         }

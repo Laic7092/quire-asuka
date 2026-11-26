@@ -76,9 +76,8 @@ component Cover(book: lib.Book) {
     let path = coverPath(book.id)
     if !fs.exists(path) {
       let id = engine.open(book.path)
-      if id <= 0 { return }
+      if !engine.isOpen(id) { return }
       let wrote = engine.writeCover(id, path: path)
-      engine.close(id)
       if !wrote { return }
     }
     cover = path

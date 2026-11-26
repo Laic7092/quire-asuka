@@ -12,7 +12,7 @@ let locatorFace = embed.bytes("fonts/NotoSerifSC-Regular.woff")
 let locatorMargins = engine.Margins(top: 28, right: 30, bottom: 28, left: 30)
 
 /// 样书，带字体，像阅读页那样打开。
-fn locatorSample() -> int {
+fn locatorSample() -> engine.Engine? {
   let books = samples()
   let book = books.find(b => b.title == "散文選") ?? books[0]
   let path = fs.join([fs.appDir(), "locator.txt"])
@@ -27,7 +27,7 @@ fn sliceBytes(text: string, start: int, end: int) -> string = text.byteSlice(sta
 
 test "a place kept as a locator is the same words at another type size" {
   let id = locatorSample()
-  expect(id > 0)
+  expect(engine.isOpen(id))
   let pages = engine.layout(id, 0, 390, 844, locatorMargins, 1.0, 1.6)
   expect(pages > 0)
 
@@ -53,12 +53,11 @@ test "a place kept as a locator is the same words at another type size" {
   // 同一句话在另一章里找不到：位置说的是章、段和段内字节，三个都在。
   let _other = engine.layout(id, 1, 390, 844, locatorMargins, 1.4, 1.6)
   expect(engine.locate(id, locator).page < 0)
-  engine.close(id)
 }
 
 test "a selection kept as a locator range is the same text at another type size" {
   let id = locatorSample()
-  expect(id > 0)
+  expect(engine.isOpen(id))
   let _pages = engine.layout(id, 0, 390, 844, locatorMargins, 1.0, 1.6)
 
   // 一段选区：从一行的中间到几行之后。
@@ -66,8 +65,8 @@ test "a selection kept as a locator range is the same text at another type size"
   let to = engine.hit(id, 0, 320, 330)
   expect(from.page >= 0 && to.page >= 0)
   let made = engine.select(id, from, to)
-  expect(made > 0)
-  let quote = engine.selectionText(id)
+  expect(made != none)
+  let quote = engine.selectionText(made)
   expect(!quote.isEmpty())
   let range = engine.locatorRange(id, aLine: int(from.line), aByte: int(from.byte), bLine: int(to.line), bByte: int(to.byte))
   let parts = range.split("|")
@@ -82,16 +81,14 @@ test "a selection kept as a locator range is the same text at another type size"
   let end = engine.locate(id, parts[1])
   expect(start.page >= 0 && end.page >= 0)
   let again = engine.selectLines(id, start.line, start.byte, end.line, end.byte)
-  expect(again > 0)
+  expect(again != none)
   // 选区文本按排版断行：比的是字，不是断在哪儿。
-  expect(lib.squash(engine.selectionText(id)) == lib.squash(quote))
-
-  engine.close(id)
+  expect(lib.squash(engine.selectionText(again)) == lib.squash(quote))
 }
 
 test "a place names the paragraph and a byte in it" {
   let id = locatorSample()
-  expect(id > 0)
+  expect(engine.isOpen(id))
   let _pages = engine.layout(id, 0, 390, 844, locatorMargins, 1.0, 1.6)
   // 同一行上的两个点：段相同，段内字节不同 —— 位置细到字，不是细到段。
   let a = engine.locatorAt(id, 0, 40, 150)
@@ -109,5 +106,4 @@ test "a place names the paragraph and a byte in it" {
   let back = engine.locate(id, a)
   expect(back.page >= 0)
   expect(engine.locatorAt(id, back.page, 40, 150) == a)
-  engine.close(id)
 }

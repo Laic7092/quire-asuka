@@ -10,7 +10,7 @@ import ./lib
 let streamFace = embed.bytes("fonts/NotoSerifSC-Regular.woff")
 
 /// A stream book with a font, as the reader opens an online book.
-fn streamBook(title: string) -> int {
+fn streamBook(title: string) -> engine.Engine? {
   let id = engine.newBook(title)
   let _font = engine.registerFontBytes(id, data: streamFace)
   return id
@@ -22,7 +22,7 @@ let streamMargins = engine.Margins(top: 0, right: 24, bottom: 0, left: 24)
 
 test "a fed book has the chapters it was given, in order" {
   let id = streamBook("在线书")
-  expect(id > 0)
+  expect(engine.isOpen(id))
   expect(engine.chapterCount(id) == 0)
   expect(engine.appendChapter(id, title: "第一章", text: paragraphsOf(["甲。", "乙。"])) == 1)
   expect(engine.appendChapter(id, title: "第二章", text: paragraphsOf(["丙。"])) == 2)
@@ -33,7 +33,6 @@ test "a fed book has the chapters it was given, in order" {
   expect(engine.pageInfo(id, 0).ok == 1)
   // 一章的正文在它自己的位置上，不在邻章里。
   expect(engine.progress(id, 0) >= 0)
-  engine.close(id)
 }
 
 test "replacing a chapter keeps its place and changes its version" {
@@ -55,7 +54,6 @@ test "replacing a chapter keeps its place and changes its version" {
   // 越界、空正文都不收：读者看见的是一个明确的失败，不是半章。
   expect(!engine.replaceChapter(id, spine: 9, title: "x", text: "x"))
   expect(!engine.replaceChapter(id, spine: 0, title: "x", text: ""))
-  engine.close(id)
 }
 
 test "clearing a fed book leaves it empty and ready for another window" {
@@ -66,7 +64,6 @@ test "clearing a fed book leaves it empty and ready for another window" {
   // 换一窗：章从 0 重新数，读者看见的是新的一批。
   expect(engine.appendChapter(id, title: "第四十一章", text: "乙。") == 1)
   expect(engine.layout(id, 0, 390, 844, streamMargins, 1.0, 1.6) > 0)
-  engine.close(id)
 }
 
 test "a fed book is a scroll column like any other" {
@@ -91,7 +88,6 @@ test "a fed book is a scroll column like any other" {
   expect(chapter.ok)
   expect(chapter.height > 844)
   expect(engine.flowHeight(id) > before)
-  engine.close(id)
 }
 
 test "a window's chapters are a slice of the book's" {
@@ -114,5 +110,4 @@ test "a chapter's text reaches the engine as paragraphs" {
   expect(text == "第一段。\n第二段。")
   let _n = engine.appendChapter(id, title: "第一章", text: text)
   expect(engine.layout(id, 0, 390, 844, streamMargins, 1.0, 1.6) > 0)
-  engine.close(id)
 }

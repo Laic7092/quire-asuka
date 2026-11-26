@@ -1,12 +1,88 @@
-// The book engine, called through its C ABI (ebook-engine's crates/ebook-abi,
-// the `eb_plain_*` scalar surface): it parses EPUB and plain text, lays a
-// chapter out into pages, and rasterizes a page to a file this app shows.
+// The book engine, called through its C ABI (ebook-engine 0.4.0's
+// `crates/ebook-abi`): it parses EPUB and plain text, lays a chapter out into
+// pages, and rasterizes a page to a file this app shows.
 //
-// A book is an integer handle (it can live in state, in a store). Nothing
-// here draws: a page is an `EQP1` file (u32 width, u32 height, RGBA8) and
-// BookPage (the native package) puts it on screen.
+// A book is an opaque handle (`Engine`), owned by Asuka: it can live in state,
+// and it closes itself when the last reference goes. Nothing here draws: a
+// page is an `EQP1` file (u32 width, u32 height, RGBA8) and BookPage (the
+// native package) puts it on screen.
+//
+// `c/engine.c` is the ABI's shape for Asuka: the layout options travel as a
+// struct pointer, and a selection is a snapshot whose parts only the library
+// can read, so both go through a few lines of C.
 
 import std/fs
+
+/// A book. Opaque; freed when the last value holding it is gone.
+pub extern type Engine with release quire_engine_free
+
+/// A selection's snapshot. Freed when the last value holding it is gone.
+pub extern type Selection with release quire_selection_free
+
+extern fn quire_engine_free(engine: Engine)
+extern fn quire_selection_free(selection: Selection)
+extern fn quire_layout(
+  engine: Engine?, spine: UInt32, scroll: UInt32,
+  width: Float32, height: Float32,
+  top: Float32, right: Float32, bottom: Float32, left: Float32,
+  fontScale: Float32, lineScale: Float32, letterPx: Float32, wordPx: Float32, align: UInt32,
+) -> Int32
+extern fn quire_scroll_begin(
+  engine: Engine?, width: Float32, height: Float32,
+  top: Float32, right: Float32, bottom: Float32, left: Float32,
+  fontScale: Float32, lineScale: Float32, letterPx: Float32, wordPx: Float32, align: UInt32,
+) -> Int32
+extern fn quire_scroll_slice(
+  engine: Engine?, spine: UInt32, width: Float32, height: Float32,
+  top: Float32, right: Float32, bottom: Float32, left: Float32,
+  fontScale: Float32, lineScale: Float32, letterPx: Float32, wordPx: Float32, align: UInt32,
+  y: Float32, sliceHeight: Float32, scale: Float32,
+  ink: UInt32, paper: UInt32, bold: bool, path: CString,
+) -> Int32
+extern fn quire_selection_text(selection: Selection?) -> CString
+extern fn quire_selection_rect_count(selection: Selection?) -> UInt32
+extern fn quire_selection_rect(selection: Selection?, index: UInt32) -> SelectionRect
+extern fn quire_selection_start(selection: Selection?) -> Loc
+extern fn quire_selection_end(selection: Selection?) -> Loc
+/// A string a by-value struct carried, as the string it is.
+extern fn quire_cstr(pointer: Pointer) -> CString
+
+/// The book's bibliography, all at once. Its strings are `const char *`
+/// fields, so they cross as `Pointer` and become strings through `quire_cstr`.
+extern struct RawMetadata {
+  ok: Int32
+  creatorCount: UInt32
+  title: Pointer
+  creator: Pointer
+  language: Pointer
+  publisher: Pointer
+  identifier: Pointer
+  date: Pointer
+  description: Pointer
+  coverHref: Pointer
+}
+
+/// One image of the chapter laid out last.
+extern struct RawImageInfo {
+  ok: Int32
+  id: UInt32
+  width: UInt32
+  height: UInt32
+  mime: Pointer
+  src: Pointer
+  alt: Pointer
+}
+
+extern fn eb_plain_metadata(engine: Engine?) -> RawMetadata
+extern fn eb_plain_creator_at(engine: Engine?, index: UInt32) -> CString
+extern fn eb_plain_capabilities(engine: Engine?) -> UInt32
+extern fn eb_plain_version() -> CString
+extern fn eb_plain_abi_version() -> UInt32
+extern fn eb_plain_trim_memory(engine: Engine?) -> Int32
+extern fn eb_plain_memory_bytes(engine: Engine?) -> UInt64
+extern fn eb_plain_image_count(engine: Engine?) -> UInt32
+extern fn eb_plain_image_info(engine: Engine?, index: UInt32) -> RawImageInfo
+extern fn eb_plain_image_full_write(engine: Engine?, imageId: UInt32, path: CString) -> Int32
 
 /// A page's box and chapter progress.
 extern struct PageInfo {
@@ -39,69 +115,48 @@ extern struct SelectionRect {
   h: Float32
 }
 
-/// A book's link, resolved: a URL outside it, or a place inside it.
-extern struct EbLink {
+/// A book's link, as the engine resolves it. Its `fragment` is a `const char *`
+/// the struct carries by value, which is why it crosses as a `Pointer`.
+extern struct RawLink {
   ok: Int32
   /// -1 for an external link (or one that didn't resolve).
   spine: Int32
   external: Int32
+  fragment: Pointer
 }
 
-extern fn eb_plain_link_at(id: Int32, page: UInt32, x: Float32, y: Float32) -> CString
-extern fn eb_plain_resolve_link(id: Int32, href: CString) -> EbLink
-extern fn eb_plain_resolved_fragment(id: Int32) -> CString
-extern fn eb_plain_fragment_line(id: Int32, fragment: CString) -> Int32
-
-extern fn eb_plain_open(data: bytes, name: CString?) -> Int32
+extern fn eb_plain_open(data: bytes, name: CString?) -> Engine?
 /// A book the app feeds chapter by chapter: no file, no whole-book scan.
-extern fn eb_plain_new_book(title: CString) -> Int32
-extern fn eb_plain_append_chapter(id: Int32, title: CString, text: CString) -> Int32
-extern fn eb_plain_replace_chapter(id: Int32, spine: UInt32, title: CString, text: CString) -> Int32
-extern fn eb_plain_clear_chapters(id: Int32) -> Int32
+extern fn eb_plain_new_book(title: CString) -> Engine?
+extern fn eb_plain_append_chapter(engine: Engine?, title: CString, text: CString) -> Int32
+extern fn eb_plain_replace_chapter(engine: Engine?, spine: UInt32, title: CString, text: CString) -> Int32
+extern fn eb_plain_clear_chapters(engine: Engine?) -> Int32
 /// A chapter's content version: what a page of it was drawn from.
-extern fn eb_plain_chapter_rev(id: Int32, spine: UInt32) -> UInt64
-extern fn eb_plain_close(id: Int32) -> Int32
+extern fn eb_plain_chapter_rev(engine: Engine?, spine: UInt32) -> UInt64
 extern fn eb_plain_last_error() -> CString
-extern fn eb_plain_title(id: Int32) -> CString
-extern fn eb_plain_cover_write(id: Int32, path: CString) -> Int32
-extern fn eb_plain_spine_count(id: Int32) -> UInt32
-extern fn eb_plain_spine_href(id: Int32, index: UInt32) -> CString
-extern fn eb_plain_register_font(id: Int32, data: bytes) -> Int32
-extern fn eb_plain_layout(
-  id: Int32, spine: UInt32, width: Float32, height: Float32,
-  top: Float32, right: Float32, bottom: Float32, left: Float32,
-  fontScale: Float32, lineScale: Float32, letterPx: Float32, wordPx: Float32, align: UInt32,
-) -> Int32
-extern fn eb_plain_layout_scroll(
-  id: Int32, spine: UInt32, width: Float32, height: Float32,
-  top: Float32, right: Float32, bottom: Float32, left: Float32,
-  fontScale: Float32, lineScale: Float32, letterPx: Float32, wordPx: Float32, align: UInt32,
-) -> Int32
+extern fn eb_plain_title(engine: Engine?) -> CString
+extern fn eb_plain_cover_write(engine: Engine?, path: CString) -> Int32
+extern fn eb_plain_spine_count(engine: Engine?) -> UInt32
+extern fn eb_plain_spine_href(engine: Engine?, index: UInt32) -> CString
+extern fn eb_plain_register_font(engine: Engine?, data: bytes) -> Int32
 
 /// The content height of the last scroll layout, in points.
-extern fn eb_plain_content_height(id: Int32) -> Float32
-extern fn eb_plain_spine(id: Int32) -> Int32
-extern fn eb_plain_page_count(id: Int32) -> UInt32
-extern fn eb_plain_page_info(id: Int32, page: UInt32) -> PageInfo
+extern fn eb_plain_content_height(engine: Engine?) -> Float32
+extern fn eb_plain_page_count(engine: Engine?) -> UInt32
+/// The chapter that was laid out last (-1 when none): what `images`,
+/// `linkAt` and `locate` answer for.
+extern fn eb_plain_last_spine(engine: Engine?) -> Int32
+extern fn eb_plain_page_info(engine: Engine?, page: UInt32) -> PageInfo
 extern fn eb_plain_page_raw(
-  id: Int32, page: UInt32, scale: Float32, ink: UInt32, paper: UInt32, bold: bool, path: CString,
+  engine: Engine?, page: UInt32, scale: Float32, ink: UInt32, paper: UInt32, bold: bool, path: CString,
 ) -> Int32
 
 /// A slice of the scroll page: from `y` down `height` points, at `scale`.
 extern fn eb_plain_page_slice_raw(
-  id: Int32, page: UInt32, y: Float32, height: Float32, scale: Float32,
+  engine: Engine?, page: UInt32, y: Float32, height: Float32, scale: Float32,
   ink: UInt32, paper: UInt32, bold: bool, path: CString,
 ) -> Int32
 
-/// Lay a chapter out and take one scroll window in the same call: a host
-/// thread can draw a tile without another call replacing the layout.
-extern fn eb_plain_scroll_slice_raw(
-  id: Int32, spine: UInt32, width: Float32, height: Float32,
-  top: Float32, right: Float32, bottom: Float32, left: Float32,
-  fontScale: Float32, lineScale: Float32, letterPx: Float32, wordPx: Float32, align: UInt32,
-  y: Float32, sliceHeight: Float32, scale: Float32,
-  ink: UInt32, paper: UInt32, bold: bool, path: CString,
-) -> Int32
 /// One chapter in the whole-book scroll session: where it starts in the flow,
 /// how tall it is, and whether it could be laid out at all.
 extern struct ScrollChapter {
@@ -128,88 +183,82 @@ extern struct ScrollLoc {
 /// band renderer (a band may cross a chapter and the seam stays in line),
 /// hits, line/anchor-to-y and progress — all in the book's flow coordinates,
 /// so the reader keeps no chapter table of its own.
-extern fn eb_plain_scroll_begin(
-  id: Int32, width: Float32, height: Float32,
-  top: Float32, right: Float32, bottom: Float32, left: Float32,
-  fontScale: Float32, lineScale: Float32, letterPx: Float32, wordPx: Float32, align: UInt32,
-) -> Int32
-extern fn eb_plain_scroll_chapter_count(id: Int32) -> UInt32
-extern fn eb_plain_scroll_chapter(id: Int32, index: UInt32) -> ScrollChapter
-extern fn eb_plain_scroll_total_height(id: Int32) -> Float32
-extern fn eb_plain_scroll_spine_at(id: Int32, y: Float32) -> Int32
-extern fn eb_plain_scroll_chapter_top(id: Int32, spine: UInt32) -> Float32
+extern fn eb_plain_scroll_chapter_count(engine: Engine?) -> UInt32
+extern fn eb_plain_scroll_chapter(engine: Engine?, index: UInt32) -> ScrollChapter
+extern fn eb_plain_scroll_total_height(engine: Engine?) -> Float32
+extern fn eb_plain_scroll_spine_at(engine: Engine?, y: Float32) -> Int32
+extern fn eb_plain_scroll_chapter_top(engine: Engine?, spine: UInt32) -> Float32
 extern fn eb_plain_scroll_band_raw(
-  id: Int32, y: Float32, height: Float32, scale: Float32,
+  engine: Engine?, y: Float32, height: Float32, scale: Float32,
   ink: UInt32, paper: UInt32, bold: bool, path: CString,
 ) -> Int32
-extern fn eb_plain_scroll_hit(id: Int32, x: Float32, y: Float32) -> ScrollLoc
-extern fn eb_plain_scroll_line_y(id: Int32, spine: UInt32, line: UInt32) -> Float32
-extern fn eb_plain_scroll_anchor_y(id: Int32, spine: UInt32, fragment: CString) -> Float32
-extern fn eb_plain_scroll_progress(id: Int32, y: Float32) -> Float32
+extern fn eb_plain_scroll_hit(engine: Engine?, x: Float32, y: Float32) -> ScrollLoc
+extern fn eb_plain_scroll_line_y(engine: Engine?, spine: UInt32, line: UInt32) -> Float32
+extern fn eb_plain_scroll_anchor_y(engine: Engine?, spine: UInt32, fragment: CString) -> Float32
+extern fn eb_plain_scroll_progress(engine: Engine?, y: Float32) -> Float32
 /// 本次会话量过的章高：下次在同样的屏、同样的字下打开，滚动条直接是这个精度。
-extern fn eb_plain_scroll_index_write(id: Int32, path: CString) -> Int32
-extern fn eb_plain_scroll_index_read(id: Int32, path: CString) -> Int32
+extern fn eb_plain_scroll_index_write(engine: Engine?, path: CString) -> Int32
+extern fn eb_plain_scroll_index_read(engine: Engine?, path: CString) -> Int32
 /// 稳定位置：`spine:node:offset`，换字号、换页高都还指向同一段原文。
-extern fn eb_plain_locator_at(id: Int32, page: UInt32, x: Float32, y: Float32) -> CString
+extern fn eb_plain_locator_at(engine: Engine?, page: UInt32, x: Float32, y: Float32) -> CString
 extern fn eb_plain_locator_range(
-  id: Int32, aPage: UInt32, aLine: UInt32, aByte: UInt32,
+  engine: Engine?, aPage: UInt32, aLine: UInt32, aByte: UInt32,
   bPage: UInt32, bLine: UInt32, bByte: UInt32,
 ) -> CString
-extern fn eb_plain_locate(id: Int32, locator: CString) -> Loc
+extern fn eb_plain_locate(engine: Engine?, locator: CString) -> Loc
+/// 页内点 → 链接地址（"" 没有）。
+extern fn eb_plain_link_at(engine: Engine?, page: UInt32, x: Float32, y: Float32) -> CString
+/// 当前章 `#fragment` 的行号；-1 本章没有这个锚点。
+extern fn eb_plain_fragment_line(engine: Engine?, fragment: CString) -> Int32
 
-extern fn eb_plain_hit(id: Int32, page: UInt32, x: Float32, y: Float32) -> Loc
-extern fn eb_plain_progress(id: Int32, page: UInt32, line: UInt32, byte: UInt32) -> Float32
+extern fn eb_plain_hit(engine: Engine?, page: UInt32, x: Float32, y: Float32) -> Loc
+extern fn eb_plain_progress(engine: Engine?, page: UInt32, line: UInt32, byte: UInt32) -> Float32
+/// A selection snapshot; the caller owns it (it is freed with the value), and
+/// snapshots never overwrite each other.
 extern fn eb_plain_select(
-  id: Int32, aPage: UInt32, aLine: UInt32, aByte: UInt32,
+  engine: Engine?, aPage: UInt32, aLine: UInt32, aByte: UInt32,
   bPage: UInt32, bLine: UInt32, bByte: UInt32,
-) -> Int32
-extern fn eb_plain_selection_rect_count(id: Int32) -> UInt32
-extern fn eb_plain_selection_rect(id: Int32, index: UInt32) -> SelectionRect
-extern fn eb_plain_selection_text(id: Int32) -> CString
-extern fn eb_plain_selection_start(id: Int32) -> Loc
-extern fn eb_plain_selection_end(id: Int32) -> Loc
-extern fn eb_plain_toc_count(id: Int32) -> UInt32
-extern fn eb_plain_toc_title(id: Int32, index: UInt32) -> CString
-extern fn eb_plain_toc_spine(id: Int32, index: UInt32) -> Int32
-extern fn eb_plain_toc_depth(id: Int32, index: UInt32) -> UInt32
+) -> Selection?
+extern fn eb_plain_toc_count(engine: Engine?) -> UInt32
+extern fn eb_plain_toc_title(engine: Engine?, index: UInt32) -> CString
+extern fn eb_plain_toc_spine(engine: Engine?, index: UInt32) -> Int32
+extern fn eb_plain_toc_depth(engine: Engine?, index: UInt32) -> UInt32
+
+/// Whether this value still names an open book.
+pub fn isOpen(id: Engine?) -> bool = id != none
 
 /// What went wrong last, for the log.
 pub fn lastError() -> string = eb_plain_last_error()
 
 /// Opens a book: EPUB by its archive, plain text by anything else.
-/// -1 when it failed (see lastError).
-pub fn open(path: string) -> int {
-  if !fs.exists(path) { return -1 }
+/// none when it failed (see lastError).
+pub fn open(path: string) -> Engine? {
+  if !fs.exists(path) { return none }
   if let data = try? fs.read(path) {
-    return int(eb_plain_open(data, path))
+    return eb_plain_open(data, path)
   }
-  return -1
-}
-
-/// Releases a handle.
-pub fn close(id: int) {
-  if id > 0 { let _closed = eb_plain_close(i32(clamping: id)) }
+  return none
 }
 
 /// Registers a font file the app ships (or one the system has). Without a
 /// font the pages come out blank: the engine measures with the fonts given.
-pub fn registerFont(id: int, path: string) -> bool {
-  if id <= 0 || !fs.exists(path) { return false }
+pub fn registerFont(id: Engine?, path: string) -> bool {
+  if !isOpen(id) || !fs.exists(path) { return false }
   if let data = try? fs.read(path) {
     if data.isEmpty() { return false }
-    return eb_plain_register_font(i32(clamping: id), data) >= 0
+    return eb_plain_register_font(id, data) >= 0
   }
   return false
 }
 
 /// Registers a font the app carries in its own code.
-pub fn registerFontBytes(id: int, data: bytes) -> bool {
-  if id <= 0 || data.isEmpty() { return false }
-  return eb_plain_register_font(i32(clamping: id), data) >= 0
+pub fn registerFontBytes(id: Engine?, data: bytes) -> bool {
+  if !isOpen(id) || data.isEmpty() { return false }
+  return eb_plain_register_font(id, data) >= 0
 }
 
 /// The first font that exists, out of the ones a platform has.
-pub fn registerFirstFont(id: int, paths: [string]) -> bool {
+pub fn registerFirstFont(id: Engine?, paths: [string]) -> bool {
   for path in paths {
     if registerFont(id, path: path) { return true }
   }
@@ -224,37 +273,37 @@ pub fn registerFirstFont(id: int, paths: [string]) -> bool {
 /// appended as they come, and each one replaceable in place. A chapter keeps
 /// its index, so a table of contents is the book's own order.
 
-/// An empty book, ready for `appendChapter`. -1 when the engine refused it.
-pub fn newBook(title: string) -> int {
+/// An empty book, ready for `appendChapter`. none when the engine refused it.
+pub fn newBook(title: string) -> Engine? {
   let name = if title.isEmpty() { "未命名" } else { title }
-  return int(eb_plain_new_book(name))
+  return eb_plain_new_book(name)
 }
 
 /// Adds a chapter at the end. Its text is one line a paragraph. Returns the
 /// new chapter count, -1/-2 when it didn't fit.
-pub fn appendChapter(id: int, title: string, text: string) -> int {
-  if id <= 0 || text.isEmpty() { return -1 }
-  return int(eb_plain_append_chapter(i32(clamping: id), title, text))
+pub fn appendChapter(id: Engine?, title: string, text: string) -> int {
+  if !isOpen(id) || text.isEmpty() { return -1 }
+  return int(eb_plain_append_chapter(id, title, text))
 }
 
 /// Replaces one chapter's text, keeping its index and the chapters after it.
 /// Its pages and its height are laid out again the next time it's shown.
-pub fn replaceChapter(id: int, spine: int, title: string, text: string) -> bool {
-  if id <= 0 || spine < 0 || text.isEmpty() { return false }
-  return eb_plain_replace_chapter(i32(clamping: id), u32(clamping: spine), title, text) == 0
+pub fn replaceChapter(id: Engine?, spine: int, title: string, text: string) -> bool {
+  if !isOpen(id) || spine < 0 || text.isEmpty() { return false }
+  return eb_plain_replace_chapter(id, u32(clamping: spine), title, text) == 0
 }
 
 /// Takes every chapter away, for a new window of the same book.
-pub fn clearChapters(id: int) -> bool {
-  if id <= 0 { return false }
-  return eb_plain_clear_chapters(i32(clamping: id)) == 0
+pub fn clearChapters(id: Engine?) -> bool {
+  if !isOpen(id) { return false }
+  return eb_plain_clear_chapters(id) == 0
 }
 
 /// A chapter's content version: a page or a band drawn from an older one is
 /// stale, and its file name says so. 0 when there's no such chapter.
-pub fn chapterRev(id: int, spine: int) -> u64 {
-  if id <= 0 || spine < 0 { return 0 }
-  return eb_plain_chapter_rev(i32(clamping: id), u32(clamping: spine))
+pub fn chapterRev(id: Engine?, spine: int) -> u64 {
+  if !isOpen(id) || spine < 0 { return 0 }
+  return eb_plain_chapter_rev(id, u32(clamping: spine))
 }
 
 /// A page's margins, in points: the text's column, not the screen's edges.
@@ -267,51 +316,51 @@ pub struct Margins {
 
 /// Lays a chapter (`spine`, 0-based) out for a view of this size. Returns
 /// its page count, -1 when it failed.
-pub fn layout(id: int, spine: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float = 0, word: float = 0, align: int = 0) -> int {
-  if id <= 0 { return -1 }
-  let rc = eb_plain_layout(
-    i32(clamping: id), u32(clamping: spine), width, height,
+pub fn layout(id: Engine?, spine: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float = 0, word: float = 0, align: int = 0) -> int {
+  if !isOpen(id) { return -1 }
+  let rc = quire_layout(
+    id, u32(clamping: spine), 0, width, height,
     margins.top, margins.right, margins.bottom, margins.left,
     fontScale, lineScale, letter, word, u32(clamping: align),
   )
   if rc < 0 { return -1 }
-  return int(eb_plain_page_count(i32(clamping: id)))
+  return int(eb_plain_page_count(id))
 }
 
 /// Lays a chapter out as one continuous scroll column. Returns its content
 /// height in points, -1 when it failed. `margins.top`/`bottom` are ignored:
 /// the host puts the top and bottom room around the list, not in each tile.
-pub fn layoutScroll(id: int, spine: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float = 0, word: float = 0, align: int = 0) -> float {
-  if id <= 0 { return -1 }
-  let rc = eb_plain_layout_scroll(
-    i32(clamping: id), u32(clamping: spine), width, height,
+pub fn layoutScroll(id: Engine?, spine: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float = 0, word: float = 0, align: int = 0) -> float {
+  if !isOpen(id) { return -1 }
+  let rc = quire_layout(
+    id, u32(clamping: spine), 1, width, height,
     0, margins.right, 0, margins.left,
     fontScale, lineScale, letter, word, u32(clamping: align),
   )
   if rc < 0 { return -1 }
-  return eb_plain_content_height(i32(clamping: id))
+  return eb_plain_content_height(id)
 }
 
 /// One page's box and chapter progress.
-pub fn pageInfo(id: int, page: int) -> PageInfo = eb_plain_page_info(i32(clamping: id), u32(clamping: page))
+pub fn pageInfo(id: Engine?, page: int) -> PageInfo = eb_plain_page_info(id, u32(clamping: page))
 
 /// Rasterizes a page into `path`, at `scale` device pixels per point.
-pub fn renderPage(id: int, page: int, scale: float, ink: u32, paper: u32, bold: bool, path: string) -> bool {
-  return eb_plain_page_raw(i32(clamping: id), u32(clamping: page), scale, ink, paper, bold, path) == 0
+pub fn renderPage(id: Engine?, page: int, scale: float, ink: u32, paper: u32, bold: bool, path: string) -> bool {
+  return eb_plain_page_raw(id, u32(clamping: page), scale, ink, paper, bold, path) == 0
 }
 
 /// Rasterizes the slice at `y`, `height` points tall, into `path`.
-pub fn renderSlice(id: int, page: int, y: float, height: float, scale: float, ink: u32, paper: u32, bold: bool, path: string) -> bool {
-  return eb_plain_page_slice_raw(i32(clamping: id), u32(clamping: page), y, height, scale, ink, paper, bold, path) == 0
+pub fn renderSlice(id: Engine?, page: int, y: float, height: float, scale: float, ink: u32, paper: u32, bold: bool, path: string) -> bool {
+  return eb_plain_page_slice_raw(id, u32(clamping: page), y, height, scale, ink, paper, bold, path) == 0
 }
 
 /// Lays `spine` out for scrolling and rasterizes one window of it in the
 /// same engine call, so a background tile cannot be drawn from another
 /// chapter's layout. Top and bottom margins are the host's, hence 0.
-pub fn scrollSlice(id: int, spine: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float, word: float, y: float, sliceHeight: float, scale: float, ink: u32, paper: u32, bold: bool, path: string) -> bool {
-  if id <= 0 { return false }
-  return eb_plain_scroll_slice_raw(
-    i32(clamping: id), u32(clamping: spine), width, height,
+pub fn scrollSlice(id: Engine?, spine: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float, word: float, y: float, sliceHeight: float, scale: float, ink: u32, paper: u32, bold: bool, path: string) -> bool {
+  if !isOpen(id) { return false }
+  return quire_scroll_slice(
+    id, u32(clamping: spine), width, height,
     0, margins.right, 0, margins.left,
     fontScale, lineScale, letter, word, 0,
     y, sliceHeight, scale, ink, paper, bold, path,
@@ -343,10 +392,10 @@ pub struct FlowLoc {
 /// margins are the scroll container's own room, so they're dropped here; left
 /// and right are the text's column. Returns the chapter count, -1/-2 an error.
 /// Call it after the font is registered: a new font drops the session.
-pub fn beginScroll(id: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float = 0, word: float = 0, align: int = 0) -> int {
-  if id <= 0 { return -1 }
-  return int(eb_plain_scroll_begin(
-    i32(clamping: id), width, height,
+pub fn beginScroll(id: Engine?, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float = 0, word: float = 0, align: int = 0) -> int {
+  if !isOpen(id) { return -1 }
+  return int(quire_scroll_begin(
+    id, width, height,
     0, margins.right, 0, margins.left,
     fontScale, lineScale, letter, word, u32(clamping: align),
   ))
@@ -354,8 +403,8 @@ pub fn beginScroll(id: int, width: float, height: float, margins: Margins, fontS
 
 /// One chapter's place in the column. Asking for chapter i measures that
 /// chapter, and only that one: the ones before it may still be estimates.
-pub fn flowChapter(id: int, index: int) -> FlowChapter {
-  let c = eb_plain_scroll_chapter(i32(clamping: id), u32(clamping: index))
+pub fn flowChapter(id: Engine?, index: int) -> FlowChapter {
+  let c = eb_plain_scroll_chapter(id, u32(clamping: index))
   return FlowChapter(
     spine: if c.spine == u32.max { -1 } else { int(c.spine) },
     top: c.top, height: c.height, ok: c.ok != 0,
@@ -366,51 +415,51 @@ pub fn flowChapter(id: int, index: int) -> FlowChapter {
 /// the measured chapters, and estimates for the ones not laid out yet. It grows
 /// into the truth as the reader goes, and "问一次量整本" never happens again.
 /// -1 when there's no session.
-pub fn flowHeight(id: int) -> float = eb_plain_scroll_total_height(i32(clamping: id))
+pub fn flowHeight(id: Engine?) -> float = eb_plain_scroll_total_height(id)
 
 /// Writes the heights measured so far, so the next open at this screen and this
 /// type starts where this one ended. The engine checks the key inside: another
 /// book, screen, type or font is not applied.
-pub fn writeScrollIndex(id: int, path: string) -> bool {
-  if id <= 0 { return false }
-  return eb_plain_scroll_index_write(i32(clamping: id), path) >= 0
+pub fn writeScrollIndex(id: Engine?, path: string) -> bool {
+  if !isOpen(id) { return false }
+  return eb_plain_scroll_index_write(id, path) >= 0
 }
 
 /// Reads them back. False when the file is for another screen, type, font or
 /// book: the column then works from its own estimates.
-pub fn readScrollIndex(id: int, path: string) -> bool {
-  if id <= 0 { return false }
-  return eb_plain_scroll_index_read(i32(clamping: id), path) == 1
+pub fn readScrollIndex(id: Engine?, path: string) -> bool {
+  if !isOpen(id) { return false }
+  return eb_plain_scroll_index_read(id, path) == 1
 }
 
 /// The chapter a flow y falls in; -1 past the end or with no session.
-pub fn flowSpineAt(id: int, y: float) -> int = int(eb_plain_scroll_spine_at(i32(clamping: id), y))
+pub fn flowSpineAt(id: Engine?, y: float) -> int = int(eb_plain_scroll_spine_at(id, y))
 
 /// One band of the column at `scale`, written to `path` as EQP1. A band may
 /// cross a chapter: the engine draws each chapter it touches and keeps the
 /// seam in line. Outside the content is paper.
-pub fn flowBand(id: int, y: float, height: float, scale: float, ink: u32, paper: u32, bold: bool, path: string) -> bool {
-  if id <= 0 || height <= 0 { return false }
-  return eb_plain_scroll_band_raw(i32(clamping: id), y, height, scale, ink, paper, bold, path) == 0
+pub fn flowBand(id: Engine?, y: float, height: float, scale: float, ink: u32, paper: u32, bold: bool, path: string) -> bool {
+  if !isOpen(id) || height <= 0 { return false }
+  return eb_plain_scroll_band_raw(id, y, height, scale, ink, paper, bold, path) == 0
 }
 
 /// Flow point → the text there (spine -1 when there's none).
-pub fn flowHit(id: int, x: float, y: float) -> FlowLoc {
-  let loc = eb_plain_scroll_hit(i32(clamping: id), x, y)
+pub fn flowHit(id: Engine?, x: float, y: float) -> FlowLoc {
+  let loc = eb_plain_scroll_hit(id, x, y)
   return FlowLoc(spine: int(loc.spine), line: int(loc.line), byte: int(loc.byte), y: loc.y)
 }
 
 /// A line's box top, in flow coordinates; -1 when there's no such line.
-pub fn flowLineY(id: int, spine: int, line: int) -> float = eb_plain_scroll_line_y(i32(clamping: id), u32(clamping: spine), u32(clamping: line))
+pub fn flowLineY(id: Engine?, spine: int, line: int) -> float = eb_plain_scroll_line_y(id, u32(clamping: spine), u32(clamping: line))
 
 /// A chapter's anchor ("#part-2") in flow coordinates; -1 when it has none.
-pub fn flowAnchorY(id: int, spine: int, fragment: string) -> float = eb_plain_scroll_anchor_y(i32(clamping: id), u32(clamping: spine), fragment)
+pub fn flowAnchorY(id: Engine?, spine: int, fragment: string) -> float = eb_plain_scroll_anchor_y(id, u32(clamping: spine), fragment)
 
 /// A flow y as 0…1 of the book; -1 on error.
-pub fn flowProgress(id: int, y: float) -> float = eb_plain_scroll_progress(i32(clamping: id), y)
+pub fn flowProgress(id: Engine?, y: float) -> float = eb_plain_scroll_progress(id, y)
 
 /// Where this point in the page falls in the text.
-pub fn hit(id: int, page: int, x: float, y: float) -> Loc = eb_plain_hit(i32(clamping: id), u32(clamping: page), x, y)
+pub fn hit(id: Engine?, page: int, x: float, y: float) -> Loc = eb_plain_hit(id, u32(clamping: page), x, y)
 
 /// A stable place in the text, laid out at the type size in hand.
 pub struct Place {
@@ -424,18 +473,18 @@ pub struct Place {
 /// line and the type size all change with the reader's settings; the paragraph
 /// and the byte in it don't, so a bookmark kept as one of these still means the
 /// same words after a resize. "" when nothing is there.
-pub fn locatorAt(id: int, page: int, x: float, y: float) -> string {
-  if id <= 0 { return "" }
-  return eb_plain_locator_at(i32(clamping: id), u32(clamping: page), x, y)
+pub fn locatorAt(id: Engine?, page: int, x: float, y: float) -> string {
+  if !isOpen(id) { return "" }
+  return eb_plain_locator_at(id, u32(clamping: page), x, y)
 }
 
 /// Two ends of a selection as one stable range: `a|b`, with the ends in the
 /// text's own order. Both are lines of the chapter the engine laid out last —
 /// a page's lines, as `hit` gives them. "" when they have no place to anchor to.
-pub fn locatorRange(id: int, aLine: int, aByte: int, bLine: int, bByte: int) -> string {
-  if id <= 0 { return "" }
+pub fn locatorRange(id: Engine?, aLine: int, aByte: int, bLine: int, bByte: int) -> string {
+  if !isOpen(id) { return "" }
   return eb_plain_locator_range(
-    i32(clamping: id),
+    id,
     0, u32(clamping: aLine), u32(clamping: aByte),
     0, u32(clamping: bLine), u32(clamping: bByte),
   )
@@ -443,9 +492,9 @@ pub fn locatorRange(id: int, aLine: int, aByte: int, bLine: int, bByte: int) -> 
 
 /// A stable place as the page, line and byte it falls on in the chapter the
 /// engine laid out last. `page` is -1 when it isn't that chapter.
-pub fn locate(id: int, locator: string) -> Place {
-  if id <= 0 || locator.isEmpty() { return Place(page: -1, line: 0, byte: 0) }
-  let where = eb_plain_locate(i32(clamping: id), locator)
+pub fn locate(id: Engine?, locator: string) -> Place {
+  if !isOpen(id) || locator.isEmpty() { return Place(page: -1, line: 0, byte: 0) }
+  let where = eb_plain_locate(id, locator)
   return Place(page: int(where.page), line: int(where.line), byte: int(where.byte))
 }
 
@@ -459,70 +508,62 @@ pub struct Rect {
 }
 
 /// Selects from `a` to `b` (a `hit`'s page, line and byte), in either order.
-/// Returns how many rectangles it made; 0 means empty or nothing to select.
-/// The selection is kept on the handle for the readers below, until the next
-/// call.
-pub fn select(id: int, a: Loc, b: Loc) -> int {
-  if id <= 0 { return 0 }
-  let count = eb_plain_select(
-    i32(clamping: id),
+/// Returns the selection, or none when there is nothing to select. The
+/// snapshot belongs to the caller and never overwrites another.
+pub fn select(id: Engine?, a: Loc, b: Loc) -> Selection? {
+  if !isOpen(id) { return none }
+  return eb_plain_select(
+    id,
     u32(clamping: a.page), a.line, a.byte,
     u32(clamping: b.page), b.line, b.byte,
   )
-  return if count > 0 { int(count) } else { 0 }
 }
 
 /// Selects by line and byte, for places a caller kept rather than hit.
-pub fn selectLines(id: int, aLine: int, aByte: int, bLine: int, bByte: int) -> int {
-  if id <= 0 { return 0 }
-  let count = eb_plain_select(
-    i32(clamping: id), 0, u32(clamping: aLine), u32(clamping: aByte),
+pub fn selectLines(id: Engine?, aLine: int, aByte: int, bLine: int, bByte: int) -> Selection? {
+  if !isOpen(id) { return none }
+  return eb_plain_select(
+    id, 0, u32(clamping: aLine), u32(clamping: aByte),
     0, u32(clamping: bLine), u32(clamping: bByte),
   )
-  return if count > 0 { int(count) } else { 0 }
 }
 
 /// One line of the last laid-out chapter, by its line number (the line a
 /// `hit` gives): "" when there's no such line. It asks for the line as a
 /// selection, so the text is exactly the source the line was set from.
-pub fn lineText(id: int, line: int) -> string {
-  if id <= 0 || line < 0 { return "" }
-  let count = eb_plain_select(
-    i32(clamping: id), 0, u32(clamping: line), 0,
+pub fn lineText(id: Engine?, line: int) -> string {
+  if !isOpen(id) || line < 0 { return "" }
+  if let sel = eb_plain_select(
+    id, 0, u32(clamping: line), 0,
     0, u32(clamping: line), 0xffffffff,
-  )
-  if count <= 0 { return "" }
-  return eb_plain_selection_text(i32(clamping: id))
+  ) {
+    return quire_selection_text(sel)
+  }
+  return ""
 }
 
-/// The last selection's rectangles, in page points.
-pub fn selectionRects(id: int) -> [Rect] {
+/// A selection's rectangles, in page points.
+pub fn selectionRects(selection: Selection?) -> [Rect] {
   var out: [Rect] = []
-  if id <= 0 { return out }
-  let key = i32(clamping: id)
-  let count = eb_plain_selection_rect_count(key)
-  for i in 0..<int(count) {
-    let rect = eb_plain_selection_rect(key, u32(clamping: i))
+  for i in 0..<int(quire_selection_rect_count(selection)) {
+    let rect = quire_selection_rect(selection, u32(clamping: i))
     if rect.ok == 0 { continue }
     out.push(Rect(page: int(rect.page), x: rect.x, y: rect.y, w: rect.w, h: rect.h))
   }
   return out
 }
 
-/// The last selection's text ("" when there's none).
-pub fn selectionText(id: int) -> string {
-  if id <= 0 { return "" }
-  return eb_plain_selection_text(i32(clamping: id))
-}
+/// A selection's text ("" when it has none).
+pub fn selectionText(selection: Selection?) -> string = quire_selection_text(selection)
 
-/// The last selection's normalized start and end.
-pub fn selectionStart(id: int) -> Loc = eb_plain_selection_start(i32(clamping: id))
-pub fn selectionEnd(id: int) -> Loc = eb_plain_selection_end(i32(clamping: id))
+/// A selection's normalized start and end.
+pub fn selectionStart(selection: Selection?) -> Loc = quire_selection_start(selection)
+pub fn selectionEnd(selection: Selection?) -> Loc = quire_selection_end(selection)
 
 /// The link at a point on the last laid-out page: "" when there's none.
-pub fn linkAt(id: int, page: int, x: float, y: float) -> string {
-  if id <= 0 { return "" }
-  return eb_plain_link_at(i32(clamping: id), u32(clamping: page), x, y)
+pub fn linkAt(id: Engine?, page: int, x: float, y: float) -> string {
+  if !isOpen(id) { return "" }
+  return eb_plain_link_at(id, u32(clamping: page), x, y)
 }
 
 /// Where one of the book's links goes, and the anchor it names inside the
@@ -535,29 +576,31 @@ pub struct Link {
   fragment: string
 }
 
-pub fn resolveLink(id: int, href: string) -> Link {
+extern fn eb_plain_resolve_link(engine: Engine?, href: CString) -> RawLink
+
+pub fn resolveLink(id: Engine?, href: string) -> Link {
   let missing = Link(ok: false, external: false, spine: -1, fragment: "")
-  if id <= 0 || href.isEmpty() { return missing }
-  let link = eb_plain_resolve_link(i32(clamping: id), href)
+  if !isOpen(id) || href.isEmpty() { return missing }
+  let link = eb_plain_resolve_link(id, href)
   if link.ok == 0 { return missing }
   return Link(
     ok: true,
     external: link.external != 0,
     spine: int(link.spine),
-    fragment: eb_plain_resolved_fragment(i32(clamping: id)),
+    fragment: quire_cstr(link.fragment),
   )
 }
 
 /// A fragment's line in the chapter last laid out; -1 when it isn't there.
-pub fn fragmentLine(id: int, fragment: string) -> int {
-  if id <= 0 || fragment.isEmpty() { return -1 }
-  return int(eb_plain_fragment_line(i32(clamping: id), fragment))
+pub fn fragmentLine(id: Engine?, fragment: string) -> int {
+  if !isOpen(id) || fragment.isEmpty() { return -1 }
+  return int(eb_plain_fragment_line(id, fragment))
 }
 
 /// A line of the last laid-out chapter as 0…1 of it: where a page falls.
-pub fn progress(id: int, line: int) -> float {
-  if id <= 0 || line < 0 { return 0 }
-  return eb_plain_progress(i32(clamping: id), 0, u32(clamping: line), 0)
+pub fn progress(id: Engine?, line: int) -> float {
+  if !isOpen(id) || line < 0 { return 0 }
+  return eb_plain_progress(id, 0, u32(clamping: line), 0)
 }
 
 /// A directory entry of the table of contents.
@@ -568,36 +611,150 @@ pub struct TocItem {
 }
 
 /// The table of contents.
-pub fn contents(id: int) -> [TocItem] {
+pub fn contents(id: Engine?) -> [TocItem] {
   var items: [TocItem] = []
-  if id <= 0 { return items }
-  let key = i32(clamping: id)
-  let count = eb_plain_toc_count(key)
-  for i in 0..<int(count) {
+  for i in 0..<int(eb_plain_toc_count(id)) {
     items.push(TocItem(
-      title: eb_plain_toc_title(key, u32(clamping: i)),
-      spine: int(eb_plain_toc_spine(key, u32(clamping: i))),
-      depth: int(eb_plain_toc_depth(key, u32(clamping: i))),
+      title: eb_plain_toc_title(id, u32(clamping: i)),
+      spine: int(eb_plain_toc_spine(id, u32(clamping: i))),
+      depth: int(eb_plain_toc_depth(id, u32(clamping: i))),
     ))
   }
   return items
 }
 
 /// The book's title: its metadata, or what the engine made of the file.
-pub fn title(id: int) -> string = eb_plain_title(i32(clamping: id))
+pub fn title(id: Engine?) -> string = eb_plain_title(id)
+
+/// The C ABI this binding is written against: `EB_ABI_VERSION` in the
+/// header. A library built for another one is a build mistake, not a book's.
+pub let expectedAbi = 3
+
+/// What the linked library reports: the ABI it was compiled for, and the
+/// library's own version string ("ebook-abi 0.4.0").
+pub fn abiVersion() -> int = int(eb_plain_abi_version())
+pub fn version() -> string = eb_plain_version()
+
+/// ---- What the backend can do ----
+
+/// What the open book and this build have (`EB_CAP_*` in the header): the
+/// format it was opened as, plus the images and embedded fonts it carries.
+pub struct Capabilities {
+  epub: bool = false
+  txt: bool = false
+  stream: bool = false
+  images: bool = false
+  fonts: bool = false
+}
+
+pub fn capabilities(id: Engine?) -> Capabilities {
+  let bits = eb_plain_capabilities(id)
+  return Capabilities(
+    epub: bits & 1 != 0,
+    txt: bits & 2 != 0,
+    stream: bits & 4 != 0,
+    images: bits & 8 != 0,
+    fonts: bits & 16 != 0,
+  )
+}
+
+/// ---- 书目 ----
+
+/// 一次取齐的书目。作者的顺序就是书里的顺序。
+pub struct Metadata {
+  title: string = ""
+  /// 第一作者，和 `creators.first()` 一样。
+  creator: string = ""
+  creators: [string] = []
+  language: string = ""
+  publisher: string = ""
+  identifier: string = ""
+  date: string = ""
+  description: string = ""
+  /// 封面在归档里的路径；"" 没有。
+  coverHref: string = ""
+}
+
+pub fn metadata(id: Engine?) -> Metadata {
+  if !isOpen(id) { return Metadata() }
+  let raw = eb_plain_metadata(id)
+  if raw.ok == 0 { return Metadata() }
+  var creators: [string] = []
+  for i in 0..<int(raw.creatorCount) {
+    creators.push(eb_plain_creator_at(id, u32(clamping: i)))
+  }
+  return Metadata(
+    title: quire_cstr(raw.title),
+    creator: quire_cstr(raw.creator),
+    creators: creators,
+    language: quire_cstr(raw.language),
+    publisher: quire_cstr(raw.publisher),
+    identifier: quire_cstr(raw.identifier),
+    date: quire_cstr(raw.date),
+    description: quire_cstr(raw.description),
+    coverHref: quire_cstr(raw.coverHref),
+  )
+}
+
+/// ---- 图片 ----
+
+/// 当前章（最近一次排版的那一章）的一张图片。`id` 就是 `writeImage` 的入参。
+pub struct ImageInfo {
+  id: int
+  width: int
+  height: int
+  mime: string
+  /// 归档里的路径。
+  src: string
+  alt: string
+}
+
+pub fn images(id: Engine?) -> [ImageInfo] {
+  var out: [ImageInfo] = []
+  for i in 0..<int(eb_plain_image_count(id)) {
+    let image = eb_plain_image_info(id, u32(clamping: i))
+    if image.ok == 0 { continue }
+    out.push(ImageInfo(
+      id: int(image.id), width: int(image.width), height: int(image.height),
+      mime: quire_cstr(image.mime), src: quire_cstr(image.src), alt: quire_cstr(image.alt),
+    ))
+  }
+  return out
+}
+
+/// Writes one image of the current chapter at its original resolution, as an
+/// `EQP1` file (what BookPage already shows). False when there's no such image.
+pub fn writeImage(id: Engine?, imageId: int, path: string) -> bool {
+  if !isOpen(id) || imageId < 0 { return false }
+  return eb_plain_image_full_write(id, u32(clamping: imageId), path) == 0
+}
+
+/// ---- 内存 ----
+
+/// Drops what can be built again (cross-chapter IR, line cache, decoded
+/// images, font bitmaps), keeping the page in hand.
+pub fn trimMemory(id: Engine?) -> bool {
+  if !isOpen(id) { return false }
+  return eb_plain_trim_memory(id) == 0
+}
+
+/// The caches' approximate bytes; 0 for no handle or no cache.
+pub fn memoryBytes(id: Engine?) -> int = int(eb_plain_memory_bytes(id))
 
 /// Writes the book's cover image (its original PNG/JPEG bytes) to `path`.
 /// False when the book has no cover.
-pub fn writeCover(id: int, path: string) -> bool {
-  if id <= 0 { return false }
-  return eb_plain_cover_write(i32(clamping: id), path) == 0
+pub fn writeCover(id: Engine?, path: string) -> bool {
+  if !isOpen(id) { return false }
+  return eb_plain_cover_write(id, path) == 0
 }
 
 /// How many chapters (spine items) it has.
-pub fn chapterCount(id: int) -> int = int(eb_plain_spine_count(i32(clamping: id)))
+pub fn chapterCount(id: Engine?) -> int = int(eb_plain_spine_count(id))
+
+/// The chapter that was laid out last; -1 when nothing has been.
+pub fn lastChapter(id: Engine?) -> int = int(eb_plain_last_spine(id))
 
 /// A chapter's name, from its href: "ch01.xhtml" is "ch01".
-pub fn chapterName(id: int, index: int) -> string {
-  let href = eb_plain_spine_href(i32(clamping: id), u32(clamping: index))
-  return href
+pub fn chapterName(id: Engine?, index: int) -> string {
+  return eb_plain_spine_href(id, u32(clamping: index))
 }

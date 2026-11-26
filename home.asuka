@@ -5,6 +5,7 @@
 import std/time
 
 import ./lib
+import ./engine
 
 /// The year it is now, and a place's year: a reading row keeps the moment it
 /// was last saved as unix seconds, so "this year" is a comparison of clocks.
@@ -217,8 +218,74 @@ component YearRow(book: lib.Book, reading: lib.Reading) {
   }
 }
 
+/// 关于 Quire: the app's version, and the engine's own report. The version
+/// and the ABI come from the linked library, not from this source, so they
+/// say what the build actually has. Formats are per book (0.4.0's capability
+/// bits describe the open book), so they're checked where a book is opened.
+component About {
+  event close
+  let env = environment()
+
+  state version = ""
+  state abi = 0
+
+  task {
+    version = engine.version()
+    abi = engine.abiVersion()
+  }
+
+  Column {
+    grow: 1
+    gap: 0
+    padding: lib.sheetPad(env, top: 20, bottom: 24, side: 20)
+    Row {
+      gap: 8
+      align: .center
+      Text("关于 Quire") {
+        font: .title3
+        grow: 1
+      }
+      Button("") {
+        icon: Icons.close
+        variant: .glass
+        on press { emit close }
+      }
+    }
+    AboutLine(title: "应用", value: "Quire 0.1")
+    AboutLine(title: "排版引擎", value: if version.isEmpty() { "读取中…" } else { version })
+    AboutLine(title: "C ABI", value: if abi == 0 {
+      "读取中…"
+    } else if abi == engine.expectedAbi {
+      "{abi} · 匹配"
+    } else {
+      "{abi} · 应为 {engine.expectedAbi}"
+    })
+    AboutLine(title: "排版", value: "分页与连续滚动")
+  }
+}
+
+/// One line of the about page: what it is on the left, what the build says
+/// on the right.
+component AboutLine(title: string, value: string) {
+  Row {
+    padding: [11, 0]
+    gap: 12
+    align: .center
+    Text(title) {
+      font: .body
+      grow: 1
+    }
+    Text(value) {
+      font: .footnote
+      color: .secondaryLabel
+      textAlign: .end
+      lines: 2
+    }
+  }
+}
+
 /// 我：the avatar's page. 同步与备份 and 阅读记录统计 have screens behind
-/// them; 关于 Quire is the one entry without a page yet.
+/// them; 关于 Quire says what the build is.
 component Profile {
   use library: Library
   let env = environment()
@@ -252,6 +319,10 @@ component Profile {
   } else if page == "sync" {
     SyncSettings {
       embedded: true
+      on close { page = "" }
+    }
+  } else if page == "about" {
+    About {
       on close { page = "" }
     }
   } else {
@@ -304,6 +375,8 @@ component Profile {
                 page = "sync"
               } else if entry.title == "阅读记录统计" {
                 page = "stats"
+              } else if entry.title == "关于 Quire" {
+                page = "about"
               } else {
                 snackbar("「{entry.title}」即将推出")
               }

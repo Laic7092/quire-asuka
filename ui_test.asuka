@@ -1100,3 +1100,19 @@ test "a big text opens at the chapter it was left in" {
   // 全书的章号：窗口从第 36960 章起，读者在第 37001 章。
   expect(library.readingOf("quire-big-local2.txt").chapter == 37_001)
 }
+
+test "the contents sheet lists this chapter's pictures" {
+  let library = Library()
+  let items = [engine.TocItem(title: "第一章", spine: 0, depth: 0)]
+  let images = [
+    engine.ImageInfo(id: 0, width: 8, height: 8, mime: "image/png", src: "OEBPS/pic.png", alt: "插图"),
+    engine.ImageInfo(id: 1, width: 640, height: 480, mime: "image/jpeg", src: "OEBPS/photo.jpg", alt: ""),
+  ]
+  let app = mount(Contents(items, 0, "散文選", images: images), provide: library)
+  await app.idle()
+  app.expect("本章图片")
+  app.expect("插图")
+  // 没有 alt 的图用归档里的文件名，不让一行只剩一个尺寸。
+  app.expect("photo.jpg")
+  app.expect("640 × 480")
+}

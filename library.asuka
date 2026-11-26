@@ -475,15 +475,23 @@ pub store Library {
     if isText && book.empty() { throw Error("{name} 里没有可读的文字") }
     if !isText {
       // The engine already knows how to find the cover (EPUB3's
-      // cover-image, EPUB2's meta name="cover"): ask it once, at import.
+      // cover-image, EPUB2's meta name="cover") and the book's own Dublin
+      // Core record: ask it once, at import.
       let id = engine.open(target)
-      if id > 0 {
-        let named = engine.title(id)
+      if engine.isOpen(id) {
+        // 扩展名是 .epub，引擎就得按 EPUB 读它；不是的话，这个平台的
+        // 库没有 EPUB 后端（0.4.0 的能力位按打开的书报）。
+        if !engine.capabilities(id).epub {
+          throw Error("{name} 读不出 EPUB：文件不是 EPUB，或这个平台的引擎没有 EPUB 后端")
+        }
+        let meta = engine.metadata(id)
+        let named = if meta.title.isEmpty() { engine.title(id) } else { meta.title }
         if !named.isEmpty() { book.title = named }
+        let authors = if meta.creators.isEmpty() { meta.creator } else { meta.creators.joined(separator: " / ") }
+        if !authors.isEmpty() { book.author = authors }
         let cover = coverPath(book.id)
         try await spawn { try fs.mkdirAll(fs.join([fs.appDir(), "covers"])) }
         if engine.writeCover(id, path: cover) { book.cover = coverName(book.id) }
-        engine.close(id)
       }
     }
     // What's kept is the row, not the text: the file in the app's directory

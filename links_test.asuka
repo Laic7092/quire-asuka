@@ -27,17 +27,22 @@ fn makeEpub(dir: string) throws -> string {
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:title>链接的书</dc:title>
+    <dc:creator>Quire</dc:creator>
     <dc:language>zh</dc:language>
+    <dc:publisher>测试出版社</dc:publisher>
     <dc:identifier id="id">quire-links</dc:identifier>
   </metadata>
   <manifest>
     <item id="ch1" href="ch1.xhtml" media-type="application/xhtml+xml"/>
     <item id="ch2" href="ch2.xhtml" media-type="application/xhtml+xml"/>
+    <item id="ch3" href="ch3.xhtml" media-type="application/xhtml+xml"/>
+    <item id="pic" href="pic.png" media-type="image/png"/>
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
   </manifest>
   <spine>
     <itemref idref="ch1"/>
     <itemref idref="ch2"/>
+    <itemref idref="ch3"/>
   </spine>
 </package>
 """)
@@ -48,6 +53,7 @@ fn makeEpub(dir: string) throws -> string {
   <body><nav epub:type="toc"><ol>
     <li><a href="ch1.xhtml">第一章</a></li>
     <li><a href="ch2.xhtml">第二章</a></li>
+    <li><a href="ch3.xhtml">整页图</a></li>
   </ol></nav></body>
 </html>
 """)
@@ -62,6 +68,9 @@ fn makeEpub(dir: string) throws -> string {
   </body>
 </html>
 """)
+  // 40 段正文把脚注推到章末：脚注锚点是空的 <a id>，不是 <p id>，
+  // 它自己不成行 —— 这正是 Calibre 做的书里会踩到的那种。
+  let filler = (0..<40).map(i => "<p>第 {i + 1} 段正文，把这条脚注推到章末。</p>").joined(separator: "")
   try fs.writeText(fs.join([dir, "OEBPS/ch2.xhtml"]), text: """
 <?xml version="1.0" encoding="UTF-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml">
@@ -69,9 +78,31 @@ fn makeEpub(dir: string) throws -> string {
   <body>
     <h1>第二章</h1>
     <p id="note">脚注的内容在这里。</p>
+    <p><img style="height: 96%; width: auto" src="pic.png" alt="插图"/></p>
+""" + filler + """
+    <p class="note"><a id="n1"></a>注一：脚注在章末。</p>
   </body>
 </html>
 """)
+  // 一页只有一张图，图的 CSS 是 `height: 96%; width: auto`（没有确定的
+  // 容器高，按 CSS 计算成 auto）：排版要退回图片的固有宽高比，不能是 0。
+  try fs.writeText(fs.join([dir, "OEBPS/ch3.xhtml"]), text: """
+<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns="http://www.w3.org/1999/xhtml">
+  <head><title>整页图</title></head>
+  <body>
+    <p><img style="height: 96%; width: auto" src="pic.png" alt="整页图"/></p>
+  </body>
+</html>
+""")
+  // 一张 8×8 的红色 PNG：引擎读它的固有尺寸，并把原图交给宿主。
+  try fs.write(fs.join([dir, "OEBPS/pic.png"]), data: bytes([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x08, 0x08, 0x06, 0x00, 0x00, 0x00, 0xc4, 0x0f, 0xbe, 0x8b,
+    0x00, 0x00, 0x00, 0x12, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x38, 0x61, 0x63, 0xf3, 0x1f, 0x1f,
+    0x66, 0x18, 0x19, 0x0a, 0x00, 0x0f, 0xbe, 0x8f, 0xc1, 0x56, 0x80, 0x1f, 0xf8, 0x00, 0x00, 0x00, 0x00,
+    0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+  ]))
   let file = "{dir}.epub"
   try? fs.remove(file)
   // `.epub` isn't a name the archive package knows; the format is a zip.
@@ -84,7 +115,7 @@ test "a page's link says where it goes" {
   try? await spawn { try fs.removeAll(dir) }
   let file = try await spawn { try makeEpub(dir) }
   let id = engine.open(file)
-  expect(id > 0)
+  expect(engine.isOpen(id))
   // The face the pages are set in, so the text is laid out at all.
   expect(engine.registerFontBytes(id, data: bundledFace))
   let margins = engine.Margins(top: 40, right: 20, bottom: 40, left: 20)
@@ -124,7 +155,75 @@ test "a page's link says where it goes" {
   expect(url.external)
   expect(url.spine < 0)
 
-  engine.close(id)
+  try? await spawn { try fs.removeAll(dir) }
+  try? await spawn { try fs.remove(file) }
+}
+
+test "an EPUB's bibliography and pictures are the engine's" {
+  let dir = fs.join([fs.tempDir(), "quire-meta-epub"])
+  try? await spawn { try fs.removeAll(dir) }
+  let file = try await spawn { try makeEpub(dir) }
+  let id = engine.open(file)
+  expect(engine.isOpen(id))
+
+  // 书目：一次取齐，作者的顺序就是书里的顺序。
+  let meta = engine.metadata(id)
+  expect(meta.title == "链接的书")
+  expect(meta.creator == "Quire")
+  expect(meta.creators == ["Quire"])
+  expect(meta.language == "zh")
+  expect(meta.identifier == "quire-links")
+  expect(meta.publisher == "测试出版社")
+
+  // 能力位与 ABI：链接进来的库就是应用写的这一版。
+  expect(engine.abiVersion() == engine.expectedAbi)
+  let caps = engine.capabilities(id)
+  expect(caps.epub)
+  expect(caps.images)
+  expect(!caps.txt)
+
+  // 第二张的图：引擎报固有尺寸，原图按 EQP1 交给宿主。
+  expect(engine.registerFontBytes(id, data: bundledFace))
+  let margins = engine.Margins(top: 40, right: 20, bottom: 40, left: 20)
+  expect(engine.layout(id, 1, 390, 844, margins, 1, 1.6) > 0)
+  expect(engine.lastChapter(id) == 1)
+  let images = engine.images(id)
+  expect(images.count() == 1)
+  expect(images[0].mime == "image/png")
+  expect(images[0].width == 8 && images[0].height == 8)
+  expect(images[0].alt == "插图")
+
+  let path = fs.join([fs.tempDir(), "quire-image.eqp"])
+  expect(engine.writeImage(id, imageId: images[0].id, path: path))
+  let raw = try fs.read(path)
+  expect(raw.count() > 12)
+  expect(raw.slice(0, 4).string() == "EQP1")
+
+  // 章末的空 <a id> 也要能定位：它自己不成行，按它后面的文本所在行算。
+  let noteLine = engine.fragmentLine(id, "n1")
+  expect(noteLine >= 0)
+  expect(engine.progress(id, noteLine) > 0.4)
+
+  // 只有一张图的章：`height: 96%; width: auto` 不能排成 0×0。
+  expect(engine.layout(id, 2, 390, 844, margins, 1, 1.6) > 0)
+  let pagePath = fs.join([fs.tempDir(), "quire-image-page.eqp"])
+  expect(engine.renderPage(id, 0, 1.0, 0x000000ff, 0xffffffff, false, pagePath))
+  let page = try fs.read(pagePath)
+  expect(page.count() > 12)
+  var inked = false
+  var i = 12
+  while i + 2 < page.count() {
+    if page[i] != 0xff || page[i + 1] != 0xff || page[i + 2] != 0xff {
+      inked = true
+      break
+    }
+    i += 4
+  }
+  expect(inked)
+  try? fs.remove(pagePath)
+
+  expect(engine.trimMemory(id))
+  try? fs.remove(path)
   try? await spawn { try fs.removeAll(dir) }
   try? await spawn { try fs.remove(file) }
 }

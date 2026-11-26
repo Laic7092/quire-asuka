@@ -11,7 +11,7 @@ import ./lib
 let face = embed.bytes("fonts/NotoSerifSC-Regular.woff")
 
 /// The sample book, open with a font, as the reader opens it.
-fn openSample() -> int {
+fn openSample() -> engine.Engine? {
   let books = samples()
   let book = books.find(b => b.title == "散文選") ?? books[0]
   let path = fs.join([fs.appDir(), "scroll-column.txt"])
@@ -21,7 +21,7 @@ fn openSample() -> int {
   return id
 }
 
-fn paperFile(name: string, id: int, y: float, height: float) -> string {
+fn paperFile(name: string, id: engine.Engine?, y: float, height: float) -> string {
   let file = fs.join([fs.appDir(), name])
   let _drawn = engine.flowBand(
     id, y, height, 2.0,
@@ -53,7 +53,7 @@ fn inked(file: string, fromRow: int, toRow: int) -> bool {
 
 test "the column's chapter tops are the sum of the ones before" {
   let id = openSample()
-  expect(id > 0)
+  expect(engine.isOpen(id))
   let count = engine.beginScroll(id, 390, 844, engine.Margins(top: 0, right: 24, bottom: 0, left: 24), 1.0, 1.6)
   expect(count > 1)
   // 打开时就有总高：它是估计值，一本书不会为了滚动条排一整本。
@@ -83,7 +83,6 @@ test "the column's chapter tops are the sum of the ones before" {
   expect(firstLine >= second.top)
   expect(firstLine - second.top < 32)
   expect((engine.flowProgress(id, total / 2) - 0.5).abs() < 0.01)
-  engine.close(id)
 }
 
 test "a band across a chapter seam has text from both chapters" {
@@ -97,5 +96,4 @@ test "a band across a chapter seam has text from both chapters" {
   // 400pt at 2x is 800 rows; the seam is at row 400.
   expect(inked(file, 0, 400))
   expect(inked(file, 400, 800))
-  engine.close(id)
 }

@@ -66,6 +66,8 @@ struct Icons {
   let disclosure = symbolName(apple: "chevron.right", material: "chevron.right")
   let typography = symbolName(apple: "textformat", material: "textformat")
   let contents = symbolName(apple: "list.bullet", material: "list.bullet")
+  /// 本章的图片，在目录页里。
+  let image = symbolName(apple: "photo", material: "photo")
   let add = symbolName(apple: "plus", material: "plus")
   let upload = symbolName(apple: "square.and.arrow.up", material: "square.and.arrow.up")
   let pin = symbolName(apple: "pin", material: "pin")

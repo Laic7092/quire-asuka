@@ -5,6 +5,7 @@ import std/fs
 
 import ./lib
 import ./sources
+import ./engine
 
 /// The app's own root: the shelf and the book it opened, as two views, not a
 /// modal presented over the shelf. The reading page is a full-window layer,
@@ -67,6 +68,22 @@ component Quire {
     sources.nativeOpen(fs.join([fs.appDir(), "legado"]))
     await library.loadCredentials()
     await library.seedSamples()
+    // 引擎的自检：链接进来的库是按哪一版 C ABI 编的，以及它有没有这个
+    // 应用要的两种格式。两者都是构建的问题，一次说清比等到开第一本书
+    // 再失败好；真正的目录、图片和缓存信息在「关于 Quire」里。
+    if let probe = engine.newBook("Quire") {
+      if engine.abiVersion() != engine.expectedAbi {
+        snackbar("引擎 ABI 不匹配：库是 {engine.abiVersion()}，应用按 {engine.expectedAbi} 编译")
+      } else {
+        // 自检书是一本流式书：能查到 stream 就说明句柄、排版会话和
+        // 章节流这条链是通的。EPUB 与 TXT 的能力按各自打开的书查，
+        // 导入时再校。
+        let caps = engine.capabilities(probe)
+        if !caps.stream {
+          snackbar("引擎自检失败：流式章节不可用")
+        }
+      }
+    }
     if let s = allSources {
       s.applySync(await library.syncIfAuto(s.syncState()))
     }

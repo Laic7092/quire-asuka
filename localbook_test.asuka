@@ -37,7 +37,7 @@ test "the chapters are where the engine puts them" {
   let ours = try await localbook.indexOf(path)
   // 引擎整本打开这本书，切出来的章数就是我们的段数。
   let id = engine.open(path)
-  expect(id > 0)
+  expect(engine.isOpen(id))
   expect(engine.chapterCount(id) == ours.count())
   expect(ours.count() == 3)
 
@@ -55,7 +55,6 @@ test "the chapters are where the engine puts them" {
   expect(third.hasSuffix("庚辛壬癸。"))
   // 段首尾相接，正好是整本。
   expect(first + second + third == novelText())
-  engine.close(id)
 }
 
 test "a Windows file's lines don't shift the next chapter" {
