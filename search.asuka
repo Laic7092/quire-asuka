@@ -1194,8 +1194,10 @@ screen Discover {
       grow: 1
       // 搜索单独一条，放在页面的最上面。不放进 toolbar 的同一组，也不
       // 用 primary：那在 iPhone 上是底部工具栏，会被 tab 栏压住。
+      // 它不在 List 里：List 会按导航栏自己让出内容，普通 Row 不会，所以
+      // 顶部要让开屏幕的安全区（状态栏与导航栏），否则会顶到状态栏上。
       Row {
-        padding: [8, lib.pageKeyline]
+        padding: [env.safeTop + 8, lib.pageKeyline]
         Button("搜索书源") {
           icon: Icons.search
           variant: .bordered
