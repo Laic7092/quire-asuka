@@ -17,14 +17,118 @@
 // `ebook_abi.h` beside this file is the 0.4.0 header: the library for the host
 // is in `lib/<target>/`, and both are the same release.
 
+#include <stdatomic.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "ebook_abi.h"
 
+// The engine handle is a `Mutex<Engine>` inside: any thread may call it, and
+// calls queue there rather than race. Asuka's `spawn` still won't take an
+// extern type across threads, so a band is drawn through a lease: a pointer
+// an Asuka int can carry, with one more reference behind it. The lease lives
+// in this table until the C call that draws the band gives it back.
+//
+// An entry starts at two references: the caller's handle and the lease. The
+// handle's own release is the same `quire_engine_free`; whichever side lets
+// go last closes the book.
+typedef struct {
+    EbEngine *engine;
+    unsigned refs;
+} EngineLease;
+
+static EngineLease *engine_leases;
+static size_t engine_lease_count;
+static size_t engine_lease_cap;
+static atomic_flag engine_lease_lock = ATOMIC_FLAG_INIT;
+
+static void lease_lock(void) {
+    while (atomic_flag_test_and_set_explicit(&engine_lease_lock, memory_order_acquire)) {
+    }
+}
+
+static void lease_unlock(void) {
+    atomic_flag_clear_explicit(&engine_lease_lock, memory_order_release);
+}
+
+// Adds a lease on engine. False when the table couldn't grow.
+static bool lease_hold(EbEngine *engine) {
+    bool ok = true;
+    lease_lock();
+    for (size_t i = 0; i < engine_lease_count; i++) {
+        if (engine_leases[i].engine == engine) {
+            engine_leases[i].refs++;
+            goto out;
+        }
+    }
+    if (engine_lease_count == engine_lease_cap) {
+        size_t cap = engine_lease_cap == 0 ? 8 : engine_lease_cap * 2;
+        EngineLease *grown = realloc(engine_leases, cap * sizeof *grown);
+        if (grown == NULL) {
+            ok = false;
+            goto out;
+        }
+        engine_leases = grown;
+        engine_lease_cap = cap;
+    }
+    engine_leases[engine_lease_count].engine = engine;
+    engine_leases[engine_lease_count].refs = 2;  // the handle, and this lease
+    engine_lease_count++;
+out:
+    lease_unlock();
+    return ok;
+}
+
+// Drops one reference; true when there was no lease left and the book is the
+// last one to close.
+static bool lease_drop(EbEngine *engine) {
+    bool last = true;
+    lease_lock();
+    for (size_t i = 0; i < engine_lease_count; i++) {
+        if (engine_leases[i].engine != engine) {
+            continue;
+        }
+        if (engine_leases[i].refs > 1) {
+            engine_leases[i].refs--;
+            last = false;
+        } else {
+            engine_leases[i] = engine_leases[--engine_lease_count];
+        }
+        break;
+    }
+    lease_unlock();
+    return last;
+}
+
 void quire_engine_free(EbEngine *engine) {
-    if (engine != NULL) {
+    if (engine != NULL && lease_drop(engine)) {
         eb_plain_close(engine);
     }
+}
+
+// A lease on engine as the integer `spawn` can carry; 0 when none.
+uint64_t quire_engine_lease(EbEngine *engine) {
+    if (engine == NULL || !lease_hold(engine)) {
+        return 0;
+    }
+    return (uint64_t)(uintptr_t)engine;
+}
+
+// Draws one band on the thread that took the lease, and gives the lease back
+// even when the band fails. A cancelled `spawn` still runs to its end, so the
+// lease can't outlive the work.
+int32_t quire_flow_band_lease(uint64_t address, float y, float height,
+                              float scale, uint32_t ink, uint32_t paper,
+                              bool bold, const char *path) {
+    EbEngine *engine = (EbEngine *)(uintptr_t)address;
+    int32_t rc = -1;
+    if (engine != NULL && height > 0) {
+        rc = eb_plain_scroll_band_raw(engine, y, height, scale, ink, paper,
+                                      bold, path);
+    }
+    quire_engine_free(engine);
+    return rc;
 }
 
 void quire_selection_free(EbSelection *selection) {

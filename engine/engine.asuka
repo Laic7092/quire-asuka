@@ -192,6 +192,13 @@ extern fn eb_plain_scroll_band_raw(
   engine: Engine?, y: Float32, height: Float32, scale: Float32,
   ink: UInt32, paper: UInt32, bold: bool, path: CString,
 ) -> Int32
+/// A band drawn through a lease (`c/engine.c`): the integer `spawn` can carry,
+/// and the release that goes with it.
+extern fn quire_engine_lease(engine: Engine?) -> UInt64
+extern fn quire_flow_band_lease(
+  address: UInt64, y: Float32, height: Float32, scale: Float32,
+  ink: UInt32, paper: UInt32, bold: bool, path: CString,
+) -> Int32
 extern fn eb_plain_scroll_hit(engine: Engine?, x: Float32, y: Float32) -> ScrollLoc
 extern fn eb_plain_scroll_line_y(engine: Engine?, spine: UInt32, line: UInt32) -> Float32
 extern fn eb_plain_scroll_anchor_y(engine: Engine?, spine: UInt32, fragment: CString) -> Float32
@@ -441,6 +448,19 @@ pub fn flowSpineAt(id: Engine?, y: float) -> int = int(eb_plain_scroll_spine_at(
 pub fn flowBand(id: Engine?, y: float, height: float, scale: float, ink: u32, paper: u32, bold: bool, path: string) -> bool {
   if !isOpen(id) || height <= 0 { return false }
   return eb_plain_scroll_band_raw(id, y, height, scale, ink, paper, bold, path) == 0
+}
+
+/// One band, drawn on another thread. The handle itself is an extern type and
+/// can't cross to `spawn`; a lease can, and the C call gives it back when the
+/// band is done. `spawn` keeps running if the reader's task is cancelled, so a
+/// band started for a screen the reader has left still finishes safely.
+pub async fn renderBand(id: Engine?, y: float, height: float, scale: float, ink: u32, paper: u32, bold: bool, path: string) -> bool {
+  if !isOpen(id) || height <= 0 { return false }
+  let lease = quire_engine_lease(id)
+  if lease == 0 { return false }
+  return await spawn {
+    return quire_flow_band_lease(lease, y, height, scale, ink, paper, bold, path) == 0
+  }
 }
 
 /// Flow point → the text there (spine -1 when there's none).

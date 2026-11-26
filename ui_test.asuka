@@ -680,8 +680,9 @@ test "the contents sheet lists bookmarks, and drops one" {
     on dropBookmark(id) { dropped = id }
   }, provide: library)
   await app.idle()
-  // 书签 first, then the chapters; the row says where in the book it is.
-  app.expect("书签")
+  // 书签 has its own tab now; its row says where in the book it is.
+  app.tap("书签")
+  await app.idle()
   app.expect("第二章 · 30%")
   app.longPress("第二章 · 30%")
   await app.idle()
@@ -702,7 +703,8 @@ test "the contents sheet lists a note, and edits it in place" {
   ]
   let app = mount(Contents(items, 1, "散文選"), provide: library)
   await app.idle()
-  app.expect("笔记")
+  app.tap("笔记")
+  await app.idle()
   app.expect("背影")
   // A long press opens the note's own menu; the words are written in its
   // editor, which saves them into the note it was opened from.
@@ -729,6 +731,8 @@ test "a note row's menu can delete it" {
   let app = mount(Contents(items, 1, "散文選") {
     on dropNote(id) { dropped = id }
   }, provide: library)
+  await app.idle()
+  app.tap("笔记")
   await app.idle()
   app.longPress("背影")
   await app.idle()

@@ -1157,8 +1157,28 @@ screen Search {
   }
 }
 
-/// 发现：带 exploreUrl 的书源。先列书源，再列它自己的分类；走的是
-/// 引擎的 `legado_explore`，和搜索共用同一套规则、JavaScript 和 cookie。
+/// 发现页的分类按书源分组：一个分类是一行，前面由 List 自己加书源的表头。
+fn categoryRowsOf(sources: [ExploreSource]) -> [ExploreHit] {
+  var out: [ExploreHit] = []
+  for s in sources {
+    for category in s.categories {
+      out.push(ExploreHit(sourceId: s.id, sourceName: s.name, category: category))
+    }
+  }
+  return out
+}
+
+/// List 的表头只拿到分区的 key，按书源 id 找回它的名字和分组。
+fn sourceById(sources: [ExploreSource], id: string) -> ExploreSource? {
+  for s in sources {
+    if s.id == id { return s }
+  }
+  return none
+}
+
+/// 发现：带 exploreUrl 的书源。每个书源是 List 的一个分区，它的分类就是
+/// 分区里的原生行；点分类直接看这个分类的书。走的是引擎的
+/// `legado_explore`，和搜索共用同一套规则、JavaScript 和 cookie。
 screen Discover {
   use allSources: sources.Sources
 
@@ -1170,8 +1190,23 @@ screen Discover {
   // 不用退出这一页再进来。
   let sourceEntries = allSources.entries
   let rows = load exploreSources(allSources, sourceEntries)
+  let sources: [ExploreSource] = match rows {
+    .ready(list) => list
+    _ => []
+  }
+  let categories = categoryRowsOf(sources)
 
   toolbar {
+    Button("搜索书源") {
+      icon: Icons.search
+      variant: .glass
+      tooltip: "搜索书源"
+      on press {
+        push(Search() {
+          on open(book) { emit open(book) }
+        })
+      }
+    }
     Button("书源管理") {
       icon: Icons.contents
       variant: .glass
@@ -1190,158 +1225,94 @@ screen Discover {
     grow: 1
     padding: [0, env.safeLeft, 0, env.safeRight]
     background: .background
-    Column {
-      grow: 1
-      // 搜索单独一条，放在页面的最上面。不放进 toolbar 的同一组，也不
-      // 用 primary：那在 iPhone 上是底部工具栏，会被 tab 栏压住。
-      // 它不在 List 里：List 会按导航栏自己让出内容，普通 Row 不会，所以
-      // 顶部要让开屏幕的安全区（状态栏与导航栏），否则会顶到状态栏上。
-      Row {
-        padding: [env.safeTop + 8, lib.pageKeyline]
-        Button("搜索书源") {
-          icon: Icons.search
-          variant: .bordered
-          grow: 1
-          on press {
-            push(Search() {
-              on open(book) { emit open(book) }
-            })
-          }
+    match rows {
+      .pending => Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        padding: [24, 40]
+        ProgressRing {}
+        Text("正在读取书源的发现页…") {
+          font: .footnote
+          color: .secondaryLabel
         }
       }
-      match rows {
-        .pending => Column {
-          grow: 1
-          justify: .center
-          align: .center
-          gap: 12
-          ProgressRing {}
-          Text("正在读取书源的发现页…") {
-            font: .footnote
-            color: .secondaryLabel
-          }
+      .failed(e) => Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        padding: [24, 40]
+        Text("发现页没有读出来") { font: .headline }
+        Text(e.message) {
+          font: .footnote
+          color: .secondaryLabel
+          textAlign: .center
         }
-        .failed(e) => Column {
+        Button("重试") {
+          on press { rows.reload() }
+        }
+      }
+      .ready(list) => if list.isEmpty() {
+        Column {
           grow: 1
           justify: .center
           align: .center
           gap: 12
           padding: [24, 40]
-          Text("发现页没有读出来") { font: .headline }
-          Text(e.message) {
+          Symbol(Icons.globe) {
+            font: .title
+            color: .tertiaryLabel
+          }
+          Text("没有带发现页的书源") {
+            font: .headline
+          }
+          Text("这个书源的 exploreUrl 是空的，或者还没有启用。导入或管理书源在右上角。") {
             font: .footnote
             color: .secondaryLabel
             textAlign: .center
           }
-          Button("重试") {
-            on press { rows.reload() }
-          }
         }
-        .ready(list) => if list.isEmpty() {
-          Column {
-            grow: 1
-            justify: .center
-            align: .center
-            gap: 12
-            padding: [24, 40]
-            Symbol(Icons.globe) {
-              font: .title
-              color: .tertiaryLabel
-            }
-            Text("没有带发现页的书源") {
-              font: .headline
-            }
-            Text("这个书源的 exploreUrl 是空的，或者还没有启用。导入或管理书源在右上角。") {
-              font: .footnote
-              color: .secondaryLabel
-              textAlign: .center
-            }
-          }
-        } else {
-          List {
-            appearance: .plain
-            grow: 1
-            for row in list key row.id {
-              Row {
-                gap: 12
-                align: .center
-                padding: [13, lib.pageKeyline]
-                on press {
-                  push(DiscoverSource(row) {
-                    on open(book) { emit open(book) }
-                  })
-                }
-                Column {
-                  grow: 1
-                  gap: 3
-                  Text(row.name) {
-                    font: .body
-                  }
-                  Text(if row.group.isEmpty() { "{row.categories.count()} 个分类" } else { "{row.group} · {row.categories.count()} 个分类" }) {
-                    font: .caption
-                    color: .tertiaryLabel
-                  }
-                }
-                Text("{row.categories.count()}") {
-                  font: .caption
-                  color: .tertiaryLabel
-                }
-                Symbol(Icons.disclosure) {
-                  font: .caption
-                  color: .tertiaryLabel
-                }
+      } else {
+        List {
+          appearance: .plain
+          grow: 1
+          section: i => categories[i].sourceId
+          header: id => if let s = sourceById(sources, id) {
+            Column {
+              gap: 3
+              padding: [18, lib.pageKeyline, 8, lib.pageKeyline]
+              Text(s.name) {
+                font: .headline
+              }
+              Text(if s.group.isEmpty() { "{s.categories.count()} 个分类" } else { "{s.group} · {s.categories.count()} 个分类" }) {
+                font: .caption
+                color: .secondaryLabel
               }
             }
+          } else {
+            View {}
           }
-        }
-      }
-    }
-  }
-}
-
-/// 发现页的第二层：一个书源自己的分类。
-screen DiscoverSource(row: ExploreSource) {
-  event open(book: lib.Book)
-
-  title: row.name
-
-  View {
-    grow: 1
-    background: .background
-    if row.categories.isEmpty() {
-      Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 10
-        padding: [24, 40]
-        Text("这个书源没有分类") {
-          font: .footnote
-          color: .secondaryLabel
-        }
-      }
-    } else {
-      List {
-        appearance: .plain
-        grow: 1
-        for (i, category) in row.categories.enumerated() key i {
-          Row {
-            gap: 10
-            align: .center
-            padding: [12, lib.pageKeyline]
-            on press {
-              push(DiscoverList(ExploreHit(sourceId: row.id, sourceName: row.name, category: category)) {
-                on open(book) { emit open(book) }
-              })
-            }
-            Text(category.title) {
-              font: .body
-              grow: 1
-              lines: 2
-            }
-            Symbol(Icons.disclosure) {
-              font: .caption
-              color: .tertiaryLabel
+          for row in categories key "{row.sourceId}:{row.category.url}" {
+            Row {
+              gap: 10
+              align: .center
+              padding: [12, lib.pageKeyline]
+              on press {
+                push(DiscoverList(row) {
+                  on open(book) { emit open(book) }
+                })
+              }
+              Text(row.category.title) {
+                font: .body
+                grow: 1
+                lines: 2
+              }
+              Symbol(Icons.disclosure) {
+                font: .caption
+                color: .tertiaryLabel
+              }
             }
           }
         }
