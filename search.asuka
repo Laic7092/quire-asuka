@@ -2229,11 +2229,9 @@ screen Discover {
           }
         }
       } else {
-        // 整页只有一个 List：顶部 inset、状态栏和导航栏都交给它。分类是
-        // 标签、书源是标题，行与行之间用留白分开，所以不要 List 的分割线
-        // 和分组底色（Bare）；Plain 会在第一行上面也画一条。
+        // 整页只有一个 List：顶部 inset、状态栏和导航栏都交给它。
         List {
-          appearance: .bare
+          appearance: .plain
           grow: 1
           for (i, s) in shown.enumerated() key s.id {
             Column {
@@ -2265,7 +2263,7 @@ screen Discover {
                   6
                 } else {
                   12
-                }, lib.pageKeyline, 10, lib.pageKeyline]
+                }, lib.pageKeyline, 6, lib.pageKeyline]
                 Text(s.name) {
                   font: .headline
                   grow: 1
