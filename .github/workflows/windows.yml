@@ -1,17 +1,16 @@
 name: Windows
 
-# A Windows build of the app, from Linux with Zig: asuka compiles the Asuka
-# to C, links ebook-engine's Windows library, and writes dist/windows-amd64/ —
-# the .exe with its icon and version, its assets, and the .zip around them.
+# A Windows build of the app, from Linux with mingw-w64: asuka compiles the
+# Asuka to C, links ebook-engine's Windows library, and writes
+# dist/windows-amd64/ — the .exe with its icon and version, its assets, the
+# .zip around them and the installer.
 #
 # Shipping says a Windows app builds "on Windows with clang, or any system
-# with Zig", and one Ubuntu runner is the cheaper of the two. The font and
-# the engine come from the same scripts as the iOS workflow.
-
-# Paused: the build stops on symbols asuka's own Windows host and Zig's
-# mingw disagree on (swprintf, swscanf), and on a console subsystem that
-# -mwindows doesn't set, so what it produced wasn't shippable anyway. See
-# "Windows 构建" in README.md; run it by hand once those are settled.
+# with Zig". Neither Zig nor clang is here: the driver is mingw-w64's gcc,
+# because the subsystem flag asuka passes for a GUI program is one that Zig's
+# cc drops (`-mwindows`, in the released CLI) — and mingw's gcc honours the
+# one current asuka passes (`-Wl,--subsystem,windows`). See "Windows 构建" in
+# README.md.
 on:
   workflow_dispatch:
 
@@ -20,8 +19,13 @@ permissions:
 
 env:
   # The engine release to build against: github.com/Laic7092/ebook-engine.
-  # Pinned: the app is written against this one's C ABI (see README).
-  ENGINE_VERSION: v0.5.1
+  # Pinned: the app is written against this one's C ABI (see README). The
+  # Windows library is the release's `windows-x64-gnu` (mingw) one.
+  ENGINE_VERSION: v0.5.2
+  # The CLI is built from asuka's source: a release's Windows link doesn't set
+  # the subsystem (v0.2.13 passes -mwindows, which Zig drops), and the fix is
+  # in `main`. Pinned to the commit it was verified against.
+  ASUKA_COMMIT: edde0f0df7f4382554f7b59382b101d7d43d4663
 
 # A newer push on the same branch cancels the run before it.
 concurrency:
@@ -35,16 +39,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Zig's release, fetched here rather than with setup-zig: the runner's
-      # actions run on Node 24 now, and a Node 20 action would put the
-      # deprecation warning back.
-      - name: Install Zig
+      # The target's CRT and archiver: mingw-w64's gcc honours -mwindows and
+      # -Wl,--subsystem,windows, and the engine's .a names mingw's ar.
+      - name: Install mingw-w64
         run: |
-          version=0.14.1
-          curl -fsSL -o "$RUNNER_TEMP/zig.tar.xz" \
-            "https://ziglang.org/download/$version/zig-x86_64-linux-$version.tar.xz"
-          tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
-          echo "$RUNNER_TEMP/zig-x86_64-linux-$version" >> "$GITHUB_PATH"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq gcc-mingw-w64-x86-64 binutils-mingw-w64-x86-64
 
       # reader.asuka embeds the font, and the repository doesn't carry it:
       # the script downloads the pinned WOFF.
@@ -55,23 +55,32 @@ jobs:
       - name: Fetch the engine
         run: bash .github/scripts/fetch-engine.sh windows-x64
 
-      - name: Install the asuka CLI
+      - name: Build the asuka CLI
         run: |
-          curl -fsSL https://asuka.egoist.dev/install.sh | sh
-          echo "$HOME/.asuka/bin" >> "$GITHUB_PATH"
+          git clone --depth 1 https://github.com/egoist/asuka "$RUNNER_TEMP/asuka"
+          git -C "$RUNNER_TEMP/asuka" fetch --depth 1 origin "$ASUKA_COMMIT"
+          git -C "$RUNNER_TEMP/asuka" checkout "$ASUKA_COMMIT"
+          cd "$RUNNER_TEMP/asuka"
+          go build -o "$HOME/.local/bin/asuka" ./cmd/asuka
 
       - name: Check
         run: |
-          zig version
+          x86_64-w64-mingw32-gcc --version | head -1
           asuka version
           asuka check -p windows
 
       - name: Build
+        env:
+          # The driver asuka compiles and links with: mingw-w64's gcc. (With
+          # Zig, the .exe comes out a console program.)
+          ASUKA_CC: x86_64-w64-mingw32-gcc
         run: asuka build -p windows --arch amd64
 
       - uses: actions/upload-artifact@v6
         with:
           name: windows-amd64
-          path: dist/windows-amd64/*.zip
+          path: |
+            dist/windows-amd64/*.zip
+            dist/windows-amd64/*-setup.exe
           if-no-files-found: error
           retention-days: 14

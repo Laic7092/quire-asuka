@@ -34,7 +34,7 @@ env:
   # The engine releases to build against: github.com/Laic7092/ebook-engine and
   # github.com/Laic7092/legado-engine. `latest` follows the newest
   # non-prerelease; a tag pins one.
-  ENGINE_VERSION: v0.5.1
+  ENGINE_VERSION: v0.5.2
   LEGADO_VERSION: v0.3.0
 
 # A newer push on the same branch cancels the run before it: a macOS runner is

@@ -1,0 +1,81 @@
+name: Android
+
+# The app for Android: `asuka build -p android` writes an .aab, the package
+# Google Play takes, signed with the upload key (ASUKA_KEYSTORE and the rest
+# of the environment, or a throwaway one here so the artifact exists).
+#
+# The runner has the SDK, the NDK and a JDK; the engine comes from the same
+# release as the iOS one, its Android targets.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The engine release to build against: github.com/Laic7092/ebook-engine.
+  ENGINE_VERSION: v0.5.2
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # reader.asuka embeds the font, and the repository doesn't carry it:
+      # the script downloads the pinned WOFF.
+      - name: Fetch the font
+        run: bash .github/scripts/fetch-font.sh
+
+      # The target's libraries, not this runner's: it's the Android app, for
+      # the ABI of a phone and of an emulator.
+      - name: Fetch the engine
+        run: bash .github/scripts/fetch-engine.sh android-arm64 android-x64
+
+      - name: Install the asuka CLI
+        run: |
+          curl -fsSL https://asuka.egoist.dev/install.sh | sh
+          echo "$HOME/.asuka/bin" >> "$GITHUB_PATH"
+
+      # A throwaway upload key, so the .aab is signed and the artifact is
+      # usable at once: a release of the app's own keeps its key in secrets.
+      - name: Upload key
+        run: |
+          keytool -genkeypair -v \
+            -keystore "$RUNNER_TEMP/upload.jks" -storepass quireupload -keypass quireupload \
+            -alias quire -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Quire, O=Quire, C=US"
+          {
+            echo "ASUKA_KEYSTORE=$RUNNER_TEMP/upload.jks"
+            echo "ASUKA_KEYSTORE_PASSWORD=quireupload"
+            echo "ASUKA_KEY_ALIAS=quire"
+            echo "ASUKA_KEY_PASSWORD=quireupload"
+          } >> "$GITHUB_ENV"
+
+      - name: Check
+        run: |
+          java -version
+          asuka version
+          asuka check -p android
+
+      - name: Build
+        run: asuka build -p android
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: android
+          path: |
+            dist/android/*.aab
+            dist/android/*.apk
+          if-no-files-found: error
+          retention-days: 14

@@ -36,15 +36,30 @@ WebDAV 同步走 `std/http`：iOS / macOS 的 URLSession、Linux 的 libsoup 与
 
 同步密码优先存系统钥匙串（`platform/secure`）。没有钥匙串的桌面（例如没装或没运行 Secret Service 的 Linux）会退回到应用目录里一个仅本人可读（`0600`）的 `sync-password` 文件，并在同步页提示；这样每次启动不用重输。
 
-## Windows 构建（暂停）
+## Windows 构建
 
-`.github/workflows/windows.yml` 先停在手动触发（`workflow_dispatch`）。在 Linux 上用 Zig 0.14.1 能跑出 `dist/windows-amd64/Quire/Quire.exe` 与 `.zip`，但产物还不能用，原因不在这个仓库：
+`.github/workflows/windows.yml`（手动触发）在 Linux 上一次产出 `dist/windows-amd64/`：
+`Quire/`（GUI 的 `Quire.exe`，图标、版本信息和 manifest 都在 `.rsrc` 里，外加
+`asuka-app.json`）、`quire-<version>-windows-amd64.zip` 和
+`quire-<version>-windows-amd64-setup.exe`。三条曾经的坑现在的状态：
 
-1. **引擎库得是 mingw 的**。`ebook-engine` 的 release 只出 `x86_64-pc-windows-msvc` 的 `ebook_abi.lib`，而 asuka 的 Windows 构建用 zig 的 mingw（`x86_64-windows-gnu`）链接：两套 CRT 混着链，`lld-link` 会报 `duplicate symbol .weak.__udivti3.default` 和一堆 MSVC 符号（`__chkstk`、`_fltused`、`WaitOnAddress`、`type_info::vftable`）。本地是拿引擎源码 `cargo build --target x86_64-pc-windows-gnu` 补的，`asuka.toml` 现在指向 mingw 版；release 补上这个目标（或流水线就地编）才能回 CI。
-2. **asuka 0.2.12 的 Windows host 要裸名 `swprintf` / `swscanf`**，而 zig 的 mingw 是纯 UCRT，导入库里只有 `__stdio_common_vswprintf/vswscanf`（`msvcrt` 导入库干脆不存在）。`c/windows-legacy-stdio.c` 是把这两个名字转发过去的垫片，等 asuka 把 host 编成 mingw 那套就能删。
-3. **exe 是 console 子系统**（`Subsystem = 3`，会闪黑框）：zig 的 `zig cc` 对 COFF 忽略 `-mwindows`，也不转发任何链接参数（`-Wl,/force:multiple`、`--subsystem` 一律 `unsupported linker arg`，0.14.1 与 0.17.1 都一样），asuka 没有能写链接参数的口子。
+1. **引擎库是 mingw 的**：`ebook-engine` 0.5.2 起 release 多一个
+   `windows-x64-gnu`（`x86_64-pc-windows-gnu`），`fetch-engine.sh windows-x64`
+   取的就是它。MSVC 的 `.lib` 与 mingw 的 CRT 混着链是 `duplicate symbol` 的
+   一行行报错，别用。本地编：`build-engine.sh windows-x64 ../ebook-engine`
+   （只要 `x86_64-w64-mingw32-ar`，不要整套 mingw 的 gcc）。
+2. **驱动是 mingw-w64 的 gcc**（`ASUKA_CC=x86_64-w64-mingw32-gcc`），不是 Zig：
+   产物是 GUI 程序（`Subsystem = 2`），靠 asuka 传给链接器的
+   `-Wl,--subsystem,windows`。这一点在 asuka 的 **`main`** 里才有：0.2.13 的
+   release 传的是 `-mwindows`，而 `zig cc` 会丢掉它，于是出来的是 console 程序
+   （`Subsystem = 3`，闪黑框）。工作流因此从固定提交编 CLI，而不是装 release。
+3. **`c/windows-legacy-stdio.c` 只在 Zig 那条路上有用**（zig 的 mingw 是纯
+   UCRT，导入库里只有 `__stdio_common_vswprintf`）。走 mingw-w64 的 gcc 不需要
+   它，留着也不碍事：两边的名字都能对上。
 
-`[c.windows] libraries` 里的 `unwind`、`api-ms-win-crt-stdio-l1-1-0`、`api-ms-win-core-synch-l1-2-0` 是给 Rust 的 std 和上面那个垫片用的，换成 MSVC 的引擎库就没意义了。
+`[c.windows] libraries` 里的 `unwind` 必须留（Rust 的 `panic = unwind` 要有
+`_Unwind_DeleteException`），`api-ms-win-crt-stdio-l1-1-0` 和
+`api-ms-win-core-synch-l1-2-0` 是给 Zig 那条路和上面那个垫片的。
 
 ## 架构
 

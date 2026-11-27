@@ -5,6 +5,8 @@
 # asuka.toml finds it ([c.prebuilt]).
 #
 #   .github/scripts/build-engine.sh ios-arm64 ../ebook-engine
+#   .github/scripts/build-engine.sh web ../ebook-engine
+#   .github/scripts/build-engine.sh windows-x64 ../ebook-engine
 #
 # The engine is Rust with no C dependencies, so cargo builds it with rustup's
 # own target support: no NDK for Android beyond the linker, no Xcode beyond the
@@ -12,7 +14,7 @@
 
 set -euo pipefail
 
-target="${1:?target: macos-arm64, macos-x64, ios-arm64, ios-simulator-arm64, ios-simulator-x64, linux-x64, android-arm64}"
+target="${1:?target: macos-arm64, macos-x64, ios-arm64, ios-simulator-arm64, ios-simulator-x64, linux-x64, android-arm64, windows-x64, web}"
 source_dir="${2:-engine}"
 app_dir="$(cd "$(dirname "$0")/../.." && pwd)"
 
@@ -26,6 +28,13 @@ case "$target" in
   linux-arm64) triple=aarch64-unknown-linux-gnu ;;
   android-arm64) triple=aarch64-linux-android ;;
   android-x64) triple=x86_64-linux-android ;;
+  # The web's: asuka's wasm build links it with wasi-libc, and c/wasm-pthread.c
+  # supplies the pthread calls wasm's std names that libc doesn't have.
+  web) triple=wasm32-wasip1 ;;
+  # The Windows app links with mingw-w64 (or Zig's cc, which is the same CRT),
+  # so it's this triple, not MSVC's: mixing the two CRTs is a pile of
+  # duplicate symbols at the link.
+  windows-x64) triple=x86_64-pc-windows-gnu ;;
   *)
     echo "build-engine: unknown target $target" >&2
     exit 1
@@ -39,15 +48,25 @@ fi
 
 rustup target add "$triple" >/dev/null 2>&1 || true
 
+# A static library still needs an archiver: mingw's for the Windows target.
+case "$target" in
+  windows-*) export "CARGO_TARGET_$(echo "$triple" | tr 'a-z-' 'A-Z_')_AR=x86_64-w64-mingw32-ar" ;;
+esac
+
 # The `native` profile: panic = unwind, so the ABI's catch_unwind works, and no
-# LTO (the linker embedding it isn't LLVM's).
+# LTO (the linker embedding it isn't LLVM's). wasm can't unwind, so the web's
+# library is the release profile: a panic there ends the page, as it would
+# natively.
+profile=native
+case "$target" in web) profile=release ;; esac
+
 cargo build \
   --manifest-path "$source_dir/Cargo.toml" \
   -p ebook-abi \
-  --profile native \
+  --profile "$profile" \
   --target "$triple"
 
-library="$source_dir/target/$triple/native/libebook_abi.a"
+library="$source_dir/target/$triple/$profile/libebook_abi.a"
 if [ ! -f "$library" ]; then
   echo "build-engine: cargo wrote no $library" >&2
   exit 1

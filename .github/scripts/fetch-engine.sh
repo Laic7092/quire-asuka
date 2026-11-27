@@ -43,7 +43,12 @@ if ! fetch "$base/SHA256SUMS" "$sums" 2>/dev/null; then
 fi
 
 for target in "$@"; do
-  file="libebook_abi-$target.tar.gz"
+  # Windows' asuka build links with mingw-w64's CRT, so the release's asset is
+  # the target's `-gnu` build (the MSVC .lib is a pile of duplicate symbols
+  # there).
+  asset="$target"
+  case "$target" in windows-*) asset="$target-gnu" ;; esac
+  file="libebook_abi-$asset.tar.gz"
   echo "fetch-engine: $target"
   fetch "$base/$file" "$tmp/$file"
 
@@ -60,10 +65,8 @@ for target in "$@"; do
 
   mkdir -p "$app_dir/lib/$target"
   tar -xzf "$tmp/$file" -C "$app_dir/lib/$target"
-  # Unix's is an archive of .o; Windows' is MSVC's, and ebook-engine names it
-  # without the lib prefix.
+  # Every target but MSVC Windows' is an archive of .o named libebook_abi.a.
   lib="libebook_abi.a"
-  case "$target" in windows-*) lib="ebook_abi.lib" ;; esac
   if [ ! -f "$app_dir/lib/$target/$lib" ]; then
     echo "fetch-engine: $file has no $lib" >&2
     exit 1

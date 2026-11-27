@@ -236,15 +236,69 @@ pub fn explorePageUrl(url: string, page: int) -> string {
   out = out.replace("searchPage", "{page}")
   out = jsTag.replace(out, with: "<js>page={page};")
   out = jsPrefix.replace(out, with: "@js:page={page};")
-  return out
+  if out != url { return out }
+  // 没有模板、但地址里已经写着页号（`?page=1`、`?pageno=2`）：把那个数字
+  // 换掉。不然「加载更多」每次都取回第一页，同一批书被当成已经到头。
+  return withPageParam(out, page)
 }
 
-/// 这个分类能不能看下一页：地址里有页号模板，或者脚本自己在拼 `page`。
-/// 静态的分类地址（`/category/xuanhuan/`）只有第一页。
+/// 页号在查询串里可能的名字：书源写死的第一页常常是 `?page=1` 或 `?pageno=1`。
+/// 单个 `p` 不算：那常常是帖子或分类的编号。
+let pageKeys = ["page", "pagenum", "pageno", "page_no", "pageindex", "page_index"]
+
+/// 查询串里写死的页号，没有（或不是数字）时是空。
+fn pageParamOf(url: string) -> string {
+  let at = url.find("?") ?? -1
+  if at < 0 { return "" }
+  var query = url.byteSlice(at + 1, url.byteCount())
+  if let hash = query.find("#") { query = query.byteSlice(0, hash) }
+  for part in query.split("&") {
+    if let eq = part.find("=") {
+      if pageKeys.contains(part.byteSlice(0, eq).trim().lower()) {
+        return part.byteSlice(eq + 1, part.byteCount()).trim()
+      }
+    }
+  }
+  return ""
+}
+
+/// 把查询串里的页号换成 page：别的参数、它们的顺序和地址的其余部分都
+/// 原样留着。
+fn withPageParam(url: string, page: int) -> string {
+  let at = url.find("?") ?? -1
+  if at < 0 { return url }
+  let head = url.byteSlice(0, at)
+  var rest = url.byteSlice(at + 1, url.byteCount())
+  var tail = ""
+  if let hash = rest.find("#") {
+    tail = rest.byteSlice(hash, rest.byteCount())
+    rest = rest.byteSlice(0, hash)
+  }
+  var parts: [string] = []
+  var hit = false
+  for part in rest.split("&") {
+    var kept = part
+    if let eq = part.find("=") {
+      let key = part.byteSlice(0, eq).trim().lower()
+      if !hit && pageKeys.contains(key) && part.byteSlice(eq + 1, part.byteCount()).trim().toInt() != none {
+        kept = "{part.byteSlice(0, eq)}={page}"
+        hit = true
+      }
+    }
+    parts.push(kept)
+  }
+  if !hit { return url }
+  return "{head}?{parts.joined(separator: "&")}{tail}"
+}
+
+/// 这个分类能不能看下一页：地址里有页号模板，脚本自己在拼 `page`，或者
+/// 查询串里已经写着页号。静态的分类地址（`/category/xuanhuan/`）只有第一页。
 pub fn canExplorePages(url: string) -> bool {
   let u = url.lower()
-  return u.contains(r"{page}") || u.contains("searchpage") || u.contains("+page") ||
-    u.contains("page+") || u.contains("page=") || u.contains("page =") || u.contains("page:")
+  if u.contains(r"{page}") || u.contains("searchpage") { return true }
+  // 脚本自己拼 page：explorePageUrl 把 `page=N;` 写进脚本开头。
+  if u.contains("<js>") || u.contains("@js:") { return u.contains("page") }
+  return pageParamOf(url).toInt() != none
 }
 
 let jsTag = regex.must(r"(?is)<js>")
