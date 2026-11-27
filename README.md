@@ -10,6 +10,7 @@ Quire 是跨平台的本地阅读器，使用 [Asuka](https://asuka.egoist.dev) 
 - 阅读器：分页与连续滚动两种模式。
 - 目录与书签：读取 EPUB 目录；书签存的是引擎的稳定位置（段与段内字节，`spine:node:offset`），换字号、换行距、换屏幕之后还指着同一段原文，而不是同一个页码。目录页还会列出本章的图片，点一张按原分辨率查看。
 - 选中与笔记：长按页面上的一段原文，画出选区并可拖动；复制、加高亮，或写一条笔记。笔记和引文一起保存，两端也存成稳定位置，重排后高亮仍落在原处；在目录页按书面列出，点一条回到它所在的位置。
+- 书内搜索：阅读页右上角的放大镜搜整本书的正文，引擎按章建纯文本索引（同章再搜只查缓存）。命中带章名和一段前后文，点一条跳到那一行、在页上标出来；大小写不敏感，英文/数字按词边界（`the` 不命中 `theatre`），中文按子串。在线书和大 TXT 只搜这一窗已经取到正文的章节。
 - 阅读统计：总时长、阅读天数、连续天数、最近七天，以及每本书自己的记录（累计时长、第一次/最近一次阅读、每天的时长）。
 - 关于 Quire：应用版本、链接进来的 ebook-engine 版本与 C ABI 版本；排版页会显示引擎当前的缓存占用，阅读时换窗会主动回收用不到的章节缓存。
 - 排版：字号、行距、页边距、字距、词距，纸色与夜间主题。
@@ -59,6 +60,7 @@ Asuka 应用
 ebook-engine
   ├─ 解析 TXT / EPUB
   ├─ 按章排版
+  ├─ 全文检索（命中 + 上下文）
   └─ 光栅化为 EQP1 位图
           │
           ▼
@@ -67,12 +69,17 @@ BookPage（原生位图视图）
 
 - 阅读页是应用的根层覆盖视图，不是系统 sheet；纸张覆盖状态栏区域。
 
-引擎按 ebook-engine **0.4.1** 的 C ABI 构建（`[c.prebuilt]` 的库里要有
+引擎按 ebook-engine **0.5.1** 的 C ABI 构建（`[c.prebuilt]` 的库里要有
 `eb_plain_metadata` / `eb_plain_selection_*` / `eb_plain_locator_*` /
-`eb_plain_new_book` / `eb_plain_scroll_index_*`）。0.4.0 把句柄改成了不透明
+`eb_plain_new_book` / `eb_plain_scroll_index_*`，以及 postcard 面的
+`eb_request`）。0.4.0 把句柄改成了不透明
 指针（Asuka 里是 `extern type Engine`，最后一个引用走时自动关闭），排版参数
 改成带版本的结构体，选区变成调用方拥有的快照；`c/engine.c` 是把这些形状
-交给 Asuka 的一层薄垫片。它在这一版给了三件这个应用正需要的东西：
+交给 Asuka 的一层薄垫片。0.5.0 加了全文搜索（`Request::Search` →
+`Response::Search`，只在 postcard 面上），`c/engine.c` 于是也写那一小段
+postcard 请求，并把答案拆成 Asuka 能一个字段一个字段读的句柄；0.5.1 修了行
+锚点的字节偏移，折行段落里的命中用 `locate` 落回真正的那一行。0.4.0 起它
+给了三件这个应用正需要的东西：
 
 - **稳定位置**：`Anchor`（章 + 段 + 段内字节）从 IR 里的东西变成 C ABI 的
   `eb_plain_locator_at` / `_locator_range` / `_locate`，书签、笔记和阅读进度
@@ -107,12 +114,13 @@ BookPage（原生位图视图）
 | `app.asuka` | 根组件：三个标签页（首页 / 书架 / 发现）与阅读页覆盖层 |
 | `icons.asuka` | 图标名：iOS/macOS 用 SF Symbols，其它平台用 Material Symbols |
 | `shelf.asuka` | 书架、封面、导入、删除、显示方式与排序 |
-| `reader.asuka` | 阅读器、翻页/滚动、目录、书签、选中与笔记、排版设置 |
+| `reader.asuka` | 阅读器、翻页/滚动、目录、书签、选中与笔记、排版设置、书内搜索 |
 | `library.asuka` | 书架与阅读状态的持久化 store，以及按需下载、备份和缓存清理 |
 | `home.asuka` / `search.asuka` | 首页；发现与搜索：书源管理、导入、结果、详情与章节阅读 |
 | `remote/` | 在线书的本机部分：目录、按章正文缓存、给引擎的三章窗口 |
 | `sources/` | 书源：Legado 书源格式、导入与保存，以及 legado-engine 的 C 绑定与搜索/详情/目录/正文调用 |
 | `stats.asuka` | 阅读统计页：总体数据、最近七天、每本书的记录 |
+| `search_test.asuka` | 全文搜索：命中、章名与上下文、截断、流式章节换正文后的索引、命中位置的往返 |
 | `sync.asuka` | 同步的文件格式与合并规则：catalog、每本书的 sidecar、删除记录 |
 | `webdav.asuka` | WebDAV 客户端：认证、列目录、上传/下载、删除 |
 | `sync_sheet.asuka` | 「同步」页：状态与动作；云端服务、账号等连接细节收在二级页 |
@@ -147,7 +155,7 @@ asuka fmt -w
 asuka dev
 ```
 
-`asuka test` 运行应用测试（含 `native_test.asuka` 里原生书源引擎的规则与 JavaScript 测试），`asuka test lib` 运行 `lib/` 包的解析与分页测试。
+`asuka test` 运行应用测试（含 `native_test.asuka` 里原生书源引擎的规则与 JavaScript 测试，和 `search_test.asuka` 里全文搜索的命中、上下文、截断与命中位置），`asuka test lib` 运行 `lib/` 包的解析与分页测试。
 
 ## 引擎
 
@@ -160,7 +168,7 @@ legado-engine 负责在线书源的规则、JavaScript、cookie 与变量。
 .github/scripts/fetch-legado.sh linux-x64
 
 # 固定版本
-ENGINE_VERSION=v0.4.1 .github/scripts/fetch-engine.sh linux-x64
+ENGINE_VERSION=v0.5.1 .github/scripts/fetch-engine.sh linux-x64
 LEGADO_VERSION=v0.2.0 .github/scripts/fetch-legado.sh linux-x64
 ```
 
@@ -171,9 +179,9 @@ ebook-engine 的下载会校验 Release 中的 `SHA256SUMS`。需要从源码构
 .github/scripts/build-legado.sh linux-x64 ../legado-engine
 ```
 
-CI 通过 `ENGINE_VERSION` / `LEGADO_VERSION` 选择版本，现在钉在 `v0.4.1` / `v0.2.0`：
-这本书的应用按 ebook-engine 的 C ABI 写（稳定位置、流式章节、高度索引），legado-engine
-则提供 `legado_open` / `legado_search` / `legado_info` / `legado_toc` / `legado_content`
+CI 通过 `ENGINE_VERSION` / `LEGADO_VERSION` 选择版本，现在钉在 `v0.5.1` / `v0.2.0`：
+这本书的应用按 ebook-engine 的 C ABI 写（稳定位置、流式章节、高度索引、全文搜索），
+legado-engine 则提供 `legado_open` / `legado_search` / `legado_info` / `legado_toc` / `legado_content`
 这几个调用。换版本得先确认这些还在。
 
 `asuka.toml` 的 `[c.prebuilt]` 里，`linux-x64`、`macos-arm64`、`macos-x64` 和

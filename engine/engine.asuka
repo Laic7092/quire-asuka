@@ -1,6 +1,7 @@
-// The book engine, called through its C ABI (ebook-engine 0.4.0's
+// The book engine, called through its C ABI (ebook-engine 0.5.1's
 // `crates/ebook-abi`): it parses EPUB and plain text, lays a chapter out into
-// pages, and rasterizes a page to a file this app shows.
+// pages, rasterizes a page to a file this app shows, and searches a book's
+// text.
 //
 // A book is an opaque handle (`Engine`), owned by Asuka: it can live in state,
 // and it closes itself when the last reference goes. Nothing here draws: a
@@ -230,6 +231,27 @@ extern fn eb_plain_toc_count(engine: Engine?) -> UInt32
 extern fn eb_plain_toc_title(engine: Engine?, index: UInt32) -> CString
 extern fn eb_plain_toc_spine(engine: Engine?, index: UInt32) -> Int32
 extern fn eb_plain_toc_depth(engine: Engine?, index: UInt32) -> UInt32
+
+/// 一次全文搜索的结果。引擎的搜索只在 postcard 面上（`Request::Search`），
+/// `c/engine.c` 发那一小段请求，把答案留在这个句柄里，一个字段一个字段地
+/// 交给 Asuka；最后一个引用走时释放。
+pub extern type Find with release quire_find_free
+extern fn quire_search(engine: Engine?, query: CString, limit: UInt32) -> Find?
+extern fn quire_find_free(find: Find)
+extern fn quire_find_count(find: Find?) -> UInt32
+extern fn quire_find_spine(find: Find?, index: UInt32) -> UInt32
+extern fn quire_find_node(find: Find?, index: UInt32) -> UInt32
+extern fn quire_find_offset(find: Find?, index: UInt32) -> UInt32
+extern fn quire_find_end(find: Find?, index: UInt32) -> UInt32
+extern fn quire_find_chapter(find: Find?, index: UInt32) -> CString
+extern fn quire_find_before(find: Find?, index: UInt32) -> CString
+extern fn quire_find_text(find: Find?, index: UInt32) -> CString
+extern fn quire_find_after(find: Find?, index: UInt32) -> CString
+/// 第 0 位：命中前文被截断过；第 1 位：后文被截断过。
+extern fn quire_find_flags(find: Find?, index: UInt32) -> UInt32
+extern fn quire_find_truncated(find: Find?) -> UInt32
+extern fn quire_find_scanned(find: Find?) -> UInt32
+extern fn quire_find_skipped(find: Find?) -> UInt32
 
 /// Whether this value still names an open book.
 pub fn isOpen(id: Engine?) -> bool = id != none
@@ -623,6 +645,79 @@ pub fn progress(id: Engine?, line: int) -> float {
   return eb_plain_progress(id, 0, u32(clamping: line), 0)
 }
 
+/// ---- 全文搜索 ----
+
+/// 一条命中：书里的稳定位置（`spine:node:offset`，和书签、笔记同一套）和它
+/// 前后的正文。命中与字号、页高无关；排版好目标章，再用 `locate` 换算成
+/// 页和行。
+pub struct FindHit {
+  /// 引擎里的章号。窗口式阅读时是这一窗的，加上 windowBase 才是全书章号。
+  spine: int
+  node: int
+  offset: int
+  end: int
+  /// 目录里的章名；"" 是这本书没有它的目录项。
+  chapter: string = ""
+  before: string = ""
+  /// 命中的原文。
+  text: string = ""
+  after: string = ""
+  /// 上下文被截断过，前面或后面还有字没给。
+  ellipsisBefore: bool = false
+  ellipsisAfter: bool = false
+
+  /// 命中开头的稳定位置。
+  fn locator() -> string = "{spine}:{node}:{offset}"
+  /// 命中末尾的稳定位置（`locate` 用它把高亮画到最后一个字）。
+  fn endLocator() -> string = "{spine}:{node}:{end}"
+}
+
+/// 一次全文搜索：命中，以及引擎扫了多少章、跳过了几章（解析失败的章不
+/// 中断其余章）。
+pub struct FindResults {
+  hits: [FindHit] = []
+  /// 命中数超过上限，后面还有。
+  truncated: bool = false
+  /// 实际扫过的章数（含解析失败的）。
+  scanned: int = 0
+  /// 解析失败、没法搜的章数。
+  skipped: int = 0
+}
+
+/// 全书搜索：引擎按章建索引，同章再搜只查缓存。大小写不敏感；英文、数字
+/// 按词边界（`the` 不命中 `theatre`），中文按子串。`limit` 为 0 时用引擎
+/// 的默认上限（100）。空查询什么都不扫。
+pub fn search(id: Engine?, query: string, limit: int = 100) -> FindResults {
+  var out = FindResults()
+  if !isOpen(id) || query.trim().isEmpty() { return out }
+  if let found = quire_search(id, query, u32(clamping: limit)) {
+    var hits: [FindHit] = []
+    for i in 0..<int(quire_find_count(found)) {
+      let index = u32(clamping: i)
+      let flags = quire_find_flags(found, index)
+      hits.push(FindHit(
+        spine: int(quire_find_spine(found, index)),
+        node: int(quire_find_node(found, index)),
+        offset: int(quire_find_offset(found, index)),
+        end: int(quire_find_end(found, index)),
+        chapter: quire_find_chapter(found, index),
+        before: quire_find_before(found, index),
+        text: quire_find_text(found, index),
+        after: quire_find_after(found, index),
+        ellipsisBefore: flags & 1 != 0,
+        ellipsisAfter: flags & 2 != 0,
+      ))
+    }
+    out = FindResults(
+      hits: hits,
+      truncated: quire_find_truncated(found) != 0,
+      scanned: int(quire_find_scanned(found)),
+      skipped: int(quire_find_skipped(found)),
+    )
+  }
+  return out
+}
+
 /// A directory entry of the table of contents.
 pub struct TocItem {
   title: string
@@ -651,7 +746,7 @@ pub fn title(id: Engine?) -> string = eb_plain_title(id)
 pub let expectedAbi = 3
 
 /// What the linked library reports: the ABI it was compiled for, and the
-/// library's own version string ("ebook-abi 0.4.0").
+/// library's own version string ("ebook-abi 0.5.1").
 pub fn abiVersion() -> int = int(eb_plain_abi_version())
 pub fn version() -> string = eb_plain_version()
 

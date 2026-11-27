@@ -21,7 +21,7 @@ permissions:
 env:
   # The engine release to build against: github.com/Laic7092/ebook-engine.
   # Pinned: the app is written against this one's C ABI (see README).
-  ENGINE_VERSION: v0.4.1
+  ENGINE_VERSION: v0.5.1
 
 # A newer push on the same branch cancels the run before it.
 concurrency:

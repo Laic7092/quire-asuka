@@ -1120,3 +1120,26 @@ test "the contents sheet lists this chapter's pictures" {
   app.expect("photo.jpg")
   app.expect("640 × 480")
 }
+
+test "the reader searches the book and goes to the word it found" {
+  let library = Library()
+  let app = mount(Harness(), provide: library)
+  app.tap("散文選")
+  await app.idle()
+  app.expect("1 / 4")
+
+  // 书内搜索开在阅读页上：一个词，一段前后文，点击就跳过去。
+  app.tap("搜索")
+  await app.idle()
+  app.expect("书内搜索")
+  app.type("雪", into: "搜索这本书的正文")
+  app.tap("查找")
+  await app.idle()
+  app.expect("1 条结果")
+  app.expect("第3章 春")
+  app.tap("第3章 春")
+  await app.idle()
+  app.expectNo("书内搜索")
+  // 阅读位置落在命中那一章（《春》是全书第 3 章，0 起是 2）。
+  expect(library.readingOf("朱自清·散文選").chapter == 2)
+}

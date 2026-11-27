@@ -1,0 +1,102 @@
+// 全文搜索：引擎按章建纯文本索引，命中是稳定位置（`spine:node:offset`）加
+// 一段前后文。书内搜索面板按这个走；这里测的是它下面的东西——命中、截断、
+// 章名，以及流式书换了一章正文之后索引跟着换。
+
+import std/embed
+import std/fs
+
+import ./engine
+import ./lib
+
+let searchFace = embed.bytes("fonts/NotoSerifSC-Regular.woff")
+let searchMargins = engine.Margins(top: 28, right: 30, bottom: 28, left: 30)
+
+/// 样书，带字体，像阅读页那样打开。
+fn searchSample() -> engine.Engine? {
+  let books = samples()
+  let book = books.find(b => b.title == "散文選") ?? books[0]
+  let path = fs.join([fs.appDir(), "search.txt"])
+  do { try fs.writeText(path, text: book.raw) } catch {}
+  let id = engine.open(path)
+  let _font = engine.registerFontBytes(id, data: searchFace)
+  return id
+}
+
+test "a search finds the word, its chapter, and its context" {
+  let id = searchSample()
+  expect(engine.isOpen(id))
+  let found = engine.search(id, "雪")
+  expect(!found.hits.isEmpty())
+  expect(found.scanned == engine.chapterCount(id))
+  expect(found.skipped == 0)
+
+  let first = found.hits.first()!
+  expect(first.text == "雪")
+  expect(first.end > first.offset)
+  expect(!first.chapter.isEmpty())
+  // 前后文里的字，和命中拼起来是原文的一整段。
+  expect(("{first.before}{first.text}{first.after}").contains("雪"))
+
+  // 稳定位置：把那一章排版出来，位置落在含这个字的那一行。
+  let pages = engine.layout(id, first.spine, 390, 844, searchMargins, 1.0, 1.6)
+  expect(pages > 0)
+  let where = engine.locate(id, first.locator())
+  expect(where.page >= 0)
+  let line = engine.lineText(id, int(where.line))
+  expect(line.contains("雪"))
+}
+
+test "a search stops at its limit and says so" {
+  let id = searchSample()
+  expect(engine.isOpen(id))
+  let found = engine.search(id, "的", 3)
+  expect(found.hits.count() == 3)
+  expect(found.truncated)
+}
+
+test "an empty query reads no chapter" {
+  let id = searchSample()
+  expect(engine.isOpen(id))
+  let found = engine.search(id, "　 ")
+  expect(found.hits.isEmpty())
+  expect(found.scanned == 0)
+}
+
+test "a streamed book is searched chapter by chapter, and a replaced one is read again" {
+  let id = engine.newBook("搜索测试")
+  expect(engine.isOpen(id))
+  expect(engine.appendChapter(id, "第一章", "雪落下来") == 1)
+  expect(engine.appendChapter(id, "第二章", "The theatre and the end") == 2)
+
+  let snow = engine.search(id, "雪")
+  expect(snow.scanned == 2)
+  expect(snow.hits.count() == 1)
+  expect(snow.hits.first()!.chapter == "第一章")
+
+  // 英文按词边界：`and` 是那个词，`theatre` 里的一段不算；大小写不敏感。
+  let word = engine.search(id, "and")
+  expect(word.hits.count() == 1)
+  expect(word.hits.first()!.text == "and")
+  expect(engine.search(id, "heat").hits.isEmpty())
+  expect(engine.search(id, "the").hits.count() == 2)
+
+  // 换掉一章的正文：这一章的索引跟着换，别的章不受影响。
+  expect(engine.replaceChapter(id, 0, "第一章", "只有风"))
+  expect(engine.search(id, "雪").hits.isEmpty())
+  expect(engine.search(id, "the").hits.count() == 2)
+}
+
+test "a hit's text is what its two locators name" {
+  let id = searchSample()
+  expect(engine.isOpen(id))
+  let found = engine.search(id, "背影")
+  expect(!found.hits.isEmpty())
+  let hit = found.hits.first()!
+  let _pages = engine.layout(id, hit.spine, 390, 844, searchMargins, 1.0, 1.6)
+  let start = engine.locate(id, hit.locator())
+  let end = engine.locate(id, hit.endLocator())
+  expect(start.page >= 0 && end.page >= 0)
+  let sel = engine.selectLines(id, start.line, start.byte, end.line, end.byte)
+  expect(sel != none)
+  expect(engine.selectionText(sel) == "背影")
+}

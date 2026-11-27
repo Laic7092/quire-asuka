@@ -916,6 +916,162 @@ component ImageViewer(path: string, pixelsW: int, pixelsH: int) {
   }
 }
 
+/// 书内搜索：引擎按章建索引，命中带章名、前后文和稳定位置。窗口式阅读时
+/// 引擎里只有这一窗的章节，结果按 `loaded` 滤掉还没取到正文的占位章。
+component Find(id: engine.Engine?, windowed: bool = false, base: int = 0, loaded: [int] = []) {
+  /// 选中一条：引擎里的章号（窗口式再加 `base`）、命中开头的节点与字节，以及
+  /// 末尾的字节。阅读页把它换成全书章号和一个稳定位置。
+  event go(spine: int, node: int, offset: int, end: int)
+  use library: Library
+  let palette = lib.paletteFor(library.theme)
+  let env = environment()
+  let list = Ref()
+
+  state query = ""
+  state hits: [engine.FindHit] = []
+  state truncated = false
+  state ran = false
+  state busy = false
+
+  async fn run() {
+    let text = query.trim()
+    if text.isEmpty() || busy { return }
+    busy = true
+    // 搜索引擎是同步的：先让这一帧把「搜索中…」画出来，再开始扫。
+    await sleep(30ms)
+    // 窗口式书里还有占位章（「第 N 章的正文正在取…」）：多要一些再滤掉，
+    // 免得占位把真正的命中挤出上限。整本打开的书没有占位，够一百条就行。
+    let found = engine.search(id, text, if windowed { 1000 } else { 100 })
+    var kept: [engine.FindHit] = []
+    for hit in found.hits {
+      if windowed && !loaded.contains(base + hit.spine) { continue }
+      kept.push(hit)
+    }
+    var cut = found.truncated
+    if kept.count() > 100 {
+      kept = kept.slice(0, 100)
+      cut = true
+    }
+    hits = kept
+    truncated = cut
+    ran = true
+    busy = false
+  }
+
+  fn nameOf(hit: engine.FindHit) -> string {
+    if !hit.chapter.isEmpty() { return hit.chapter }
+    return "第 {base + hit.spine + 1} 章"
+  }
+
+  fn contextOf(hit: engine.FindHit) -> string {
+    let lead = if hit.ellipsisBefore { "…" } else { "" }
+    let tail = if hit.ellipsisAfter { "…" } else { "" }
+    return "{lead}{hit.before}「{hit.text}」{hit.after}{tail}"
+  }
+
+  let summary = if hits.isEmpty() { "" } else if truncated { "{hits.count()} 条结果（还有更多）" } else { "{hits.count()} 条结果" }
+  let hint = if windowed { "这本书按窗加载：只搜索已经取到正文的章节" } else { "" }
+
+  Column {
+    grow: 1
+    gap: 12
+    padding: lib.sheetPad(env, top: 16, bottom: 0, side: 0)
+    background: palette.paper
+    Row {
+      padding: [8, 20]
+      gap: 8
+      align: .center
+      Text("书内搜索") {
+        font: .title3
+        color: palette.ink
+        grow: 1
+      }
+      Button("") {
+        icon: Icons.close
+        variant: .glass
+        color: palette.ink
+        label: "关闭"
+        tooltip: "关闭"
+        on press { dismiss() }
+      }
+    }
+    Row {
+      padding: [0, 20]
+      gap: 8
+      align: .center
+      TextField {
+        bind text: query
+        placeholder: "搜索这本书的正文"
+        returnKey: .search
+        autocapitalize: .off
+        autocorrect: .no
+        grow: 1
+      }
+      Button(if busy { "搜索中…" } else { "查找" }) {
+        disabled: busy || query.trim().isEmpty()
+        on press { await run() }
+      }
+    }
+    if !hint.isEmpty() {
+      Text(hint) {
+        padding: [0, 20]
+        font: .caption
+        color: palette.muted
+      }
+    }
+    if !summary.isEmpty() {
+      Text(summary) {
+        padding: [0, 20]
+        font: .caption
+        color: palette.muted
+      }
+    }
+    if hits.isEmpty() {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        padding: [24, 40]
+        Text(if ran { "没有找到" } else { "输入一个词，搜这本书的正文" }) {
+          font: .footnote
+          color: palette.muted
+          textAlign: .center
+        }
+      }
+    } else {
+      List {
+        ref: list
+        grow: 1
+        appearance: .bare
+        for hit in hits key "{hit.spine}:{hit.offset}" {
+          Row {
+            padding: [12, 20]
+            gap: 10
+            align: .center
+            on press {
+              emit go(hit.spine, hit.node, hit.offset, hit.end)
+              dismiss()
+            }
+            Column {
+              grow: 1
+              gap: 4
+              Text(nameOf(hit)) {
+                font: .footnote
+                color: palette.muted
+                lines: 1
+              }
+              Text(contextOf(hit)) {
+                color: palette.ink
+                lines: 3
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
 component Reader(book: lib.Book) {
   use library: Library
   use allSources: sources.Sources?
@@ -1055,6 +1211,11 @@ component Reader(book: lib.Book) {
   /// 选区在当前页上的矩形，和这一页已有的高亮。
   state selRects: [PageMark] = []
   state marks: [PageMark] = []
+  /// 搜索面板选中的命中：两端是引擎的稳定位置。跳到那一行之后在页上标出来，
+  /// 翻页、换章、点开别的地方就清掉。
+  state findStart = ""
+  state findEnd = ""
+  state findRects: [PageMark] = []
 
   /// 阅读时长：打开（或重新开始活动）的时刻、最后一次活动的时刻、已经记到
   /// 哪一刻。空闲超过五分钟就不再算，书页开着过夜不会记成读了一夜。
@@ -1084,6 +1245,8 @@ component Reader(book: lib.Book) {
   }
   let selectionFill = if library.theme == "night" { #6ea8fe55 } else { #0a84ff33 }
   let noteFill = if library.theme == "night" { #f5b94244 } else { #f5c54266 }
+  /// 搜索命中的颜色：和笔记的黄、选区的蓝都分开，一眼看出是刚跳到的那一处。
+  let findFill = if library.theme == "night" { #6ea8fe55 } else { #0a84ff33 }
   /// The bookmark at the place the reader is, if there is one: the button
   /// fills, and pressing it again takes it back. These change once a screen,
   /// not once a scroll event.
@@ -1199,6 +1362,7 @@ component Reader(book: lib.Book) {
       library.save(book.id, windowBase + spine, info.progress, locator: placeLocator())
       announceReady()
       refreshMarks()
+      refreshFind()
     }
   }
 
@@ -1743,13 +1907,48 @@ component Reader(book: lib.Book) {
     refreshMarks()
   }
 
-  /// 这一页上要画的矩形：已有笔记的高亮在下，手上的选区在上。它交给
-  /// BookPage 自己的图层去画，而不是一个盖在页面上的 Canvas——iOS 上
-  /// 那样的画布会把页面的触摸全拦下来。
+  /// 搜索命中在页上的那一块。两端都是稳定位置，换字号之后还标在同一段原文上。
+  fn refreshFind() {
+    findRects = []
+    if findStart.isEmpty() || !engine.isOpen(engineId) || library.mode != "page" || pages <= 0 { return }
+    let start = engine.locate(engineId, findStart)
+    if start.page < 0 || int(start.page) != page { return }
+    var stop = start
+    if !findEnd.isEmpty() {
+      let end = engine.locate(engineId, findEnd)
+      if end.page >= 0 && int(end.page) == page { stop = end }
+    }
+    let sel = engine.selectLines(engineId, int(start.line), int(start.byte), int(stop.line), int(stop.byte))
+    if sel == none { return }
+    var rects: [PageMark] = []
+    var i = 0
+    for rect in engine.selectionRects(sel) {
+      if int(rect.page) == page {
+        rects.push(PageMark(key: "f.{i}", x: rect.x, y: rect.y, w: rect.w, h: rect.h))
+      }
+      i += 1
+    }
+    findRects = rects
+  }
+
+  /// 读者去了别处：搜索命中的标记不再属于这一页。
+  fn clearFind() {
+    if findStart.isEmpty() && findEnd.isEmpty() && findRects.isEmpty() { return }
+    findStart = ""
+    findEnd = ""
+    findRects = []
+  }
+
+  /// 这一页上要画的矩形：已有笔记和搜索命中的高亮在下，手上的选区在上。
+  /// 它交给 BookPage 自己的图层去画，而不是一个盖在页面上的 Canvas——iOS
+  /// 上那样的画布会把页面的触摸全拦下来。
   fn pageHighlights() -> [bookpage.Highlight] {
     var out: [bookpage.Highlight] = []
     for mark in marks {
       out.push(bookpage.Highlight(x: mark.x, y: mark.y, w: mark.w, h: mark.h, color: noteFill))
+    }
+    for mark in findRects {
+      out.push(bookpage.Highlight(x: mark.x, y: mark.y, w: mark.w, h: mark.h, color: findFill))
     }
     for mark in selRects {
       out.push(bookpage.Highlight(x: mark.x, y: mark.y, w: mark.w, h: mark.h, color: selectionFill))
@@ -2248,6 +2447,7 @@ component Reader(book: lib.Book) {
   fn next() {
     touch()
     clearSelection()
+    clearFind()
     let count = engine.chapterCount(engineId)
     let place = lib.forward(spine, page, pages, count)
     // 这一窗读完了，而全书还有：去拼下一窗，不把「窗口的末页」当「全书的墨尾」。
@@ -2263,6 +2463,7 @@ component Reader(book: lib.Book) {
   fn back() {
     touch()
     clearSelection()
+    clearFind()
     if windowed && spine == 0 && page <= 0 && windowBase > 0 {
       windowEnd = true
       requestWindow(windowBase - 1)
@@ -2280,6 +2481,7 @@ component Reader(book: lib.Book) {
   fn jump(index: int) {
     touch()
     clearSelection()
+    clearFind()
     let count = engine.chapterCount(engineId)
     let local = index - windowBase
     if windowed && (local < 0 || local >= count) {
@@ -2310,6 +2512,7 @@ component Reader(book: lib.Book) {
   fn goTo(chapter: int, percent: float, locator: string = "") {
     touch()
     clearSelection()
+    clearFind()
     let count = engine.chapterCount(engineId)
     if count <= 0 { return }
     let local = chapter - windowBase
@@ -2356,6 +2559,7 @@ component Reader(book: lib.Book) {
   fn follow(href: string) {
     touch()
     clearSelection()
+    clearFind()
     if !engine.isOpen(engineId) || href.isEmpty() { return }
     let target = engine.resolveLink(engineId, href)
     if !target.ok { return }
@@ -2618,8 +2822,32 @@ component Reader(book: lib.Book) {
           label: "返回"
           on press { emit close }
         }
-        // 返回 on the left; the other two at the right, where a reader's are.
+        // 返回 on the left; the others at the right, where a reader's are.
         View { grow: 1 }
+        Button("") {
+          icon: Icons.search
+          variant: .glass
+          label: "搜索"
+          tooltip: "书内搜索"
+          on press {
+            present(Find(id: engineId, windowed: windowed, base: windowBase, loaded: loadedChapters) {
+              on go(spine, node, offset, end) {
+                let chapter = windowBase + spine
+                let start = "{spine}:{node}:{offset}"
+                let stop = "{spine}:{node}:{end}"
+                goTo(chapter, 0, locator: start)
+                findStart = start
+                findEnd = stop
+                findRects = []
+                // 同一章的页模式下 goTo 已经排好版了；换章时，下一次排版
+                // （show）会把命中画上去。
+                if library.mode == "page" && engine.lastChapter(engineId) == spine {
+                  refreshFind()
+                }
+              }
+            })
+          }
+        }
         Button("") {
           icon: Icons.typography
           variant: .glass

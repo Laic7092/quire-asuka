@@ -1,6 +1,6 @@
 // The book engine's C ABI, shaped for Asuka.
 //
-// ebook-engine 0.4.0's scalar surface takes an opaque `EbEngine *` and, for
+// ebook-engine 0.5.1's scalar surface takes an opaque `EbEngine *` and, for
 // layout, a `const EbLayoutOptions *`; a selection is an `EbSelection *` whose
 // rectangles and text only the library can read. Asuka's `extern` passes
 // structs by value and can't read memory behind a `Pointer`, so this file is
@@ -9,12 +9,15 @@
 //   * the layout options (size/version + viewport + style) are built here from
 //     scalars, so engine.asuka keeps its flat `layout(...)` call;
 //   * a selection's parts come back one at a time from its snapshot pointer;
+//   * full-text search (`Request::Search`) is on the postcard face only, so
+//     the request's few bytes are written here and the answer is kept as a
+//     handle whose hits come back one field at a time (see `quire_search`);
 //   * `quire_cstr` turns a `const char *` field of a by-value struct back into
 //     a string (the pointer stays the library's, valid until the book closes);
 //   * both release functions have the signature Asuka's `extern type` wants
 //     (one pointer, no result).
 //
-// `ebook_abi.h` beside this file is the 0.4.0 header: the library for the host
+// `ebook_abi.h` beside this file is the 0.5.1 header: the library for the host
 // is in `lib/<target>/`, and both are the same release.
 
 #include <stdatomic.h>
@@ -246,9 +249,297 @@ EbLoc quire_selection_end(const EbSelection *selection) {
     return loc;
 }
 
+// ---- Full-text search ----
+//
+// The scalar surface has no search call: the engine added it to the postcard
+// enum (`Request::Search { query, limit }` → `Response::Search(SearchResults)`,
+// both appended at the end so the old tags don't move). Asuka can't read a
+// buffer behind a `Pointer`, so the request goes out from here and the answer
+// is decoded into a handle whose fields come back one at a time — the same
+// shape a selection's snapshot has.
+//
+// postcard is field order, varint lengths and varint unsigned integers; the
+// only bytes written here are the variant tag, the query and the limit. The
+// response is checked at every step: a short or malformed buffer is a failed
+// search, never a read past the end.
+
+// The two enum tags, counted from `crates/ebook-abi/src/protocol.rs` (search
+// was appended to both enums, so these stay put as variants are added).
+#define REQUEST_SEARCH 41u
+#define RESPONSE_SEARCH 30u
+
+// One hit as the engine sent it. Strings are copies: the response buffer is
+// freed as soon as it has been read.
+typedef struct {
+    uint32_t spine;
+    uint32_t node;
+    uint32_t offset;
+    uint32_t end;
+    bool ellipsis_before;
+    bool ellipsis_after;
+    // "" when the chapter has no table-of-contents entry.
+    char *chapter;
+    char *before;
+    char *text;
+    char *after;
+} QuireFindHit;
+
+// A whole search: the hits, and what the engine did while finding them.
+typedef struct {
+    uint32_t count;
+    QuireFindHit *hits;
+    uint32_t truncated;
+    uint32_t scanned;
+    uint32_t skipped;
+} QuireFind;
+
+void quire_find_free(QuireFind *find) {
+    if (find == NULL) {
+        return;
+    }
+    for (uint32_t i = 0; i < find->count; i++) {
+        free(find->hits[i].chapter);
+        free(find->hits[i].before);
+        free(find->hits[i].text);
+        free(find->hits[i].after);
+    }
+    free(find->hits);
+    free(find);
+}
+
+// A cursor over the response, bounded by its length.
+typedef struct {
+    const uint8_t *data;
+    size_t len;
+    size_t at;
+    bool bad;
+} PostcardReader;
+
+// postcard's varint: little-endian base 128, high bit says "more".
+static uint64_t read_varint(PostcardReader *reader) {
+    uint64_t value = 0;
+    unsigned shift = 0;
+    while (reader->at < reader->len) {
+        uint8_t byte = reader->data[reader->at++];
+        value |= (uint64_t)(byte & 0x7f) << shift;
+        if ((byte & 0x80) == 0) {
+            return value;
+        }
+        shift += 7;
+        if (shift > 63) {
+            break;
+        }
+    }
+    reader->bad = true;
+    return 0;
+}
+
+static char *read_string(PostcardReader *reader) {
+    uint64_t len = read_varint(reader);
+    if (reader->bad || len > (uint64_t)(reader->len - reader->at)) {
+        reader->bad = true;
+        return NULL;
+    }
+    char *out = malloc((size_t)len + 1);
+    if (out == NULL) {
+        reader->bad = true;
+        return NULL;
+    }
+    memcpy(out, reader->data + reader->at, (size_t)len);
+    out[len] = '\0';
+    reader->at += (size_t)len;
+    return out;
+}
+
+static bool read_bool(PostcardReader *reader) {
+    return read_varint(reader) != 0;
+}
+
+static char *empty_string(void) {
+    char *out = malloc(1);
+    if (out != NULL) {
+        out[0] = '\0';
+    }
+    return out;
+}
+
+// One Response::Search, decoded. NULL on anything that isn't one.
+static QuireFind *decode_find(const uint8_t *data, size_t len) {
+    PostcardReader reader = {data, len, 0, false};
+    if (read_varint(&reader) != RESPONSE_SEARCH || reader.bad) {
+        return NULL;
+    }
+    QuireFind *find = calloc(1, sizeof(*find));
+    if (find == NULL) {
+        return NULL;
+    }
+    uint32_t count = (uint32_t)read_varint(&reader);
+    // Every hit is more than one byte long: a count larger than the buffer is
+    // not an answer this library sent.
+    if (reader.bad || count > len) {
+        free(find);
+        return NULL;
+    }
+    if (count > 0) {
+        find->hits = calloc(count, sizeof(*find->hits));
+        if (find->hits == NULL) {
+            free(find);
+            return NULL;
+        }
+    }
+    for (uint32_t i = 0; i < count && !reader.bad; i++) {
+        QuireFindHit *hit = &find->hits[i];
+        // Count the hit before filling it: a string that failed to read is
+        // NULL, and freeing the ones already there is what free(NULL) does.
+        find->count = i + 1;
+        hit->spine = (uint32_t)read_varint(&reader);
+        hit->node = (uint32_t)read_varint(&reader);
+        hit->offset = (uint32_t)read_varint(&reader);
+        hit->end = (uint32_t)read_varint(&reader);
+        bool has_chapter = read_bool(&reader);
+        hit->chapter = has_chapter ? read_string(&reader) : empty_string();
+        hit->before = read_string(&reader);
+        hit->text = read_string(&reader);
+        hit->after = read_string(&reader);
+        hit->ellipsis_before = read_bool(&reader);
+        hit->ellipsis_after = read_bool(&reader);
+        if (hit->chapter == NULL || hit->before == NULL || hit->text == NULL ||
+            hit->after == NULL) {
+            reader.bad = true;
+        }
+    }
+    if (!reader.bad) {
+        find->truncated = read_bool(&reader) ? 1 : 0;
+        find->scanned = (uint32_t)read_varint(&reader);
+        find->skipped = (uint32_t)read_varint(&reader);
+    }
+    if (reader.bad) {
+        quire_find_free(find);
+        return NULL;
+    }
+    return find;
+}
+
+static void put_varint(uint8_t *out, size_t *at, uint64_t value) {
+    while (value >= 0x80) {
+        out[(*at)++] = (uint8_t)((value & 0x7f) | 0x80);
+        value >>= 7;
+    }
+    out[(*at)++] = (uint8_t)value;
+}
+
+// Raises `Request::Search` and keeps the answer. NULL when the engine refused
+// it (or the answer didn't parse); an empty query is the engine's own answer:
+// no hits, nothing scanned.
+QuireFind *quire_search(EbEngine *engine, const char *query, uint32_t limit) {
+    if (engine == NULL || query == NULL) {
+        return NULL;
+    }
+    size_t query_len = strlen(query);
+    // postcard writes the length as a varint; five bytes holds a u32, and a
+    // query that doesn't fit one isn't a query this app can pass anyway.
+    if (query_len > UINT32_MAX) {
+        return NULL;
+    }
+    uint8_t *request = malloc(1 + 5 + query_len + 5);
+    if (request == NULL) {
+        return NULL;
+    }
+    size_t at = 0;
+    put_varint(request, &at, REQUEST_SEARCH);
+    put_varint(request, &at, query_len);
+    memcpy(request + at, query, query_len);
+    at += query_len;
+    put_varint(request, &at, limit);
+
+    size_t response_len = 0;
+    uint8_t *response = eb_request(engine, request, at, &response_len);
+    free(request);
+    if (response == NULL || response_len == 0) {
+        eb_free(response, response_len);
+        return NULL;
+    }
+    QuireFind *find = decode_find(response, response_len);
+    eb_free(response, response_len);
+    return find;
+}
+
+static const QuireFindHit *find_hit(const QuireFind *find, uint32_t index) {
+    if (find == NULL || index >= find->count) {
+        return NULL;
+    }
+    return &find->hits[index];
+}
+
+uint32_t quire_find_count(const QuireFind *find) {
+    return find != NULL ? find->count : 0;
+}
+
+uint32_t quire_find_spine(const QuireFind *find, uint32_t index) {
+    const QuireFindHit *hit = find_hit(find, index);
+    return hit != NULL ? hit->spine : 0;
+}
+
+uint32_t quire_find_node(const QuireFind *find, uint32_t index) {
+    const QuireFindHit *hit = find_hit(find, index);
+    return hit != NULL ? hit->node : 0;
+}
+
+uint32_t quire_find_offset(const QuireFind *find, uint32_t index) {
+    const QuireFindHit *hit = find_hit(find, index);
+    return hit != NULL ? hit->offset : 0;
+}
+
+uint32_t quire_find_end(const QuireFind *find, uint32_t index) {
+    const QuireFindHit *hit = find_hit(find, index);
+    return hit != NULL ? hit->end : 0;
+}
+
+const char *quire_find_chapter(const QuireFind *find, uint32_t index) {
+    const QuireFindHit *hit = find_hit(find, index);
+    return hit != NULL ? hit->chapter : "";
+}
+
+const char *quire_find_before(const QuireFind *find, uint32_t index) {
+    const QuireFindHit *hit = find_hit(find, index);
+    return hit != NULL ? hit->before : "";
+}
+
+const char *quire_find_text(const QuireFind *find, uint32_t index) {
+    const QuireFindHit *hit = find_hit(find, index);
+    return hit != NULL ? hit->text : "";
+}
+
+const char *quire_find_after(const QuireFind *find, uint32_t index) {
+    const QuireFindHit *hit = find_hit(find, index);
+    return hit != NULL ? hit->after : "";
+}
+
+// Bit 0: the context before was cut; bit 1: the one after was.
+uint32_t quire_find_flags(const QuireFind *find, uint32_t index) {
+    const QuireFindHit *hit = find_hit(find, index);
+    if (hit == NULL) {
+        return 0;
+    }
+    return (hit->ellipsis_before ? 1u : 0u) | (hit->ellipsis_after ? 2u : 0u);
+}
+
+uint32_t quire_find_truncated(const QuireFind *find) {
+    return find != NULL ? find->truncated : 0;
+}
+
+uint32_t quire_find_scanned(const QuireFind *find) {
+    return find != NULL ? find->scanned : 0;
+}
+
+uint32_t quire_find_skipped(const QuireFind *find) {
+    return find != NULL ? find->skipped : 0;
+}
+
 // A `const char *` a by-value struct carried, as the string it is. The bytes
 // are still the library's (a handle's pool, or the empty string); Asuka copies
 // them into a string at the call.
 const char *quire_cstr(const void *pointer) {
     return pointer != NULL ? (const char *)pointer : "";
 }
+
