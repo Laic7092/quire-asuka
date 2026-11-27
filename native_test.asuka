@@ -65,3 +65,16 @@ test "a source's cookie can be cleared for another account" {
   let header = try await sources.cookieHeaderOf(def, url: "https://clear-cookie.test/page")
   expect(!header.contains("sid=abc"))
 }
+
+test "pasting a cookie replaces the source's whole session" {
+  if !sources.nativeAvailable() { return }
+  let one = r#"{"bookSourceUrl":"https://replace-cookie.test"}"#
+  let def = try sources.decodeSource(try sources.parseList(one)[0])
+  try await sources.setCookieOf(def, url: "https://replace-cookie.test/", cookie: "sid=old; theme=dark")
+  try await sources.replaceCookiesOf(def, url: "https://replace-cookie.test/", cookie: "sid=new; theme=light")
+  let header = try await sources.cookieHeaderOf(def, url: "https://replace-cookie.test/page")
+  expect(header.contains("sid=new"))
+  expect(header.contains("theme=light"))
+  expect(!header.contains("sid=old"))
+  expect(!header.contains("theme=dark"))
+}

@@ -669,6 +669,75 @@ fn secretVariable(key: string) -> bool {
   return k.contains("pass") || k.contains("pwd") || k.contains("secret") || k.contains("token") || k.contains("cookie")
 }
 
+/// 书源的说明常常是一大段写给宿主看的备注（storageDir、legado_eval、
+/// 下载限速……）。面板里只留第一句：读者只需要知道要不要登录。
+fn sourceHint(text: string) -> string {
+  var line = ""
+  for l in text.trim().replace("\r", "\n").lines() {
+    if !l.trim().isEmpty() {
+      line = l.trim()
+      break
+    }
+  }
+  if line.isEmpty() { return "" }
+  var first = ""
+  var ended = false
+  for ch in line.chars() {
+    if ch == '。' || ch == '；' || ch == '！' || ch == '？' || ch == ';' {
+      ended = true
+      break
+    }
+    first += "{ch}"
+  }
+  var out = first.trim()
+  if out.isEmpty() { out = line }
+  if !ended && out.count() < line.count() { out = "{out}…" }
+  if out.count() > 60 { out = "{out.slice(0, 60).trim()}…" }
+  return out
+}
+
+/// 验证码登录用的账号密码：先看 jsLib 推出来的键，再看书源变量里常见的
+/// `user` / `pass` 写法。
+fn captchaCredentials(text: string) -> (string, string) {
+  let users = [
+    sources.variableValueOf(text, "wenku8_user"),
+    sources.variableValueOf(text, "user"),
+    sources.variableValueOf(text, "username"),
+  ]
+  let passes = [
+    sources.variableValueOf(text, "wenku8_pass"),
+    sources.variableValueOf(text, "pass"),
+    sources.variableValueOf(text, "password"),
+  ]
+  let user = users.find(v => !v.trim().isEmpty()) ?? ""
+  let pass = passes.find(v => !v.trim().isEmpty()) ?? ""
+  return (user, pass)
+}
+
+/// 带验证码的登录：和书源 jsLib 做的事一样，只多一个 `checkcode`
+/// （wenku8 的登录页要它）。回 `ok`，或者服务器错误页里写的原因。
+fn captchaLoginScript(user: string, pass: string, code: string, base: string, submit: string) -> string {
+  let template = r"""
+(function(){
+  var body = 'username=' + encodeURIComponent(@USER@) +
+    '&password=' + encodeURIComponent(@PASS@) +
+    '&checkcode=' + encodeURIComponent(@CODE@) +
+    '&usecookie=315360000&action=login&submit=' + encodeURIComponent('登录');
+  var r = java.post(@SUBMIT@, body, {'Referer': @BASE@ + '/login.php', 'Content-Type': 'application/x-www-form-urlencoded'});
+  var jar = cookie.getCookie(@BASE@ + '/');
+  if (jar.indexOf('jieqiUserInfo') >= 0 || jar.indexOf('jieqiUserName') >= 0) return 'ok';
+  var m = String(r.body).match(/错误原因：([^<]*)/);
+  return m ? m[1] : ('HTTP ' + r.code);
+})()
+"""
+  var script = template.replace("@USER@", json.encode(user))
+  script = script.replace("@PASS@", json.encode(pass))
+  script = script.replace("@CODE@", json.encode(code))
+  script = script.replace("@BASE@", json.encode(base))
+  script = script.replace("@SUBMIT@", json.encode(submit))
+  return script
+}
+
 fn previewOf(text: string) -> SourcePreview {
   if text.trim().isEmpty() { return SourcePreview() }
   do {
@@ -738,11 +807,25 @@ component SourceManager {
   state loginHelp = ""
   state loginBusy = false
   state verifying = false
+  /// 面板里正在看哪一页：0 是书源变量，1 是网页登录拿回来的 Cookie，
+  /// 站点要图形验证码时还有 2。
+  state loginTab = 0
   /// 网页登录拿回来的 Cookie：直接进书源的会话，绕开书源自己的登录脚本。
   state cookieText = ""
   state cookieNote = ""
   state cookieBusy = false
   state cookieHave = false
+  /// 图形验证码：站点（目前是轻小说文库）在登录页要 `checkcode`，
+  /// 书源的 jsLib 只发账号密码，所以取一张图给读者读，再带上码登录。
+  state captchaOn = false
+  state captchaPath = ""
+  state captchaCode = ""
+  state captchaNote = ""
+  state captchaBusy = false
+  state captchaTick = 0
+
+  /// 变量里至少填了一个值：空着的不算登录。
+  fn hasFilledVariables() -> bool = loginKeys.any(k => !sources.variableValueOf(loginText, k).trim().isEmpty())
 
   async fn toggleLogin(e: sources.Entry) {
     if loginId == e.id {
@@ -755,9 +838,14 @@ component SourceManager {
     loginText = ""
     loginKeys = []
     loginRaw = false
+    loginTab = 0
     cookieText = ""
     cookieNote = ""
     cookieHave = false
+    captchaOn = false
+    captchaPath = ""
+    captchaCode = ""
+    captchaNote = ""
     let def = allSources.definition(e)
     if def == none {
       loginNote = "这条书源读不出来"
@@ -766,7 +854,7 @@ component SourceManager {
     }
     let d = def!
     loginHelp = d.variableComment.trim()
-    if loginHelp.isEmpty() { loginHelp = d.bookSourceComment.trim() }
+    if loginHelp.isEmpty() { loginHelp = sourceHint(d.bookSourceComment) }
     loginKeys = sources.variableKeys(d)
     let stored = (try? await sources.storedVariables(d)) ?? ""
     var text = stored.trim()
@@ -778,6 +866,7 @@ component SourceManager {
       let current = (try? await sources.cookieHeaderOf(d, url: at)) ?? ""
       cookieHave = !current.trim().isEmpty()
     }
+    captchaOn = !sources.captchaLoginOf(d).isEmpty()
     loginId = e.id
     loginBusy = false
   }
@@ -820,10 +909,12 @@ component SourceManager {
     cookieBusy = true
     cookieNote = ""
     do {
-      try await sources.setCookieOf(def!, url: at, cookie: header)
+      // 粘一份就是换一套会话：只“加”进 jar 的话，浏览器粘来的 host-only
+      // Cookie 会和登录脚本下发的域级 Cookie 同名并存，旧的还可能挡在前面。
+      try await sources.replaceCookiesOf(def!, url: at, cookie: header)
       cookieHave = true
       cookieText = ""
-      cookieNote = "已保存，接下来的搜索和发现会带上它"
+      cookieNote = "已替换这个书源的 Cookie，接下来的搜索和发现会带上它"
     } catch err {
       cookieNote = err.message
     }
@@ -870,9 +961,9 @@ component SourceManager {
     // 意思就是「用现在填的去试」。
     let header = cookieHeaderFrom(cookieText)
     let at = cookieUrlOf(d)
-    if !header.isEmpty() && !at.isEmpty() {
+    if !at.isEmpty() && !header.isEmpty() {
       do {
-        try await sources.setCookieOf(d, url: at, cookie: header)
+        try await sources.replaceCookiesOf(d, url: at, cookie: header)
         cookieHave = true
         cookieText = ""
       } catch err {
@@ -880,14 +971,111 @@ component SourceManager {
         verifying = false
         return
       }
+    } else if !at.isEmpty() && cookieHave && hasFilledVariables() {
+      // jar 里有旧 Cookie 时，书源的 jsLib 看到 `jieqiUserInfo` 在就直接
+      // 返回，账号密码填对了也不会去 POST。验证的是变量里的账号，就先
+      // 把它送走，让登录真的跑一次。
+      do {
+        try await sources.clearCookiesOf(d, url: at)
+        cookieHave = false
+        loginNote = "已清掉旧 Cookie，正在用变量里的账号重登…"
+      } catch err {
+        loginNote = "旧 Cookie 清不掉：{err.message}"
+        verifying = false
+        return
+      }
     }
     do {
       let books = try await sources.search(d, key: "我的", page: 1)
-      loginNote = "搜索可以用了，这次找到 {books.count()} 本"
+      loginNote = if books.isEmpty() {
+        "搜索回来了，但一本书也没有：可能还没登上，换 Cookie 或账号再试"
+      } else {
+        "搜索可以用了，这次找到 {books.count()} 本"
+      }
     } catch err {
-      loginNote = "还不行：{err.message}"
+      loginNote = if captchaOn {
+        "这个站点要图形验证码：到「验证码」页取图登录"
+      } else {
+        "还不行：{err.message}"
+      }
     }
     verifying = false
+  }
+
+  /// 取一张新的图形验证码：图片和登录 POST 用同一个源会话（同一个 jar），
+  /// 所以验证码和随后的登录对得上。
+  async fn fetchCaptcha(e: sources.Entry) {
+    if captchaBusy { return }
+    let def = allSources.definition(e)
+    if def == none {
+      captchaNote = "这条书源读不出来"
+      return
+    }
+    let d = def!
+    let url = sources.captchaLoginOf(d)
+    if url.isEmpty() {
+      captchaNote = "这个书源不需要图形验证码"
+      return
+    }
+    captchaBusy = true
+    captchaNote = ""
+    captchaCode = ""
+    do {
+      let dir = fs.join([fs.appDir(), "captcha"])
+      try await spawn { try fs.mkdirAll(dir) }
+      captchaTick += 1
+      let path = fs.join([dir, "login-{captchaTick}.png"])
+      let file = try await sources.downloadOf(d, url: url, into: path)
+      captchaPath = file.path
+      captchaNote = "读图上的字，填好再登录；看不清就换一张"
+    } catch err {
+      captchaNote = err.message
+    }
+    captchaBusy = false
+  }
+
+  /// 带上验证码登录：账号密码取「变量」页里现在填的值。
+  async fn captchaLogin(e: sources.Entry) {
+    if captchaBusy { return }
+    let def = allSources.definition(e)
+    if def == none {
+      captchaNote = "这条书源读不出来"
+      return
+    }
+    let d = def!
+    let (user, pass) = captchaCredentials(loginText)
+    if user.isEmpty() || pass.isEmpty() {
+      captchaNote = "先在「变量」页填账号和密码"
+      return
+    }
+    let code = captchaCode.trim()
+    if code.isEmpty() {
+      captchaNote = "先填图上的验证码"
+      return
+    }
+    captchaBusy = true
+    captchaNote = "正在登录…"
+    do {
+      let script = captchaLoginScript(
+        user, pass, code,
+        base: sources.baseUrlOf(d),
+        submit: sources.captchaSubmitOf(d),
+      )
+      let answer = try await sources.nativeEval(sources.sourceJSON(d), script: script)
+      if answer.trim() == "ok" {
+        cookieHave = true
+        captchaPath = ""
+        captchaCode = ""
+        captchaNote = "登录成功，搜索和发现会带上这个会话"
+      } else if answer.contains("校验码") {
+        captchaNote = "验证码不对，换一张再试"
+      } else {
+        captchaNote = answer.trim()
+      }
+    } catch err {
+      captchaNote = err.message
+    }
+    captchaBusy = false
   }
 
   fn toggle(id: string) {
@@ -1215,136 +1403,197 @@ component SourceManager {
                     Column {
                       gap: 8
                       padding: [2, 0, 10, 0]
-                      if !loginHelp.isEmpty() {
-                        Text(loginHelp) {
-                          font: .caption
-                          color: .secondaryLabel
-                        }
+                      Segmented(if captchaOn { ["变量", "Cookie", "验证码"] } else { ["变量", "Cookie"] }) {
+                        selected: loginTab
+                        on change(i) { loginTab = i }
                       }
-                      if loginKeys.isEmpty() {
-                        Text("这条书源没有在规则里写出变量名。它若需要登录，请照书源的说明写一段 JSON。") {
-                          font: .caption
-                          color: .tertiaryLabel
+                      if loginTab == 0 {
+                        if !loginHelp.isEmpty() {
+                          Text(loginHelp) {
+                            font: .caption
+                            color: .secondaryLabel
+                          }
                         }
-                      } else {
-                        Text("这个书源要这些变量：{loginKeys.joined(separator: "、")}") {
-                          font: .caption
-                          color: .tertiaryLabel
-                        }
-                        if !loginRaw {
-                          for key in loginKeys key key {
-                            Column {
-                              gap: 4
-                              Text(key) {
-                                font: .caption.bold()
-                                color: .secondaryLabel
-                              }
-                              TextField {
-                                text: sources.variableValueOf(loginText, key)
-                                on change(v) { loginText = sources.withVariableValue(loginText, key, v) }
-                                placeholder: if secretVariable(key) { "密码或令牌" } else { "值" }
-                                autocapitalize: .off
-                                autocorrect: .no
-                                secure: secretVariable(key)
+                        if loginKeys.isEmpty() {
+                          Text("规则里没写变量名；要登录就按书源说明写一段 JSON。") {
+                            font: .caption
+                            color: .tertiaryLabel
+                          }
+                        } else {
+                          Text("这个书源要这些变量：{loginKeys.joined(separator: "、")}") {
+                            font: .caption
+                            color: .tertiaryLabel
+                          }
+                          if !loginRaw {
+                            for key in loginKeys key key {
+                              Column {
+                                gap: 4
+                                Text(key) {
+                                  font: .caption.bold()
+                                  color: .secondaryLabel
+                                }
+                                TextField {
+                                  text: sources.variableValueOf(loginText, key)
+                                  on change(v) { loginText = sources.withVariableValue(loginText, key, v) }
+                                  placeholder: if secretVariable(key) { "密码或令牌" } else { "值" }
+                                  autocapitalize: .off
+                                  autocorrect: .no
+                                  secure: secretVariable(key)
+                                }
                               }
                             }
                           }
                         }
-                      }
-                      if loginKeys.isEmpty() || loginRaw {
-                        TextField {
-                          bind text: loginText
-                          multiline: true
-                          height: 120
-                          autocapitalize: .off
-                          autocorrect: .no
-                          placeholder: r#"{"user":"…","pass":"…"}"#
+                        if loginKeys.isEmpty() || loginRaw {
+                          TextField {
+                            bind text: loginText
+                            multiline: true
+                            height: 120
+                            autocapitalize: .off
+                            autocorrect: .no
+                            placeholder: r#"{"user":"…","pass":"…"}"#
+                          }
+                          Text(if isJsonObject(loginText) {
+                            "这段 JSON 可以保存。"
+                          } else {
+                            r#"还不是一段 JSON 对象：要像 {"user":"…"} 这样。"#
+                          }) {
+                            font: .caption
+                            color: if isJsonObject(loginText) { .secondaryLabel } else { .orange }
+                          }
                         }
-                        Text(if isJsonObject(loginText) {
-                          "这段 JSON 可以保存。"
+                        if !loginKeys.isEmpty() {
+                          Button(if loginRaw { "回到逐项填写" } else { "原始 JSON" }) {
+                            variant: .plain
+                            on press { loginRaw = !loginRaw }
+                          }
+                        }
+                        Text("保存后，下一次搜索或发现会用它登录。") {
+                          font: .caption
+                          color: .tertiaryLabel
+                        }
+                        Row {
+                          gap: 10
+                          Button(if loginBusy { "保存中…" } else { "保存变量" }) {
+                            on press { await saveLogin(e) }
+                            disabled: loginBusy || !isJsonObject(loginText)
+                          }
+                          Button(if verifying {
+                            "验证中…"
+                          } else if cookieHave && hasFilledVariables() {
+                            "清 Cookie 再验证"
+                          } else {
+                            "搜一次验证"
+                          }) {
+                            on press { await verifyLogin(e) }
+                            disabled: verifying
+                          }
+                          Button("收起") {
+                            variant: .plain
+                            on press { loginId = "" }
+                          }
+                        }
+                        if !loginNote.isEmpty() {
+                          Text(loginNote) {
+                            font: .footnote
+                            color: .secondaryLabel
+                          }
+                        }
+                      } else if loginTab == 1 {
+                        Text("网页登录") {
+                          font: .caption.bold()
+                          color: .secondaryLabel
+                        }
+                        Text(if cookieHave {
+                          "已经有一份 Cookie。粘新的保存会换掉它（同一个地址），换账号就用这个。"
                         } else {
-                          r#"还不是一段 JSON 对象：要像 {"user":"…"} 这样。"#
+                          "在浏览器登录后，把 Cookie 请求头粘到这里。"
                         }) {
                           font: .caption
-                          color: if isJsonObject(loginText) { .secondaryLabel } else { .orange }
+                          color: .tertiaryLabel
                         }
-                      }
-                      if !loginKeys.isEmpty() {
-                        Button(if loginRaw { "回到逐项填写" } else { "原始 JSON" }) {
-                          variant: .plain
-                          on press { loginRaw = !loginRaw }
+                        TextField {
+                          bind text: cookieText
+                          multiline: true
+                          height: 78
+                          autocapitalize: .off
+                          autocorrect: .no
+                          placeholder: "jieqiUserInfo=…; jieqiUserName=…"
                         }
-                      }
-                      Text("保存时整段给 source.getVariable()，每个键也给 source.get()。") {
-                        font: .caption
-                        color: .tertiaryLabel
-                      }
-                      Row {
-                        gap: 10
-                        Button(if loginBusy { "保存中…" } else { "保存变量" }) {
-                          on press { await saveLogin(e) }
-                          disabled: loginBusy || !isJsonObject(loginText)
+                        Row {
+                          gap: 10
+                          Button(if cookieBusy { "保存中…" } else { "保存 Cookie" }) {
+                            on press { await saveCookie(e) }
+                            disabled: cookieBusy
+                          }
+                          if cookieHave {
+                            Button("清除 Cookie") {
+                              variant: .plain
+                              on press { await clearCookie(e) }
+                              disabled: cookieBusy
+                            }
+                          }
+                          Button("收起") {
+                            variant: .plain
+                            on press { loginId = "" }
+                          }
                         }
-                        Button(if verifying { "验证中…" } else { "搜一次验证" }) {
-                          on press { await verifyLogin(e) }
-                          disabled: verifying
+                        if !cookieNote.isEmpty() {
+                          Text(cookieNote) {
+                            font: .footnote
+                            color: .secondaryLabel
+                          }
+                        }
+                      } else {
+                        Text("图形验证码") {
+                          font: .caption.bold()
+                          color: .secondaryLabel
+                        }
+                        Text("这个站点的登录页要验证码。账号密码用「变量」页里填的，先取一张图，填上再登录。") {
+                          font: .caption
+                          color: .tertiaryLabel
+                        }
+                        if !captchaPath.isEmpty() {
+                          Image(source: captchaPath) {
+                            width: 136
+                            height: 40
+                            radius: 4
+                            background: .secondaryBackground
+                          }
+                        }
+                        Row {
+                          gap: 10
+                          Button(if captchaBusy {
+                            "取图中…"
+                          } else if captchaPath.isEmpty() {
+                            "取验证码"
+                          } else {
+                            "换一张"
+                          }) {
+                            on press { await fetchCaptcha(e) }
+                            disabled: captchaBusy
+                          }
+                          TextField {
+                            bind text: captchaCode
+                            placeholder: "图上的字"
+                            width: 110
+                            autocapitalize: .off
+                            autocorrect: .no
+                          }
+                          Button(if captchaBusy { "登录中…" } else { "登录" }) {
+                            on press { await captchaLogin(e) }
+                            disabled: captchaBusy || captchaCode.trim().isEmpty()
+                          }
+                        }
+                        if !captchaNote.isEmpty() {
+                          Text(captchaNote) {
+                            font: .footnote
+                            color: .secondaryLabel
+                          }
                         }
                         Button("收起") {
                           variant: .plain
                           on press { loginId = "" }
-                        }
-                      }
-                      if !loginNote.isEmpty() {
-                        Text(loginNote) {
-                          font: .footnote
-                          color: .secondaryLabel
-                        }
-                      }
-
-                      View {
-                        height: 1
-                        width: 100%
-                        background: .separator
-                      }
-
-                      Text("网页登录 / Cookie") {
-                        font: .caption.bold()
-                        color: .secondaryLabel
-                      }
-                      Text(if cookieHave {
-                        "这个书源已经有一份 Cookie。要换账号，粘贴新的再保存。"
-                      } else {
-                        "书源要验证码、扫码，或者它自己的登录脚本登不上时，在浏览器登录后复制 Cookie 请求头粘到这里。"
-                      }) {
-                        font: .caption
-                        color: .tertiaryLabel
-                      }
-                      TextField {
-                        bind text: cookieText
-                        multiline: true
-                        height: 78
-                        autocapitalize: .off
-                        autocorrect: .no
-                        placeholder: "jieqiUserInfo=…; jieqiUserName=…"
-                      }
-                      Row {
-                        gap: 10
-                        Button(if cookieBusy { "保存中…" } else { "保存 Cookie" }) {
-                          on press { await saveCookie(e) }
-                          disabled: cookieBusy
-                        }
-                        if cookieHave {
-                          Button("清除 Cookie") {
-                            variant: .plain
-                            on press { await clearCookie(e) }
-                            disabled: cookieBusy
-                          }
-                        }
-                      }
-                      if !cookieNote.isEmpty() {
-                        Text(cookieNote) {
-                          font: .footnote
-                          color: .secondaryLabel
                         }
                       }
                     }
@@ -1881,15 +2130,6 @@ screen Search {
   }
 }
 
-/// 发现页的分类按书源分组：一个分类是一行，前面由 List 自己加书源的表头。
-/// List 的表头只拿到分区的 key，按书源 id 找回它的名字和分组。
-fn sourceById(sources: [ExploreSource], id: string) -> ExploreSource? {
-  for s in sources {
-    if s.id == id { return s }
-  }
-  return none
-}
-
 /// 发现：带 exploreUrl 的书源。每个书源是 List 的一个分区，它的分类就是
 /// 分区里的原生行；点分类直接看这个分类的书。走的是引擎的
 /// `legado_explore`，和搜索共用同一套规则、JavaScript 和 cookie。
@@ -2000,37 +2240,18 @@ screen Discover {
       } else {
         // 整页只有一个 List：顶部 inset、状态栏和导航栏都交给它。
         // 筛选条是它的第一行，不再在 List 外面自己算一遍安全区。
+        // 书源名和分类放在同一行里，不用 section 的 header：header 会
+        // 再按 section 留一层间距，多书源时和分类标签对不齐。第一个
+        // 书源（或第一条筛选）贴着顶部，不再多加一段。
         List {
           appearance: .plain
           grow: 1
-          section: i => items[i].key()
-          header: id => if id == discoverFilterKey {
-            View { height: 0 }
-          } else if let s = sourceById(shown, id) {
-            Row {
-              gap: 8
-              align: .center
-              padding: [12, lib.pageKeyline, 8, lib.pageKeyline]
-              Text(s.name) {
-                font: .headline
-                grow: 1
-                lines: 1
-              }
-              Text(if s.group.isEmpty() { "{s.categories.count()} 个分类" } else { "{s.group} · {s.categories.count()} 个分类" }) {
-                font: .caption
-                color: .secondaryLabel
-                lines: 1
-              }
-            }
-          } else {
-            View { height: 0 }
-          }
-          for item in items key item.key() {
+          for (i, item) in items.enumerated() key item.key() {
             match item {
               .filterBar => Scroll {
                 width: 100%
                 horizontal: true
-                padding: [8, lib.pageKeyline, 2, lib.pageKeyline]
+                padding: [0, lib.pageKeyline, 10, lib.pageKeyline]
                 Row {
                   gap: 8
                   SourceFilterChip("全部", jump.isEmpty()) {
@@ -2043,20 +2264,39 @@ screen Discover {
                   }
                 }
               }
-              // 一个书源一行：分类是标签，一行放得下好几个。
-              .source(s) => Row {
-                wrap: true
-                gap: 8
-                padding: [4, lib.pageKeyline, 18, lib.pageKeyline]
-                for c in s.categories key c.url {
-                  CategoryChip(c.title) {
-                    on choose {
-                      push(DiscoverList(ExploreHit(sourceId: s.id, sourceName: s.name, category: c)) {
-                        on open(book) { emit open(book) }
-                      })
+              // 一个书源一行：名字在上，分类是标签，一行放得下好几个。
+              .source(s) => Column {
+                gap: 0
+                Row {
+                  gap: 8
+                  align: .center
+                  padding: [if i == 0 { 0 } else { 12 }, lib.pageKeyline, 6, lib.pageKeyline]
+                  Text(s.name) {
+                    font: .headline
+                    grow: 1
+                    lines: 1
+                  }
+                  Text(if s.group.isEmpty() { "{s.categories.count()} 个分类" } else { "{s.group} · {s.categories.count()} 个分类" }) {
+                    font: .caption
+                    color: .secondaryLabel
+                    lines: 1
+                  }
+                }
+                Row {
+                  wrap: true
+                  gap: 8
+                  padding: [0, lib.pageKeyline]
+                  for c in s.categories key c.url {
+                    CategoryChip(c.title) {
+                      on choose {
+                        push(DiscoverList(ExploreHit(sourceId: s.id, sourceName: s.name, category: c)) {
+                          on open(book) { emit open(book) }
+                        })
+                      }
                     }
                   }
                 }
+                View { height: 14 }
               }
             }
           }
@@ -2085,6 +2325,50 @@ screen DiscoverList(row: ExploreHit) {
     return try await withTimeout(20s) {
       return try await sources.explore(def!, the.category.url)
     }
+  }
+
+  /// 已经翻到的页：第一页在 `books`，后面的接在 `extra` 里。
+  state extra: [sources.Book] = []
+  state nextPage = 2
+  state loadingMore = false
+  state moreNote = ""
+  /// 静态分类地址只有第一页，就不给「加载更多」。
+  state more = sources.canExplorePages(row.category.url)
+  let shownBooks = (books.value ?? []) + extra
+
+  async fn loadMore() {
+    if loadingMore || !more { return }
+    let def = allSources.definitionOf(row.sourceId)
+    if def == none {
+      more = false
+      moreNote = "这个书源已经不在列表里了"
+      return
+    }
+    loadingMore = true
+    moreNote = ""
+    do {
+      let found = try await withTimeout(20s) {
+        return try await sources.explorePage(def!, url: row.category.url, page: nextPage)
+      }
+      // 有些不带页号的地址会一直回同一页：没有新的书就算到头了。
+      var fresh: [sources.Book] = []
+      var seen = shownBooks.map(b => b.bookUrl)
+      for b in found {
+        if b.bookUrl.isEmpty() || seen.contains(b.bookUrl) { continue }
+        seen.push(b.bookUrl)
+        fresh.push(b)
+      }
+      if fresh.isEmpty() {
+        more = false
+        moreNote = "没有更多了"
+      } else {
+        extra = extra + fresh
+        nextPage += 1
+      }
+    } catch e {
+      moreNote = e.message
+    }
+    loadingMore = false
   }
 
   View {
@@ -2130,7 +2414,7 @@ screen DiscoverList(row: ExploreHit) {
           on press { books.reload() }
         }
       }
-      .ready(list) => if list.isEmpty() {
+      .ready(list) => if list.isEmpty() && extra.isEmpty() {
         Column {
           grow: 1
           justify: .center
@@ -2150,12 +2434,32 @@ screen DiscoverList(row: ExploreHit) {
         List {
           appearance: .plain
           grow: 1
-          for (i, book) in list.enumerated() key i {
+          for (i, book) in shownBooks.enumerated() key "{book.bookUrl}:{i}" {
             ExploreResultRow(row, book) {
               on open {
                 push(SearchBook(Hit(sourceId: row.sourceId, sourceName: row.sourceName, book: book)) {
                   on open(b) { emit open(b) }
                 })
+              }
+            }
+          }
+          if more || loadingMore || !moreNote.isEmpty() {
+            Column {
+              gap: 6
+              align: .center
+              padding: [6, lib.pageKeyline, 24, lib.pageKeyline]
+              if loadingMore {
+                ProgressRing {}
+              } else if more {
+                Button("加载更多") {
+                  on press { await loadMore() }
+                }
+              }
+              if !moreNote.isEmpty() {
+                Text(moreNote) {
+                  font: .footnote
+                  color: .secondaryLabel
+                }
               }
             }
           }

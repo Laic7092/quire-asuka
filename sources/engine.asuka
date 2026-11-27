@@ -194,6 +194,13 @@ pub async fn explore(s: BookSource, url: string) throws -> [Book] {
   return try await exploreNative(s, url)
 }
 
+/// 发现页的下一页。引擎的 `legado_explore` 只取第 1 页（ABI 没有页参数），
+/// 页号由 `explorePageUrl` 写进分类地址。
+pub async fn explorePage(s: BookSource, url: string, page: int) throws -> [Book] {
+  if !bookSourcesAvailable() { throw unavailable() }
+  return try await exploreNative(s, explorePageUrl(url, page))
+}
+
 async fn infoNative(s: BookSource, bookUrl: string, from: Book) throws -> Info {
   let text = try await nativeInfo(sourceJSON(s), bookUrl: bookUrl)
   let parsed: NativeBook = try json.decode(text)
@@ -335,4 +342,17 @@ pub async fn clearCookiesOf(s: BookSource, url: string) throws {
   let at = if url.trim().isEmpty() { baseUrlOf(s) } else { url.trim() }
   if at.isEmpty() { throw Error("这条书源没有地址，清不了 Cookie") }
   try await nativeEval(sourceJSON(s), script: "cookie.removeCookie({json.encode(at)});")
+}
+
+/// 把一段 Cookie 头当成这个书源在那个地址下的整套会话：先清掉旧的，再写新的。
+///
+/// `legado_set_cookie` 只是**往 jar 里加**：从浏览器粘来的是 host-only
+/// （`www.wenku8.net`），登录脚本下发的 `Set-Cookie` 是域级（`.wenku8.net`），
+/// 同名两条会一起发出去（`jieqiUserInfo=new; …; jieqiUserInfo=old`）。
+/// 旧的那条一旦在 jar 里，jsLib 的 `loggedIn()` 只看 Cookie 在不在，登录
+/// 脚本就不再 POST，账号密码填对了也换不上会话。所以粘一份 = 换一套。
+pub async fn replaceCookiesOf(s: BookSource, url: string, cookie: string) throws {
+  if !bookSourcesAvailable() { throw unavailable() }
+  try await clearCookiesOf(s, url: url)
+  try await setCookieOf(s, url: url, cookie: cookie)
 }

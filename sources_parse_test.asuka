@@ -92,3 +92,26 @@ test "a source with no variable still shows the keys its login script asks for" 
   let def = try sources.decodeSource(try sources.parseList(text)[0])
   expect(sources.variableKeys(def) == ["wenku8_user", "wenku8_pass"])
 }
+
+test "a category's page number is written into its URL" {
+  expect(sources.explorePageUrl(r"/list?page={{page}}", 3) == "/list?page=3")
+  expect(sources.explorePageUrl(r"/list?page={page}", 2) == "/list?page=2")
+  expect(sources.explorePageUrl(r"<js>'/list?page='+page</js>", 4) == "<js>page=4;'/list?page='+page</js>")
+  expect(sources.explorePageUrl(r"@js:'/list?p='+page", 5) == "@js:page=5;'/list?p='+page")
+}
+
+test "only a category that names a page can be paged" {
+  expect(sources.canExplorePages(r"/list?page={{page}}"))
+  expect(sources.canExplorePages(r"<js>'/list?page='+page</js>"))
+  expect(!sources.canExplorePages("/category/xuanhuan/"))
+}
+
+test "the captcha login knows where the code image is" {
+  let text = r#"{"bookSourceName":"轻小说","bookSourceUrl":"https://www.wenku8.net","loginUrl":"https://www.wenku8.net/login.php"}"#
+  let def = try sources.decodeSource(try sources.parseList(text)[0])
+  expect(sources.captchaLoginOf(def) == "https://www.wenku8.net/checkcode.php")
+  expect(sources.captchaSubmitOf(def) == "https://www.wenku8.net/login.php?do=submit")
+  let other = r#"{"bookSourceUrl":"https://other.test"}"#
+  let plain = try sources.decodeSource(try sources.parseList(other)[0])
+  expect(sources.captchaLoginOf(plain).isEmpty())
+}

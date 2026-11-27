@@ -77,3 +77,19 @@ test "a source in several groups is listed once, with its groups as labels" {
   app.expect("乙")
   app.expect("丙")
 }
+
+test "a source's long note is cut to its first sentence" {
+  let note = "搜索/分类需要登录。先在书源变量里设置 wenku8_user / wenku8_pass（legado_eval 执行 source.put，storageDir 会持久化）；详情/目录/正文免登录。"
+  expect(sourceHint(note) == "搜索/分类需要登录")
+}
+
+test "the captcha login script carries the account and the code" {
+  let script = captchaLoginScript("reader", "p&q", "8491", "https://www.wenku8.net", "https://www.wenku8.net/login.php?do=submit")
+  expect(script.contains("checkcode"))
+  expect(script.contains("8491"))
+  expect(script.contains("https://www.wenku8.net/login.php?do=submit"))
+  expect(!script.contains("@CODE@"))
+  let (user, pass) = captchaCredentials(r#"{"wenku8_user":"reader","wenku8_pass":"p&q"}"#)
+  expect(user == "reader")
+  expect(pass == "p&q")
+}

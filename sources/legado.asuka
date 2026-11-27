@@ -227,6 +227,29 @@ pub fn exploreCategories(s: BookSource) -> [ExploreCategory] {
   return [ExploreCategory(title: "发现", url: raw)]
 }
 
+/// 发现页地址里的页号：`{{page}}`（JS 插值）和 `{page}`（Legado 的占位符）
+/// 是模板，`<js>` / `@js:` 里的 `page` 则在脚本开头赋值。引擎的
+/// `legado_explore` 只取第 1 页（ABI 没有页参数），所以页号在这边写进地址。
+pub fn explorePageUrl(url: string, page: int) -> string {
+  var out = url.replace(r"{{page}}", "{page}")
+  out = out.replace(r"{page}", "{page}")
+  out = out.replace("searchPage", "{page}")
+  out = jsTag.replace(out, with: "<js>page={page};")
+  out = jsPrefix.replace(out, with: "@js:page={page};")
+  return out
+}
+
+/// 这个分类能不能看下一页：地址里有页号模板，或者脚本自己在拼 `page`。
+/// 静态的分类地址（`/category/xuanhuan/`）只有第一页。
+pub fn canExplorePages(url: string) -> bool {
+  let u = url.lower()
+  return u.contains(r"{page}") || u.contains("searchpage") || u.contains("+page") ||
+    u.contains("page+") || u.contains("page=") || u.contains("page =") || u.contains("page:")
+}
+
+let jsTag = regex.must(r"(?is)<js>")
+let jsPrefix = regex.must(r"(?is)@js:")
+
 /// `exploreUrl` 是一个地址时，它常常返回一份分类 JSON。先把这段 JSON
 /// 取回来再列分类；否则会把「分类定义」当成一个书的列表，发现页于是
 /// 多出一层「发现」，点进去也打不开。取不到、或者取回来的不是分类
@@ -434,6 +457,26 @@ pub fn baseUrlOf(s: BookSource) -> string {
     u = u.slice(0, u.count() - 1)
   }
   return u
+}
+
+/// 登录要图形验证码的站点（`checkcode.php`）：目前是轻小说文库。
+/// 它的 jsLib 只 POST 账号密码，宿主得把验证码图给读者看，再带上
+/// `checkcode` 一起 POST；这里返回那张图的地址，别的书源是空。
+pub fn captchaLoginOf(s: BookSource) -> string {
+  let base = baseUrlOf(s)
+  if base.isEmpty() { return "" }
+  let host = base.lower()
+  if host.contains("://www.wenku8.net") || host.contains("://wenku8.net") {
+    return "{base}/checkcode.php"
+  }
+  return ""
+}
+
+/// 验证码登录 POST 的地址（和登录页同一个 `do=submit`）。
+pub fn captchaSubmitOf(s: BookSource) -> string {
+  let base = baseUrlOf(s)
+  if base.isEmpty() { return "" }
+  return "{base}/login.php?do=submit"
 }
 
 fn stringOf(v: json.Value) -> string = match v {
