@@ -81,19 +81,31 @@ jobs:
       - name: Build
         run: asuka build -p android
 
-      # The .aab is what Play takes; a phone takes an .apk. bundletool turns
-      # the one into the other, as a universal one that installs anywhere.
+      # The .aab is what Play takes; a phone takes an .apk. bundletool makes
+      # one for the device it's asked about — arm64 here, which is every phone
+      # that matters: a universal .apk carries all three ABIs and is ~100 MB
+      # for nothing.
       - name: APK
         run: |
           version=1.17.2
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/bundletool.jar" \
             "https://github.com/google/bundletool/releases/download/$version/bundletool-all-$version.jar"
+          cat > "$RUNNER_TEMP/arm64.json" <<'JSON'
+          {
+            "supportedAbis": ["arm64-v8a"],
+            "supportedLocales": ["zh", "en"],
+            "screenDensity": 420,
+            "sdkVersion": 34
+          }
+          JSON
           aab="$(ls dist/*.aab | head -1)"
           java -jar "$RUNNER_TEMP/bundletool.jar" build-apks \
-            --bundle="$aab" --output="$RUNNER_TEMP/quire.apks" --mode=universal \
+            --bundle="$aab" --output="$RUNNER_TEMP/quire.apks" \
+            --device-spec="$RUNNER_TEMP/arm64.json" \
             --ks="$ASUKA_KEYSTORE" --ks-key-alias="$ASUKA_KEY_ALIAS" \
             --ks-pass="pass:$ASUKA_KEYSTORE_PASSWORD" --key-pass="pass:$ASUKA_KEY_PASSWORD"
-          unzip -p "$RUNNER_TEMP/quire.apks" universal.apk > "dist/$(basename "${aab%.aab}").apk"
+          unzip -o -q "$RUNNER_TEMP/quire.apks" -d "$RUNNER_TEMP/apks"
+          cp "$RUNNER_TEMP/apks/"*arm64-v8a*.apk "dist/$(basename "${aab%.aab}").apk"
           ls -la dist
 
       - uses: actions/upload-artifact@v6
