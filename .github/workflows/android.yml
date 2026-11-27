@@ -72,6 +72,21 @@ jobs:
       - name: Build
         run: asuka build -p android
 
+      # The .aab is what Play takes; a phone takes an .apk. bundletool turns
+      # the one into the other, as a universal one that installs anywhere.
+      - name: APK
+        run: |
+          version=1.17.2
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/bundletool.jar" \
+            "https://github.com/google/bundletool/releases/download/$version/bundletool-all-$version.jar"
+          aab="$(ls dist/android/*.aab | head -1)"
+          java -jar "$RUNNER_TEMP/bundletool.jar" build-apks \
+            --bundle="$aab" --output="$RUNNER_TEMP/quire.apks" --mode=universal \
+            --ks="$ASUKA_KEYSTORE" --ks-key-alias="$ASUKA_KEY_ALIAS" \
+            --ks-pass="pass:$ASUKA_KEYSTORE_PASSWORD" --key-pass="pass:$ASUKA_KEY_PASSWORD"
+          unzip -p "$RUNNER_TEMP/quire.apks" universal.apk > "dist/android/$(basename "${aab%.aab}").apk"
+          ls -la dist/android
+
       - uses: actions/upload-artifact@v6
         with:
           name: android
