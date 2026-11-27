@@ -245,13 +245,25 @@ private fun loadPage(path: String): Bitmap? {
 
 /// What the view is: the page, the highlights over it, the touches it takes.
 private class AndroidBookPage(events: BookPageEvents) : BookPage {
-    private val view = PageView(events.context, events)
-    override val view: View get() = this.view
+    private val page = PageView(events.context, events)
 
-    override fun setPath(value: String) = view.setPath(value)
-    override fun setHighlights(value: List<Highlight>) = view.setHighlights(value)
-    override fun setSelecting(value: Boolean) = view.setSelecting(value)
-    override fun setScale(value: Double) = view.setScale(value)
+    override val view: View get() = page
+
+    override fun setPath(value: String) {
+        page.setPath(value)
+    }
+
+    override fun setHighlights(value: List<Highlight>) {
+        page.setHighlights(value)
+    }
+
+    override fun setSelecting(value: Boolean) {
+        page.setSelecting(value)
+    }
+
+    override fun setScale(value: Double) {
+        page.setScale(value)
+    }
 }
 
 /// Where a font's file is on Android, by family name. The system's faces are
