@@ -32,6 +32,15 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # Gradle downloads AGP and Kotlin from Maven each run, and asuka
+      # downloads its own host for each ABI: both are the build's minutes.
+      - uses: gradle/actions/setup-gradle@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/asuka
+          key: asuka-hosts-${{ runner.os }}-v1
+
       # reader.asuka embeds the font, and the repository doesn't carry it:
       # the script downloads the pinned WOFF.
       - name: Fetch the font
@@ -79,19 +88,19 @@ jobs:
           version=1.17.2
           curl -fsSL --retry 3 -o "$RUNNER_TEMP/bundletool.jar" \
             "https://github.com/google/bundletool/releases/download/$version/bundletool-all-$version.jar"
-          aab="$(ls dist/android/*.aab | head -1)"
+          aab="$(ls dist/*.aab | head -1)"
           java -jar "$RUNNER_TEMP/bundletool.jar" build-apks \
             --bundle="$aab" --output="$RUNNER_TEMP/quire.apks" --mode=universal \
             --ks="$ASUKA_KEYSTORE" --ks-key-alias="$ASUKA_KEY_ALIAS" \
             --ks-pass="pass:$ASUKA_KEYSTORE_PASSWORD" --key-pass="pass:$ASUKA_KEY_PASSWORD"
-          unzip -p "$RUNNER_TEMP/quire.apks" universal.apk > "dist/android/$(basename "${aab%.aab}").apk"
-          ls -la dist/android
+          unzip -p "$RUNNER_TEMP/quire.apks" universal.apk > "dist/$(basename "${aab%.aab}").apk"
+          ls -la dist
 
       - uses: actions/upload-artifact@v6
         with:
           name: android
           path: |
-            dist/android/*.aab
-            dist/android/*.apk
+            dist/*.aab
+            dist/*.apk
           if-no-files-found: error
           retention-days: 14
