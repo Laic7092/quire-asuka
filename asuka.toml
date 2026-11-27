@@ -54,6 +54,7 @@ macos-x64 = ["lib/macos-x64/libebook_abi.a", "lib/macos-x64/liblegado_engine.a"]
 ios-arm64 = ["lib/ios-arm64/libebook_abi.a", "lib/ios-arm64/liblegado_engine.a"]
 ios-simulator-arm64 = "lib/ios-simulator-arm64/libebook_abi.a"
 ios-simulator-x64 = "lib/ios-simulator-x64/libebook_abi.a"
+android-arm = "lib/android-arm/libebook_abi.a"
 android-arm64 = "lib/android-arm64/libebook_abi.a"
 android-x64 = "lib/android-x64/libebook_abi.a"
 # The web's is wasm32 (wasi), built from the same release with

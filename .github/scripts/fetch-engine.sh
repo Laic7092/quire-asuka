@@ -47,7 +47,11 @@ for target in "$@"; do
   # the target's `-gnu` build (the MSVC .lib is a pile of duplicate symbols
   # there).
   asset="$target"
-  case "$target" in windows-*) asset="$target-gnu" ;; esac
+  case "$target" in
+    windows-*) asset="$target-gnu" ;;
+    # asuka's name for 32-bit ARM, the release's name for it.
+    android-arm) asset="android-armv7" ;;
+  esac
   file="libebook_abi-$asset.tar.gz"
   echo "fetch-engine: $target"
   fetch "$base/$file" "$tmp/$file"

@@ -39,6 +39,16 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # asuka refuses to cross-compile to Windows without Zig, even when
+      # ASUKA_CC names another driver: it's the cross-compiler it knows.
+      - name: Install Zig
+        run: |
+          version=0.14.1
+          curl -fsSL -o "$RUNNER_TEMP/zig.tar.xz" \
+            "https://ziglang.org/download/$version/zig-x86_64-linux-$version.tar.xz"
+          tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/zig-x86_64-linux-$version" >> "$GITHUB_PATH"
+
       # The target's CRT and archiver: mingw-w64's gcc honours -mwindows and
       # -Wl,--subsystem,windows, and the engine's .a names mingw's ar.
       - name: Install mingw-w64
