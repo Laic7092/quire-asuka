@@ -31,6 +31,8 @@ pub struct BookInfoRule {
   intro: string = ""
   coverUrl: string = ""
   tocUrl: string = ""
+  /// 文件型书源的下载链接，一行一个 `名称::地址`（也可以只是地址）。
+  downloadUrls: string = ""
 }
 
 pub struct TocRule {
@@ -63,6 +65,10 @@ pub struct BookSource {
   searchUrl: string = ""
   exploreUrl: string = ""
   variable: string = ""
+  /// 变量的说明，显示在变量编辑器里。
+  variableComment: string = ""
+  /// 网页登录的地址。引擎自己不打开浏览器，留着给宿主用。
+  loginUrl: string = ""
   concurrentRate: string = ""
   /// 有些书源没有某一组规则（没有详情页、没有目录）：缺的那组是空的，
   /// 不是读不出来。
@@ -296,6 +302,63 @@ pub fn varsOf(s: BookSource) -> [string: string] {
     }
   }
   return out
+}
+
+/// 文件型书源（`bookSourceType: 3`）：没有章节，只有 `downloadUrls`。
+pub fn isDownloadSource(s: BookSource) -> bool = s.bookSourceType == 3
+
+/// 一个可下载的文件。`name` 是书源给的名字（`TXT`、`简体(G)` 之类）。
+pub struct DownloadOption {
+  name: string
+  url: string
+}
+
+fn downloadKindOf(url: string) -> string {
+  let lower = url.lower()
+  if lower.contains(".epub") { return "EPUB" }
+  if lower.contains(".txt") || lower.contains("type=txt") || lower.contains("type=utf8") {
+    return "TXT"
+  }
+  return "文件"
+}
+
+/// `ruleBookInfo.downloadUrls`：一行一个 `名称::地址`，或者只是一个地址。
+/// 空行、`#` 开头的注释和重复的地址都不算。
+pub fn downloadOptions(raw: string) -> [DownloadOption] {
+  var out: [DownloadOption] = []
+  for line in raw.lines() {
+    let row = line.trim()
+    if row.isEmpty() || row.hasPrefix("#") { continue }
+    var name = ""
+    var url = row
+    if let at = row.find("::") {
+      name = row.byteSlice(0, at).trim()
+      url = row.byteSlice(at + 2, row.byteCount()).trim()
+    }
+    if url.isEmpty() { continue }
+    if out.any(o => o.url == url) { continue }
+    out.push(DownloadOption(
+      name: if name.isEmpty() { "{downloadKindOf(url)} {out.count() + 1}" } else { name },
+      url: url,
+    ))
+  }
+  return out
+}
+
+/// 把一段变量 JSON 写成引擎能存的脚本：整段进 `source.getVariable()`，
+/// 每个键再进 `source.get()`。两种写法书源都有用到（wenku8 的 jsLib 读
+/// `getVariable()` 解析 JSON，另一类直接读 `get('user')`）。
+pub fn variablesScript(text: string) -> string {
+  let t = text.trim()
+  var script = "source.putVariable({json.encode(t)});"
+  if let v = try? json.parse(t) {
+    if let o = v.asObject() {
+      for (k, val) in o {
+        script += "\nsource.put({json.encode(k)}, {json.encode(stringOf(val))});"
+      }
+    }
+  }
+  return script
 }
 
 /// 书源自己的地址：相对链接按它解析，{{baseUrl}} 是它。

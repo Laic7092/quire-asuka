@@ -67,6 +67,19 @@ const char *legado_toc(LegadoEngine *engine, const char *source_json,
 const char *legado_content(LegadoEngine *engine, const char *source_json,
                      const char *book_json, const char *chapter_json);
 
+/*
+ * Download a file with the source's headers, cookies and proxy, writing it to
+ * dest_path. Answers
+ * {"path":"…","size":123,"contentType":null,"charset":"gb18030","url":"…"}.
+ * Parent directories are created. The bytes are written verbatim; parse the
+ * file with the reported charset. NULL on failure, reason in legado_last_error.
+ *
+ * This is how a download source (bookSourceType 3, e.g. 知轩藏书) delivers its
+ * book: legado_info gives ruleBookInfo.downloadUrls, one "name::url" per line.
+ */
+const char *legado_download(LegadoEngine *engine, const char *source_json,
+                      const char *url, const char *dest_path);
+
 /* The source's Cookie header for a URL. */
 const char *legado_cookie_header(LegadoEngine *engine, const char *source_json,
                            const char *url);

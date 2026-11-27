@@ -33,3 +33,25 @@ test "the native engine turns chapter HTML into text" {
   expect(text.contains("第二&段"))
   expect(!text.contains("<p>"))
 }
+
+test "a source's variables are what the engine stores, not the JSON's field" {
+  if !sources.nativeAvailable() { return }
+  let one = r#"{"bookSourceName":"变量","bookSourceUrl":"https://vars.test","variable":"{\"user\":\"from-json\"}"}"#
+  let def = try sources.decodeSource(try sources.parseList(one)[0])
+  // 引擎不读 JSON 里的 variable：导入时由 seedVariables 写，这里直接存一次。
+  try await sources.saveVariables(def, r#"{"user":"a\"b","pass":"密码"}"#)
+  let user = try await sources.nativeEval(sources.sourceJSON(def), script: "source.get('user')")
+  let stored = try await sources.storedVariables(def)
+  expect(user == "a\"b")
+  expect(stored.contains("密码"))
+}
+
+test "a cookie the host sets is the source's session" {
+  if !sources.nativeAvailable() { return }
+  let one = r#"{"bookSourceUrl":"https://cookie.test"}"#
+  let def = try sources.decodeSource(try sources.parseList(one)[0])
+  try await sources.setCookieOf(def, url: "https://cookie.test/", cookie: "sid=abc; theme=dark")
+  let header = try await sources.cookieHeaderOf(def, url: "https://cookie.test/page")
+  expect(header.contains("sid=abc"))
+  expect(header.contains("theme=dark"))
+}

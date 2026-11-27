@@ -1,7 +1,8 @@
 // legado-engine, behind one handle this app keeps: the book sources' HTTP
-// clients, cookies, variables, rules and JavaScript. legado-engine 0.2.0 can
-// use one handle from several threads at once, so the app's searches overlap;
-// an older engine still gets one call at a time, behind the lock below.
+// clients, cookies, variables, rules and JavaScript. legado-engine 0.3.0 can
+// use one handle from several threads at once (0.2.0 made the ABI's answers
+// per calling thread), so the app's searches overlap; an older engine still
+// gets one call at a time, behind the lock below.
 //
 // A platform with the engine's static library built (Linux, macOS, an iPhone)
 // compiles the calls below; one without it (the iOS simulator, Windows for
@@ -247,6 +248,63 @@ const char *quire_legado_content(const char *source, const char *book_json,
   return copy;
 }
 
+/// A file the source links (a download source's TXT, say), fetched with the
+/// source's own headers, cookies and proxy. The engine writes it atomically
+/// and says which bytes they are; the app reads the file with the reported
+/// charset.
+const char *quire_legado_download(const char *source, const char *url,
+                                  const char *dest_path) {
+  int locked = 0;
+  LegadoEngine *engine = begin_call(&locked);
+  if (engine == NULL) return NULL;
+  const char *text = legado_download(engine, source, url, dest_path);
+  if (text == NULL) remember_failure(engine);
+  const char *copy = text != NULL ? keep(text) : NULL;
+  end_call(locked);
+  return copy;
+}
+
+/// Run a script with the source's bindings. The app uses it for what has no
+/// call of its own: the source's variables (`source.put` / `source.putVariable`,
+/// which the engine keeps under its storage directory), and a source's own
+/// login entry point.
+const char *quire_legado_eval(const char *source, const char *script,
+                              const char *input, const char *base_url) {
+  int locked = 0;
+  LegadoEngine *engine = begin_call(&locked);
+  if (engine == NULL) return NULL;
+  const char *text = legado_eval(engine, source, script, input, base_url);
+  if (text == NULL) remember_failure(engine);
+  const char *copy = text != NULL ? keep(text) : NULL;
+  end_call(locked);
+  return copy;
+}
+
+/// A Cookie header from outside the engine (a WebView the user signed in in).
+/// It lands in the same per-source jar the rules use.
+const char *quire_legado_set_cookie(const char *source, const char *url,
+                                    const char *cookie) {
+  int locked = 0;
+  LegadoEngine *engine = begin_call(&locked);
+  if (engine == NULL) return NULL;
+  const char *text = legado_set_cookie(engine, source, url, cookie);
+  if (text == NULL) remember_failure(engine);
+  const char *copy = text != NULL ? keep(text) : NULL;
+  end_call(locked);
+  return copy;
+}
+
+const char *quire_legado_cookie_header(const char *source, const char *url) {
+  int locked = 0;
+  LegadoEngine *engine = begin_call(&locked);
+  if (engine == NULL) return NULL;
+  const char *text = legado_cookie_header(engine, source, url);
+  if (text == NULL) remember_failure(engine);
+  const char *copy = text != NULL ? keep(text) : NULL;
+  end_call(locked);
+  return copy;
+}
+
 /// Run one rule against text already in hand: no request, no source state.
 /// The app uses it to turn chapter HTML into text, and to prove the engine
 /// is the one linked.
@@ -310,6 +368,37 @@ const char *quire_legado_content(const char *source, const char *book_json,
   (void)source;
   (void)book_json;
   (void)chapter_json;
+  return NULL;
+}
+
+const char *quire_legado_download(const char *source, const char *url,
+                                  const char *dest_path) {
+  (void)source;
+  (void)url;
+  (void)dest_path;
+  return NULL;
+}
+
+const char *quire_legado_eval(const char *source, const char *script,
+                              const char *input, const char *base_url) {
+  (void)source;
+  (void)script;
+  (void)input;
+  (void)base_url;
+  return NULL;
+}
+
+const char *quire_legado_set_cookie(const char *source, const char *url,
+                                    const char *cookie) {
+  (void)source;
+  (void)url;
+  (void)cookie;
+  return NULL;
+}
+
+const char *quire_legado_cookie_header(const char *source, const char *url) {
+  (void)source;
+  (void)url;
   return NULL;
 }
 

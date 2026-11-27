@@ -1,0 +1,59 @@
+// 书源的导入与管理：先看清有什么，再决定导不导；书源一多，先搜索再翻。
+
+import ./sources
+
+fn demoStore() -> sources.Sources {
+  let s = sources.Sources()
+  s.entries = [
+    sources.Entry(
+      id: "a",
+      name: "甲源",
+      url: "https://a.test",
+      json: r#"{"bookSourceName":"甲源","bookSourceUrl":"https://a.test"}"#,
+    ),
+    sources.Entry(
+      id: "b",
+      name: "乙源",
+      url: "https://b.test",
+      json: r#"{"bookSourceName":"乙源","bookSourceUrl":"https://b.test"}"#,
+    ),
+  ]
+  return s
+}
+
+component ManagerHarness(store: sources.Sources) {
+  provide store
+  SourceManager()
+}
+
+component ImportHarness(store: sources.Sources) {
+  provide store
+  SourceImport()
+}
+
+test "the manager finds a source by name" {
+  let app = mount(ManagerHarness(demoStore()))
+  await app.idle()
+  app.expect("甲源")
+  app.expect("乙源")
+  app.type("乙", into: "搜索书源（名字、地址或分组）")
+  await app.idle()
+  app.expect("乙源")
+  app.expectNo("甲源")
+  app.expect("匹配 1 个 · 共 2 个书源")
+}
+
+test "pasting a collection says what is in it, then imports it" {
+  let store = sources.Sources()
+  let app = mount(ImportHarness(store))
+  await app.idle()
+  let collection = r#"[{"bookSourceName":"甲源","bookSourceUrl":"https://a.test"},{"bookSourceName":"乙源","bookSourceUrl":"https://b.test"}]"#
+  app.type(collection, into: "把书源 JSON 粘在这里（单个或一份合集）")
+  await app.idle()
+  app.expect("识别到 2 个书源：甲源、乙源")
+  app.tap("导入")
+  await app.idle()
+  app.expect("导入 2 个书源")
+  app.expect("新导入：甲源、乙源")
+  expect(store.entries.count() == 2)
+}

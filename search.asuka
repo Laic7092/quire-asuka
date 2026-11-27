@@ -2,10 +2,13 @@
 //
 // 标题栏的搜索框是系统的搜索栏；搜到的书按书名排，点一本看详情和目录，
 // 可以试读一章，也可以放进书架。入架的是一本「在线书」：书架只记书源和
-// 书页，目录存一份，正文读到哪取到哪，不整本下载。
+// 书页，目录存一份，正文读到哪取到哪，不整本下载。文件型书源（没有章节，
+// 只有 downloadUrls）的书不这样入架：它的文件下载下来，就是一本本地书。
 
+import platform/device
 import platform/dialog
 import std/fs
+import std/json
 
 import ./lib
 import ./remote
@@ -68,6 +71,25 @@ fn fileTitle(title: string) -> string {
   }
   let t = out.trim()
   return if t.isEmpty() { "网络小说" } else { t }
+}
+
+/// 下载下来的文件名：书名，加上书源给的名字（有多个文件时），扩展名
+/// 看地址和名字（`type=txt` 也算 TXT）。
+fn downloadNameFor(title: string, option: sources.DownloadOption, count: int) -> string {
+  let hint = "{option.name} {option.url}".lower()
+  let ext = if hint.contains("epub") { ".epub" } else { ".txt" }
+  var base = fileTitle(title)
+  if count > 1 { base = "{base}-{fileTitle(option.name)}" }
+  return "{base}{ext}"
+}
+
+/// 压缩包、PDF 之类，下载下来阅读器也打不开：在点下去之前说清楚。
+fn downloadUnsupported(url: string) -> bool {
+  let lower = url.lower()
+  for ext in [".zip", ".rar", ".7z", ".pdf", ".mobi", ".azw3"] {
+    if lower.contains(ext) { return true }
+  }
+  return false
 }
 
 /// 搜索结果里的一条：封面、书名、作者，和它来自哪个书源。
@@ -154,6 +176,8 @@ screen SearchBook(hit: Hit) {
 
   state adding = false
   state note = ""
+  /// 正在下的文件地址（空的是没有下载）：按钮跟着它说。
+  state downloading = ""
 
   let detail = load detailOf(hit)
 
@@ -202,6 +226,44 @@ screen SearchBook(hit: Hit) {
       note = e.message
     }
     adding = false
+  }
+
+  /// 文件型书源的书：引擎用自己的 header/cookie/代理把文件取下来，原样
+  /// 落到 books/，再走和「从文件导入」同一条路——之后它就是一本本地书。
+  async fn downloadAndOpen(d: sources.Detail, f: sources.DownloadOption) {
+    if !downloading.isEmpty() { return }
+    let def = definition()
+    if def == none {
+      note = "这个书源已经不在列表里了"
+      return
+    }
+    if downloadUnsupported(f.url) {
+      note = "这个文件不是 TXT 或 EPUB：{f.url}"
+      return
+    }
+    let name = downloadNameFor(d.info.book.name, f, d.files.count())
+    let dir = fs.join([fs.appDir(), "books"])
+    let path = fs.join([dir, name])
+    downloading = f.url
+    note = "正在下载 {f.name}…"
+    do {
+      try await spawn { try fs.mkdirAll(dir) }
+      let file = try await sources.downloadOf(def!, url: f.url, into: path)
+      let kb = file.size / 1024
+      note = "已下载 {kb} KB（{file.charset}），正在导入…"
+      let added = try await library.importFile(path)
+      if let row = library.shelf.find(s => s.path == "books/{name}") {
+        note = if added { "已加入书架：{row.title}" } else { "书架上已经有这本书" }
+        emit open(row.book())
+      } else {
+        note = "下载好了，但书架上没有找到它"
+        try? fs.remove(path)
+      }
+    } catch e {
+      note = e.message
+      try? fs.remove(path)
+    }
+    downloading = ""
   }
 
   SafeArea {
@@ -262,7 +324,11 @@ screen SearchBook(hit: Hit) {
                   color: .secondaryLabel
                 }
               }
-              Text("{hit.sourceName} · {d.chapters.count()} 章") {
+              Text(if d.chapters.isEmpty() {
+                if d.files.isEmpty() { "{hit.sourceName} · 没有章节" } else { "{hit.sourceName} · {d.files.count()} 个文件" }
+              } else {
+                "{hit.sourceName} · {d.chapters.count()} 章"
+              }) {
                 font: .caption
                 color: .tertiaryLabel
               }
@@ -282,42 +348,87 @@ screen SearchBook(hit: Hit) {
               lines: 7
             }
           }
+          if !d.files.isEmpty() {
+            Column {
+              gap: 8
+              Text(if d.chapters.isEmpty() { "下载后加入书架" } else { "也可以下载整本" }) {
+                font: .caption.bold()
+                color: .secondaryLabel
+              }
+              for f in d.files key f.url {
+                Row {
+                  gap: 10
+                  align: .center
+                  Text(f.name) {
+                    font: .footnote
+                    grow: 1
+                    lines: 1
+                  }
+                  Button(if downloading == f.url { "下载中…" } else { "下载并导入" }) {
+                    on press { await downloadAndOpen(d, f) }
+                    disabled: !downloading.isEmpty()
+                  }
+                }
+              }
+            }
+          }
           if !note.isEmpty() {
             Text(note) {
               font: .footnote
               color: .tertiaryLabel
             }
           }
-          Row {
-            gap: 10
-            Button(if adding { "正在加入…" } else { "加入书架" }) {
-              on press { await addToShelf(d) }
-              disabled: adding
+          if !d.chapters.isEmpty() {
+            Row {
+              gap: 10
+              Button(if adding { "正在加入…" } else { "加入书架" }) {
+                on press { await addToShelf(d) }
+                disabled: adding
+              }
             }
           }
         }
-        List {
-          appearance: .plain
-          grow: 1
-          for (i, c) in d.chapters.enumerated() key i {
-            Row {
-              gap: 10
-              align: .center
-              padding: [11, lib.pageKeyline]
-              on press { push(SearchChapter(hit, c)) }
-              Text("{i + 1}") {
-                font: .caption
-                color: .tertiaryLabel
-                width: 34
-              }
-              Text(c.title) {
-                font: .body
-                grow: 1
-                lines: 1
-              }
-              Symbol(Icons.disclosure) {
-                font: .caption
-                color: .tertiaryLabel
+        if d.chapters.isEmpty() {
+          Column {
+            grow: 1
+            justify: .center
+            align: .center
+            gap: 8
+            padding: [24, 30]
+            Text(if d.files.isEmpty() {
+              "这个书源没有给出章节，也没有给出下载地址。"
+            } else {
+              "文件型书源没有章节：下载下来就是一本本地书，按 TXT 的章节读。"
+            }) {
+              font: .footnote
+              color: .secondaryLabel
+              textAlign: .center
+            }
+          }
+        } else {
+          List {
+            appearance: .plain
+            grow: 1
+            for (i, c) in d.chapters.enumerated() key i {
+              Row {
+                gap: 10
+                align: .center
+                padding: [11, lib.pageKeyline]
+                on press { push(SearchChapter(hit, c)) }
+                Text("{i + 1}") {
+                  font: .caption
+                  color: .tertiaryLabel
+                  width: 34
+                }
+                Text(c.title) {
+                  font: .body
+                  grow: 1
+                  lines: 1
+                }
+                Symbol(Icons.disclosure) {
+                  font: .caption
+                  color: .tertiaryLabel
+                }
               }
             }
           }
@@ -429,7 +540,8 @@ fn sourceGroupNames(all: [sources.Entry]) -> [string] {
   return names
 }
 
-fn sourceSections(all: [sources.Entry], filter: string) -> [SourceSection] {
+fn sourceSections(all: [sources.Entry], filter: string, query: string) -> [SourceSection] {
+  let q = query.trim()
   var out: [SourceSection] = []
   for name in sourceGroupNames(all) {
     if !filter.isEmpty() && filter != name { continue }
@@ -437,7 +549,9 @@ fn sourceSections(all: [sources.Entry], filter: string) -> [SourceSection] {
     for e in all {
       let groups = sources.entryGroups(e)
       let inGroup = if name == sourceUngrouped { groups.isEmpty() } else { groups.contains(name) }
-      if inGroup { rows.push(e) }
+      let matches = q.isEmpty() || e.name.contains(q, ignoreCase: true) ||
+        e.url.contains(q, ignoreCase: true) || e.group.contains(q, ignoreCase: true)
+      if inGroup && matches { rows.push(e) }
     }
     rows.sort(key: e => e.name)
     if !rows.isEmpty() {
@@ -451,11 +565,49 @@ fn sourceSections(all: [sources.Entry], filter: string) -> [SourceSection] {
   return out
 }
 
+/// 粘贴时先看一眼：这段 JSON 里有几个书源、叫什么，或者哪里不对。
+struct SourcePreview {
+  count: int = 0
+  names: [string] = []
+  error: string = ""
+}
+
+/// 书源变量要写的是一段 JSON 对象；空的不算。
+fn isJsonObject(text: string) -> bool {
+  let t = text.trim()
+  if t.isEmpty() { return false }
+  if let v = try? json.parse(t) {
+    return v.asObject() != none
+  }
+  return false
+}
+
+fn previewOf(text: string) -> SourcePreview {
+  if text.trim().isEmpty() { return SourcePreview() }
+  do {
+    let list = try sources.parseList(text)
+    return SourcePreview(count: list.count(), names: list.map(v => sources.nameOf(v)))
+  } catch e {
+    return SourcePreview(error: e.message)
+  }
+}
+
 component SourceFilterChip(title: string, selected: bool) {
   event choose
 
   Button(title) {
     variant: if selected { .tinted } else { .bordered }
+    on press { emit choose }
+  }
+}
+
+/// 发现页的一个分类：几个字的标签，一行排好几个，不各占一整行。
+component CategoryChip(title: string) {
+  event choose
+
+  Button(title) {
+    variant: .bordered
+    font: .footnote
     on press { emit choose }
   }
 }
@@ -469,14 +621,86 @@ component SourceManager {
   state selecting = false
   state selected: [string] = []
   state filter = ""
+  state query = ""
   state moving = false
   state groupText = ""
 
   let all = allSources.list()
   let filters = sourceGroupNames(all)
-  let sections = sourceSections(all, filter)
+  let sections = sourceSections(all, filter, query)
   let shown = sections.flatMap(section => section.rows)
   let allSelected = !shown.isEmpty() && shown.all(e => selected.contains(e.id))
+
+  /// 正在编辑哪条书源的变量（空的是收起），和这段 JSON、说明与结果。
+  state loginId = ""
+  state loginText = ""
+  state loginNote = ""
+  state loginHelp = ""
+  state loginBusy = false
+  state verifying = false
+
+  async fn toggleLogin(e: sources.Entry) {
+    if loginId == e.id {
+      loginId = ""
+      return
+    }
+    loginBusy = true
+    loginNote = ""
+    loginHelp = ""
+    loginText = ""
+    let def = allSources.definition(e)
+    if def == none {
+      loginNote = "这条书源读不出来"
+      loginBusy = false
+      return
+    }
+    let d = def!
+    loginHelp = d.variableComment.trim()
+    let stored = (try? await sources.storedVariables(d)) ?? ""
+    var text = stored.trim()
+    if text.isEmpty() { text = d.variable.trim() }
+    loginText = if text.isEmpty() { "\{}" } else { text }
+    loginId = e.id
+    loginBusy = false
+  }
+
+  async fn saveLogin(e: sources.Entry) {
+    if loginBusy { return }
+    let def = allSources.definition(e)
+    if def == none {
+      loginNote = "这条书源读不出来"
+      return
+    }
+    loginBusy = true
+    loginNote = ""
+    do {
+      try await sources.saveVariables(def!, loginText)
+      loginNote = "已保存，下一次请求会带上"
+    } catch err {
+      loginNote = err.message
+    }
+    loginBusy = false
+  }
+
+  /// 登录有没有用，只能问一次真请求：书源的登录是它自己的 jsLib 在
+  /// 搜索/发现时做的，ABI 没有单独问「登录了吗」的调用。
+  async fn verifyLogin(e: sources.Entry) {
+    if verifying { return }
+    let def = allSources.definition(e)
+    if def == none {
+      loginNote = "这条书源读不出来"
+      return
+    }
+    verifying = true
+    loginNote = "正在用这条书源搜一次…"
+    do {
+      let books = try await sources.search(def!, key: "我的", page: 1)
+      loginNote = "搜索可以用了，这次找到 {books.count()} 本"
+    } catch err {
+      loginNote = "还不行：{err.message}"
+    }
+    verifying = false
+  }
 
   fn toggle(id: string) {
     if selected.contains(id) {
@@ -533,7 +757,20 @@ component SourceManager {
         selected = []
         selecting = false
         filter = ""
+        loginId = ""
         snackbar("已删除 {count} 个书源")
+      }),
+    ])
+  }
+
+  fn askDeleteOne(e: sources.Entry) {
+    alert("删除「{e.name}」？", message: "书架上的在线书会打不开；删除也会同步到其他设备。", actions: [
+      .button(title: "取消", run: () => {}),
+      .button(title: "删除", role: .destructive, run: () => {
+        allSources.remove(e.id)
+        filter = ""
+        if loginId == e.id { loginId = "" }
+        snackbar("已删除「{e.name}」")
       }),
     ])
   }
@@ -551,6 +788,13 @@ component SourceManager {
         grow: 1
       }
       if !all.isEmpty() {
+        // 导入从这里也能进，不必先关掉这一页。
+        Button("") {
+          icon: Icons.add
+          variant: .glass
+          tooltip: "导入书源"
+          on press { present(SourceImport()) }
+        }
         // 一直是「多选」，靠高亮表示开着：不再在「选择」和「完成」之间
         // 秒切，手指按下去不会觉得按钮自己跳了一下。完成在下面那一条。
         Button("多选") {
@@ -569,7 +813,11 @@ component SourceManager {
       }
     }
 
-    Text("{allSources.count()} 个书源 · {allSources.enabledCount()} 个在用") {
+    Text(if query.trim().isEmpty() {
+      "{allSources.count()} 个书源 · {allSources.enabledCount()} 个在用"
+    } else {
+      "匹配 {shown.count()} 个 · 共 {allSources.count()} 个书源"
+    }) {
       font: .footnote
       color: .secondaryLabel
     }
@@ -597,6 +845,26 @@ component SourceManager {
         }
       }
     } else {
+      Row {
+        gap: 8
+        align: .center
+        TextField {
+          bind text: query
+          placeholder: "搜索书源（名字、地址或分组）"
+          grow: 1
+          autocapitalize: .off
+          autocorrect: .no
+        }
+        if !query.isEmpty() {
+          Button("") {
+            icon: Icons.close
+            variant: .plain
+            tooltip: "清空搜索"
+            on press { query = "" }
+          }
+        }
+      }
+
       if !filters.isEmpty() {
         Scroll {
           width: 100%
@@ -635,73 +903,159 @@ component SourceManager {
         }
       }
 
-      List {
-        grow: 1
-        appearance: .plain
-        for section in sections key section.key {
-          Column {
-            Row {
-              gap: 8
-              align: .center
-              padding: [10, 0, 4, 0]
-              on press {
-                if selecting { toggleGroup(section.rows) }
-              }
-              Text(section.title) {
-                font: .caption.bold()
-                color: .secondaryLabel
-                grow: 1
-              }
-              Text("{section.rows.count()}") {
-                font: .caption
-                color: .tertiaryLabel
-              }
-              if selecting {
-                Text(if section.rows.all(e => selected.contains(e.id)) { "取消本组" } else { "全选本组" }) {
-                  font: .caption
-                  color: .accent
-                }
-              }
+      if shown.isEmpty() {
+        Column {
+          gap: 10
+          padding: [30, 0]
+          align: .center
+          Text("没有找到书源") { font: .headline }
+          Text(if query.trim().isEmpty() {
+            "这个分组里没有书源。"
+          } else {
+            "名字、地址和分组里都没有「{query.trim()}」。"
+          }) {
+            font: .footnote
+            color: .secondaryLabel
+            textAlign: .center
+          }
+          Button("清除搜索与分组") {
+            on press {
+              query = ""
+              filter = ""
             }
-            for e in section.rows key e.id {
+          }
+        }
+      } else {
+        List {
+          grow: 1
+          appearance: .plain
+          for section in sections key section.key {
+            Column {
               Row {
-                gap: 10
+                gap: 8
                 align: .center
-                padding: [9, 0]
-                if selecting {
-                  Toggle {
-                    on: selected.contains(e.id)
-                    checkbox: true
-                    height: 32
-                    on change(v) { toggle(e.id) }
-                  }
+                padding: [10, 0, 4, 0]
+                on press {
+                  if selecting { toggleGroup(section.rows) }
                 }
-                Column {
+                Text(section.title) {
+                  font: .caption.bold()
+                  color: .secondaryLabel
                   grow: 1
-                  gap: 2
-                  Text(e.name) {
-                    font: .body
-                    lines: 1
-                  }
-                  Text(if e.group.isEmpty() { e.url } else { "{e.group} · {e.url}" }) {
+                }
+                Text("{section.rows.count()}") {
+                  font: .caption
+                  color: .tertiaryLabel
+                }
+                if selecting {
+                  Text(if section.rows.all(e => selected.contains(e.id)) { "取消本组" } else { "全选本组" }) {
                     font: .caption
-                    color: .tertiaryLabel
-                    lines: 1
+                    color: .accent
                   }
                 }
-                if !selecting {
-                  Toggle {
-                    on: e.enabled
-                    checkbox: true
-                    height: 32
-                    on change(v) { allSources.setEnabled(e.id, v) }
+              }
+              for e in section.rows key e.id {
+                Column {
+                  gap: 0
+                  Row {
+                    gap: 10
+                    align: .center
+                    padding: [9, 0]
+                    if selecting {
+                      Toggle {
+                        on: selected.contains(e.id)
+                        checkbox: true
+                        height: 32
+                        on change(v) { toggle(e.id) }
+                      }
+                    }
+                    Column {
+                      grow: 1
+                      gap: 2
+                      opacity: if e.enabled { 1 } else { 0.45 }
+                      // 多选时整行都能点：不必去找那个小方框。
+                      on press { if selecting { toggle(e.id) } }
+                      Text(e.name) {
+                        font: .body
+                        lines: 1
+                      }
+                      Text(if e.group.isEmpty() { e.url } else { "{e.group} · {e.url}" }) {
+                        font: .caption
+                        color: .tertiaryLabel
+                        lines: 1
+                      }
+                    }
+                    if !selecting {
+                      Button("") {
+                        icon: Icons.key
+                        variant: .plain
+                        tooltip: "登录与变量"
+                        on press { await toggleLogin(e) }
+                      }
+                      Toggle {
+                        on: e.enabled
+                        checkbox: true
+                        height: 32
+                        on change(v) { allSources.setEnabled(e.id, v) }
+                      }
+                      Button("") {
+                        icon: Icons.trash
+                        variant: .plain
+                        on press { askDeleteOne(e) }
+                      }
+                    }
                   }
-                  Button("") {
-                    icon: Icons.trash
-                    variant: .plain
-                    on press {
-                      allSources.remove(e.id)
-                      filter = ""
+                  if loginId == e.id {
+                    Column {
+                      gap: 8
+                      padding: [2, 0, 10, 0]
+                      if !loginHelp.isEmpty() {
+                        Text(loginHelp) {
+                          font: .caption
+                          color: .secondaryLabel
+                        }
+                      }
+                      Text("按书源的说明填键和值：整段给 source.getVariable()，每个键也给 source.get()。") {
+                        font: .caption
+                        color: .tertiaryLabel
+                      }
+                      TextField {
+                        bind text: loginText
+                        multiline: true
+                        height: 120
+                        autocapitalize: .off
+                        autocorrect: .no
+                        placeholder: r#"{"user":"…","pass":"…"}"#
+                      }
+                      Text(if isJsonObject(loginText) {
+                        "这段 JSON 可以保存。"
+                      } else {
+                        r#"还不是一段 JSON 对象：要像 {"user":"…"} 这样。"#
+                      }) {
+                        font: .caption
+                        color: if isJsonObject(loginText) { .secondaryLabel } else { .orange }
+                      }
+                      Row {
+                        gap: 10
+                        Button(if loginBusy { "保存中…" } else { "保存" }) {
+                          on press { await saveLogin(e) }
+                          disabled: loginBusy || !isJsonObject(loginText)
+                        }
+                        Button(if verifying { "验证中…" } else { "搜一次验证" }) {
+                          on press { await verifyLogin(e) }
+                          disabled: verifying
+                        }
+                        Button("收起") {
+                          variant: .plain
+                          on press { loginId = "" }
+                        }
+                      }
+                      if !loginNote.isEmpty() {
+                        Text(loginNote) {
+                          font: .footnote
+                          color: .secondaryLabel
+                        }
+                      }
                     }
                   }
                 }
@@ -760,6 +1114,22 @@ component SourceImport {
   state address = ""
   state busy = false
   state note = ""
+  state error = ""
+  /// 这一次真正新进来的书源：导入后列出来，才知道进来了什么。
+  state addedNames: [string] = []
+
+  let preview = previewOf(text)
+  let ready = if mode == 0 { preview.count > 0 } else { !address.trim().isEmpty() }
+  let previewNames = if preview.names.count() <= 3 {
+    preview.names.joined(separator: "、")
+  } else {
+    "{preview.names.slice(0, 3).joined(separator: "、")} 等 {preview.count} 个"
+  }
+  let addedList = if addedNames.count() <= 5 {
+    addedNames.joined(separator: "、")
+  } else {
+    "{addedNames.slice(0, 5).joined(separator: "、")} 等 {addedNames.count()} 个"
+  }
 
   let engineNote = if sources.bookSourcesAvailable() {
     "书源规则与 JavaScript 由 {sources.nativeVersion()} 执行；cookie 和书源变量存在应用目录里。"
@@ -771,6 +1141,8 @@ component SourceImport {
     if busy { return }
     busy = true
     note = ""
+    error = ""
+    addedNames = []
     do {
       let report = if mode == 0 {
         try allSources.importText(text)
@@ -778,12 +1150,16 @@ component SourceImport {
         try await allSources.importUrl(address)
       }
       note = report.text()
+      addedNames = report.names
       if report.added > 0 {
         text = ""
         address = ""
+        // 书源自带的变量（Legado 的 `variable`）写进引擎：它不读 JSON
+        // 里的这个字段，登录用的账号密码于是要先到这里。
+        await allSources.seedVariables(report.ids)
       }
     } catch e {
-      note = e.message
+      error = e.message
     }
     busy = false
   }
@@ -792,21 +1168,48 @@ component SourceImport {
     if busy { return }
     busy = true
     note = ""
+    error = ""
+    addedNames = []
     do {
       let paths = try await dialog.open(
         title: "导入书源",
         button: "导入",
         filters: [dialog.Filter(name: "书源 JSON", extensions: ["json", "txt"])],
       )
+      var names: [string] = []
       for p in paths {
         let content = try await spawn { try fs.readText(p) }
         let report = try allSources.importText(content)
-        note = report.text()
+        note = if note.isEmpty() { report.text() } else { "{note}\n{report.text()}" }
+        for name in report.names { names.push(name) }
+        addedNames = names
+        await allSources.seedVariables(report.ids)
       }
     } catch e {
-      note = e.message
+      error = e.message
     }
     busy = false
+  }
+
+  /// 书源常常是别人发来的一段文字或一个链接：先读剪贴板，少一次长按。
+  async fn pasteClipboard() {
+    if busy { return }
+    do {
+      let got = try await device.clipboardText()
+      let t = got?.trim() ?? ""
+      if t.isEmpty() {
+        error = "剪贴板里没有文字"
+        return
+      }
+      error = ""
+      if mode == 0 {
+        text = t
+      } else {
+        address = t
+      }
+    } catch e {
+      error = e.message
+    }
   }
 
   Column {
@@ -839,6 +1242,18 @@ component SourceImport {
         placeholder: "把书源 JSON 粘在这里（单个或一份合集）"
         height: 200
       }
+      if !text.trim().isEmpty() {
+        // 先说是几个、叫什么，或者哪里不对：不用按了导入才知道。
+        Text(if preview.error.isEmpty() {
+          "识别到 {preview.count} 个书源：{previewNames}"
+        } else {
+          preview.error
+        }) {
+          font: .caption
+          color: if preview.error.isEmpty() { .secondaryLabel } else { .orange }
+          lines: 3
+        }
+      }
     } else {
       TextField {
         bind text: address
@@ -853,6 +1268,10 @@ component SourceImport {
       gap: 10
       Button(if busy { "导入中…" } else { "导入" }) {
         on press { await run() }
+        disabled: busy || !ready
+      }
+      Button("粘贴") {
+        on press { await pasteClipboard() }
         disabled: busy
       }
       Button("从文件导入") {
@@ -861,10 +1280,25 @@ component SourceImport {
       }
     }
 
+    if !error.isEmpty() {
+      Text(error) {
+        font: .footnote
+        color: .orange
+      }
+    }
+
     if !note.isEmpty() {
       Text(note) {
         font: .footnote
         color: .secondaryLabel
+      }
+    }
+
+    if !addedNames.isEmpty() {
+      Text("新导入：{addedList}") {
+        font: .caption
+        color: .secondaryLabel
+        lines: 3
       }
     }
 
@@ -1158,16 +1592,6 @@ screen Search {
 }
 
 /// 发现页的分类按书源分组：一个分类是一行，前面由 List 自己加书源的表头。
-fn categoryRowsOf(sources: [ExploreSource]) -> [ExploreHit] {
-  var out: [ExploreHit] = []
-  for s in sources {
-    for category in s.categories {
-      out.push(ExploreHit(sourceId: s.id, sourceName: s.name, category: category))
-    }
-  }
-  return out
-}
-
 /// List 的表头只拿到分区的 key，按书源 id 找回它的名字和分组。
 fn sourceById(sources: [ExploreSource], id: string) -> ExploreSource? {
   for s in sources {
@@ -1194,7 +1618,10 @@ screen Discover {
     .ready(list) => list
     _ => []
   }
-  let categories = categoryRowsOf(sources)
+  /// 只看一个书源（空的是全部）：书源一多，横着挑比竖着翻快。
+  state jump = ""
+  let picked = sources.find(s => s.id == jump)
+  let shown = if picked == none { sources } else { [picked!] }
 
   toolbar {
     Button("搜索书源") {
@@ -1275,43 +1702,65 @@ screen Discover {
           }
         }
       } else {
-        List {
-          appearance: .plain
+        Column {
           grow: 1
-          section: i => categories[i].sourceId
-          header: id => if let s = sourceById(sources, id) {
-            Column {
-              gap: 3
-              padding: [18, lib.pageKeyline, 8, lib.pageKeyline]
-              Text(s.name) {
-                font: .headline
-              }
-              Text(if s.group.isEmpty() { "{s.categories.count()} 个分类" } else { "{s.group} · {s.categories.count()} 个分类" }) {
-                font: .caption
-                color: .secondaryLabel
+          if sources.count() > 1 {
+            // 书源多的时候，先横着挑一个，再竖着看它的分类。
+            Scroll {
+              width: 100%
+              horizontal: true
+              padding: [10, lib.pageKeyline, 2, lib.pageKeyline]
+              Row {
+                gap: 8
+                SourceFilterChip("全部", jump.isEmpty()) {
+                  on choose { jump = "" }
+                }
+                for s in sources key s.id {
+                  SourceFilterChip(s.name, jump == s.id) {
+                    on choose { jump = if jump == s.id { "" } else { s.id } }
+                  }
+                }
               }
             }
-          } else {
-            View {}
           }
-          for row in categories key "{row.sourceId}:{row.category.url}" {
-            Row {
-              gap: 10
-              align: .center
-              padding: [12, lib.pageKeyline]
-              on press {
-                push(DiscoverList(row) {
-                  on open(book) { emit open(book) }
-                })
+          List {
+            appearance: .plain
+            grow: 1
+            section: i => shown[i].id
+            header: id => if let s = sourceById(shown, id) {
+              Row {
+                gap: 8
+                align: .center
+                padding: [16, lib.pageKeyline, 2, lib.pageKeyline]
+                Text(s.name) {
+                  font: .headline
+                  grow: 1
+                  lines: 1
+                }
+                Text(if s.group.isEmpty() { "{s.categories.count()} 个分类" } else { "{s.group} · {s.categories.count()} 个分类" }) {
+                  font: .caption
+                  color: .secondaryLabel
+                  lines: 1
+                }
               }
-              Text(row.category.title) {
-                font: .body
-                grow: 1
-                lines: 2
-              }
-              Symbol(Icons.disclosure) {
-                font: .caption
-                color: .tertiaryLabel
+            } else {
+              View {}
+            }
+            // 一个书源一行：分类是标签，一行放得下好几个。
+            for s in shown key s.id {
+              Row {
+                wrap: true
+                gap: 8
+                padding: [2, lib.pageKeyline, 18, lib.pageKeyline]
+                for c in s.categories key c.url {
+                  CategoryChip(c.title) {
+                    on choose {
+                      push(DiscoverList(ExploreHit(sourceId: s.id, sourceName: s.name, category: c)) {
+                        on open(book) { emit open(book) }
+                      })
+                    }
+                  }
+                }
               }
             }
           }

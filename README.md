@@ -10,7 +10,7 @@ Quire 是跨平台的本地阅读器，使用 [Asuka](https://asuka.egoist.dev) 
 - 阅读器：分页与连续滚动两种模式。
 - 目录与书签：读取 EPUB 目录；书签存的是引擎的稳定位置（段与段内字节，`spine:node:offset`），换字号、换行距、换屏幕之后还指着同一段原文，而不是同一个页码。目录页还会列出本章的图片，点一张按原分辨率查看。
 - 选中与笔记：长按页面上的一段原文，画出选区并可拖动；复制、加高亮，或写一条笔记。笔记和引文一起保存，两端也存成稳定位置，重排后高亮仍落在原处；在目录页按书面列出，点一条回到它所在的位置。
-- 书内搜索：阅读页右上角的放大镜搜整本书的正文，引擎按章建纯文本索引（同章再搜只查缓存）。命中带章名和一段前后文，点一条跳到那一行、在页上标出来；大小写不敏感，英文/数字按词边界（`the` 不命中 `theatre`），中文按子串。在线书和大 TXT 只搜这一窗已经取到正文的章节。
+- 书内搜索：阅读页右上角的放大镜搜整本书的正文，引擎按章建纯文本索引（同章再搜只查缓存）。命中带章名和一段前后文（命中的词在前后文里带底色），点一条跳到那一行、在页上标出来；阅读页底下留一条结果条，可以「上一条 / 下一条」，点中间的数字回到结果列表，不用重新输入；回车直接搜，搜完收起键盘。大小写不敏感，英文/数字按词边界（`the` 不命中 `theatre`），中文按子串。在线书和大 TXT 只搜这一窗已经取到正文的章节。
 - 阅读统计：总时长、阅读天数、连续天数、最近七天，以及每本书自己的记录（累计时长、第一次/最近一次阅读、每天的时长）。
 - 关于 Quire：应用版本、链接进来的 ebook-engine 版本与 C ABI 版本；排版页会显示引擎当前的缓存占用，阅读时换窗会主动回收用不到的章节缓存。
 - 排版：字号、行距、页边距、字距、词距，纸色与夜间主题。
@@ -18,7 +18,11 @@ Quire 是跨平台的本地阅读器，使用 [Asuka](https://asuka.egoist.dev) 
 - 格式：`.txt`、`.epub`。大 TXT（超过 8 MB 的 UTF-8）按章从文件里读，不整本进内存。
 - 同步：书架、进度、书签、笔记和排版设置随同步走；云端正文按内容 hash 存放，打开云端的书时才下载那一本。云端默认是坚果云，也可选其他 WebDAV 服务器。入口在书架右上角的云图标与「我 → 同步与备份」，可开启启动时自动同步、自动备份书籍，或手动「备份全部」；本地缓存可设上限并按最久未读清理。
   云端布局：`catalog.json` 放书架、进度和设置，`meta/<key>.json` 放每本书的书签、笔记与阅读统计，`blobs/<hash>` 放正文；只有打开某本书时才下载它的正文。
-- 搜索与书源：导入阅读3.0（Legado）书源 JSON（粘贴、链接或文件），在书源里搜书；详情、目录和正文都留在应用里。加入书架的是「在线书」：书架只记书源和书页，目录存一份，正文读到哪取到哪、整本从不下载——引擎里是一本流式书，目录的每一章先占好位置，读到哪一章才取哪一章的正文替换进去（一窗 40 章，读完一窗换下一窗，引擎和字体不重开）；书架上一枚小地球标出它。书源规则和 JavaScript 由 legado-engine 执行：CSS、XPath、JSONPath、正则、`##` 替换、`{{…}}` 模板和 `@js:` / `<js>` 脚本，连同 cookie 与书源变量，都是 Legado 那一套。没有这个库的平台（iOS 模拟器、Windows、Android、网页）暂时没有书源搜索；等引擎支持这些目标，接入同一份 C ABI 就能用。带 `exploreUrl` 的书源会出现在「发现」里，按书源自己的分类浏览，不必先搜一个关键词。
+- 搜索与书源：导入阅读3.0（Legado）书源 JSON（粘贴、链接或文件），在书源里搜书；详情、目录和正文都留在应用里。加入书架的是「在线书」：书架只记书源和书页，目录存一份，正文读到哪取到哪（文件型书源除外，见下）——引擎里是一本流式书，目录的每一章先占好位置，读到哪一章才取哪一章的正文替换进去（一窗 40 章，读完一窗换下一窗，引擎和字体不重开）；书架上一枚小地球标出它。书源规则和 JavaScript 由 legado-engine 执行：CSS、XPath、JSONPath、正则、`##` 替换、`{{…}}` 模板和 `@js:` / `<js>` 脚本，连同 cookie 与书源变量，都是 Legado 那一套。没有这个库的平台（iOS 模拟器、Windows、Android、网页）暂时没有书源搜索；等引擎支持这些目标，接入同一份 C ABI 就能用。带 `exploreUrl` 的书源会出现在「发现」里，按书源自己的分类浏览，不必先搜一个关键词。书源多的时候顶部一排书源横着挑，每个书源的分类是标签，一行排好几个，不再一个分类占一整行。书源管理里能按名字、地址或分组搜索，批量开关 / 分组 / 删除；单条删除会先确认，停用的书源在列表里变淡。导入前先说是几个书源、叫什么（或哪里读不出来），也可以直接读剪贴板；导入后列出这次新进来的名字。
+
+文件型书源（`bookSourceType: 3`，如知轩藏书）没有章节：详情页列出 `ruleBookInfo.downloadUrls` 里的每个文件，点「下载并导入」由引擎用书源自己的 header / cookie / 代理把文件取下来（`legado_download`，先写 `.part` 再改名，字节不动），再按 `charset` 读成一本本地书放进书架。
+
+需要登录的书源：书源管理里每条书源右边的钥匙按钮打开「变量」，把账号密码按书源要的键写成一段 JSON。保存时整段进 `source.getVariable()`，每个键也进 `source.get()`；书源自己的 `jsLib`（`java.post` 登录）在第一次搜索或发现时用它登录，cookie 与规则请求共用同一个 per-source jar。引擎不读导入 JSON 里的 `variable` 字段，所以应用在导入时、以及每次启动时把书源自带的变量补写一次（已有值的不动）。验证码 / 扫码这类必须网页登录的源，之后接 Asuka 的 `WebView` + `webview.cookies` + `legado_set_cookie`；这一版还没做。
 
 ## 平台
 
@@ -169,7 +173,7 @@ legado-engine 负责在线书源的规则、JavaScript、cookie 与变量。
 
 # 固定版本
 ENGINE_VERSION=v0.5.1 .github/scripts/fetch-engine.sh linux-x64
-LEGADO_VERSION=v0.2.0 .github/scripts/fetch-legado.sh linux-x64
+LEGADO_VERSION=v0.3.0 .github/scripts/fetch-legado.sh linux-x64
 ```
 
 ebook-engine 的下载会校验 Release 中的 `SHA256SUMS`。需要从源码构建时：
@@ -179,10 +183,11 @@ ebook-engine 的下载会校验 Release 中的 `SHA256SUMS`。需要从源码构
 .github/scripts/build-legado.sh linux-x64 ../legado-engine
 ```
 
-CI 通过 `ENGINE_VERSION` / `LEGADO_VERSION` 选择版本，现在钉在 `v0.5.1` / `v0.2.0`：
+CI 通过 `ENGINE_VERSION` / `LEGADO_VERSION` 选择版本，现在钉在 `v0.5.1` / `v0.3.0`：
 这本书的应用按 ebook-engine 的 C ABI 写（稳定位置、流式章节、高度索引、全文搜索），
 legado-engine 则提供 `legado_open` / `legado_search` / `legado_info` / `legado_toc` / `legado_content`
-这几个调用。换版本得先确认这些还在。
+这几个调用，0.3.0 又加了 `legado_download`（书源的文件，原样落盘）和 `legado_eval`
+（书源变量与书源自己的登录脚本）。换版本得先确认这些还在。
 
 `asuka.toml` 的 `[c.prebuilt]` 里，`linux-x64`、`macos-arm64`、`macos-x64` 和
 `ios-arm64` 同时列出 `libebook_abi.a` 与 `liblegado_engine.a`；`ios-simulator-*` 和
@@ -229,7 +234,7 @@ profile = "Quire Distribution"
 | `tests` | `mac_mini_m2`（Xcode 26.6） | 获取 `macos-arm64` 的两个引擎，运行 `asuka check`、`asuka test`、`asuka test lib` |
 | `ios-ipa` | 同上 | 获取 `ios-arm64` 的两个引擎，构建未签名设备 IPA，`dist/*-unsigned.ipa` 作为 build 的 artifact 下载 |
 
-接入步骤：在 Codemagic 里添加本仓库，它会读到 `codemagic.yaml`；自动构建还需在应用的 Webhooks 设置里建一个 webhook。只有 `.md` 改动的提交由 `when.changeset` 跳过。固定 Xcode 版本改 `definitions` 里的 `xcode`，固定引擎版本把 `ENGINE_VERSION` 写成 tag（如 `v0.2.0`）。
+接入步骤：在 Codemagic 里添加本仓库，它会读到 `codemagic.yaml`；自动构建还需在应用的 Webhooks 设置里建一个 webhook。只有 `.md` 改动的提交由 `when.changeset` 跳过。固定 Xcode 版本改 `definitions` 里的 `xcode`，固定引擎版本把 `ENGINE_VERSION` 写成 tag（如 `v0.5.1`）。
 
 安装方式：
 

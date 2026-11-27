@@ -1143,3 +1143,38 @@ test "the reader searches the book and goes to the word it found" {
   // 阅读位置落在命中那一章（《春》是全书第 3 章，0 起是 2）。
   expect(library.readingOf("朱自清·散文選").chapter == 2)
 }
+
+test "search results can be stepped through without searching again" {
+  let path = "{fs.tempDir()}/search-step-test.txt"
+  try await spawn {
+    try fs.writeText(path, text: "第1章 甲\n\n雪落下來。\n\n第2章 乙\n\n又是雪。\n\n第3章 丙\n\n雪停了。\n")
+  }
+  let library = Library()
+  let app = mount(Harness(), provide: library)
+  try await library.importFile(path)
+  await app.idle()
+  app.tap("search-step-test")
+  await app.idle()
+
+  app.tap("搜索")
+  await app.idle()
+  // Return 也能搜，不必去点「查找」。
+  app.type("雪", into: "搜索这本书的正文")
+  app.submit("搜索这本书的正文")
+  await app.idle()
+  app.expect("3 条结果")
+
+  app.tap("第1章 甲")
+  await app.idle()
+  // 跳过去以后还留着这一批：可以接着看上一条、下一条。
+  app.expect("1 / 3")
+  app.tap("下一条结果")
+  await app.idle()
+  app.expect("2 / 3")
+
+  // 点中间的计数回到结果列表，词和结果都还在。
+  app.tap("搜索「雪」的结果")
+  await app.idle()
+  app.expect("书内搜索")
+  app.expect("3 条结果")
+}

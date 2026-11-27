@@ -38,6 +38,8 @@ pub struct ImportReport {
   skipped: int = 0
   failed: int = 0
   names: [string] = []
+  /// 新进来的那几条的 id：导入后只给它们播种变量。
+  ids: [string] = []
 
   pub fn text() -> string {
     var parts: [string] = []
@@ -223,6 +225,7 @@ pub store Sources {
       ))
       report.added += 1
       report.names.push(name)
+      report.ids.push(id)
     }
     return report
   }
@@ -239,5 +242,29 @@ pub store Sources {
       return try? decodeSource(v)
     }
     return none
+  }
+
+  /// 书源变量：引擎 0.3.0 不读导入 JSON 里的 `variable`，只读它自己
+  /// 存储目录下的那份。所以导入（或从同步里拿回来）时，把书源自带的
+  /// 变量写一遍；已经有值的不动，用户改过的不会被盖掉。
+  /// `only` 为空时看所有书源（开机时补一次）。
+  pub async fn seedVariables(only: [string] = []) -> int {
+    if !nativeAvailable() { return 0 }
+    var seeded = 0
+    for e in entries {
+      if !only.isEmpty() && !only.contains(e.id) { continue }
+      let def = definition(e)
+      if def == none { continue }
+      let d = def!
+      let raw = d.variable.trim()
+      if raw.isEmpty() { continue }
+      let current = (try? await storedVariables(d)) ?? ""
+      if !current.trim().isEmpty() { continue }
+      do {
+        try await saveVariables(d, raw)
+        seeded += 1
+      } catch {}
+    }
+    return seeded
   }
 }

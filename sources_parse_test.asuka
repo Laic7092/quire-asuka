@@ -29,3 +29,39 @@ test "a plain URL is still the one category it was" {
   expect(categories.count() == 1)
   expect(categories[0].title == "发现")
 }
+
+test "a download source keeps its file links" {
+  let text = r#"{"bookSourceName":"下载","bookSourceUrl":"https://d.test","bookSourceType":3,"ruleBookInfo":{"downloadUrls":"TXT::https://d.test/1.txt\nEPUB::https://d.test/1.epub\nhttps://d.test/2.txt\n\n# 注释\nhttps://d.test/2.txt"}}"#
+  let def = try sources.decodeSource(try sources.parseList(text)[0])
+  expect(sources.isDownloadSource(def))
+  let files = sources.downloadOptions(def.infoRules().downloadUrls)
+  expect(files.count() == 3)
+  expect(files[0].name == "TXT")
+  expect(files[1].name == "EPUB")
+  // 没有名字的按地址给一个；重复的地址只留一份。
+  expect(files[2].name == "TXT 3")
+  expect(files[2].url == "https://d.test/2.txt")
+}
+
+test "a text source can have download links too" {
+  let text = r#"{"bookSourceName":"在线","bookSourceUrl":"https://o.test","bookSourceType":0,"ruleBookInfo":{"downloadUrls":"简体::https://dl.test/down.php?type=utf8&id=1"}}"#
+  let def = try sources.decodeSource(try sources.parseList(text)[0])
+  expect(!sources.isDownloadSource(def))
+  let files = sources.downloadOptions(def.infoRules().downloadUrls)
+  expect(files.count() == 1)
+  expect(files[0].name == "简体")
+}
+
+test "a source's login and variable comments are read" {
+  let text = r#"{"bookSourceName":"登录","bookSourceUrl":"https://l.test","loginUrl":"https://l.test/login","variableComment":"先填账号密码"}"#
+  let def = try sources.decodeSource(try sources.parseList(text)[0])
+  expect(def.loginUrl == "https://l.test/login")
+  expect(def.variableComment == "先填账号密码")
+}
+
+test "a variable is stored for getVariable and for each key" {
+  let script = sources.variablesScript(r#"{"user":"a","pass":"b"}"#)
+  expect(script.contains("source.putVariable("))
+  expect(script.contains("source.put(\"user\", \"a\")"))
+  expect(script.contains("source.put(\"pass\", \"b\")"))
+}

@@ -918,20 +918,24 @@ component ImageViewer(path: string, pixelsW: int, pixelsH: int) {
 
 /// 书内搜索：引擎按章建索引，命中带章名、前后文和稳定位置。窗口式阅读时
 /// 引擎里只有这一窗的章节，结果按 `loaded` 滤掉还没取到正文的占位章。
-component Find(id: engine.Engine?, windowed: bool = false, base: int = 0, loaded: [int] = []) {
-  /// 选中一条：引擎里的章号（窗口式再加 `base`）、命中开头的节点与字节，以及
-  /// 末尾的字节。阅读页把它换成全书章号和一个稳定位置。
-  event go(spine: int, node: int, offset: int, end: int)
+component Find(id: engine.Engine?, windowed: bool = false, base: int = 0, loaded: [int] = [], initial: string = "") {
+  /// 选中一条：这次的全部命中、选的是第几条，以及搜的是什么词。阅读页
+  /// 把列表留下，翻到上一条、下一条或再打开结果时不用重搜。
+  event go(hits: [engine.FindHit], at: int, query: string)
   use library: Library
   let palette = lib.paletteFor(library.theme)
   let env = environment()
   let list = Ref()
+  let field = Ref()
 
-  state query = ""
+  state query = initial
   state hits: [engine.FindHit] = []
   state truncated = false
   state ran = false
   state busy = false
+  /// 这批结果是哪个词搜出来的：用户改了输入框但还没再搜时，结果和
+  /// 「第几条」仍属于旧词。
+  state ranQuery = ""
 
   async fn run() {
     let text = query.trim()
@@ -955,7 +959,25 @@ component Find(id: engine.Engine?, windowed: bool = false, base: int = 0, loaded
     hits = kept
     truncated = cut
     ran = true
+    ranQuery = text
     busy = false
+    // 结果比输入框重要：收起键盘，让出列表的位置；新的一批从头看。
+    field.blur()
+    list.scrollTo(0, 0, animated: false)
+  }
+
+  // 从结果条再打开：带着上次的词，直接列出结果。
+  task {
+    if !initial.trim().isEmpty() { await run() }
+  }
+
+  fn clearQuery() {
+    query = ""
+    hits = []
+    truncated = false
+    ran = false
+    ranQuery = ""
+    field.focus()
   }
 
   fn nameOf(hit: engine.FindHit) -> string {
@@ -963,13 +985,28 @@ component Find(id: engine.Engine?, windowed: bool = false, base: int = 0, loaded
     return "第 {base + hit.spine + 1} 章"
   }
 
-  fn contextOf(hit: engine.FindHit) -> string {
-    let lead = if hit.ellipsisBefore { "…" } else { "" }
-    let tail = if hit.ellipsisAfter { "…" } else { "" }
-    return "{lead}{hit.before}「{hit.text}」{hit.after}{tail}"
+  /// 前后文里的命中本身画上底色，而不是靠一对「」：一眼看到的是词，
+  /// 不是标点。Span 的零字段（字号、颜色）跟着 RichText 的。
+  fn contextSpans(hit: engine.FindHit) -> [Span] {
+    let mark = if library.theme == "night" { #6ea8fe44 } else { #0a84ff26 }
+    var out: [Span] = []
+    if hit.ellipsisBefore { out.push(Span(text: "…", color: palette.muted)) }
+    if !hit.before.isEmpty() { out.push(Span(text: hit.before)) }
+    out.push(Span(text: hit.text, background: mark))
+    if !hit.after.isEmpty() { out.push(Span(text: hit.after)) }
+    if hit.ellipsisAfter { out.push(Span(text: "…", color: palette.muted)) }
+    return out
   }
 
-  let summary = if hits.isEmpty() { "" } else if truncated { "{hits.count()} 条结果（还有更多）" } else { "{hits.count()} 条结果" }
+  let summary = if busy {
+    "正在搜索…"
+  } else if hits.isEmpty() {
+    ""
+  } else if truncated {
+    "{hits.count()} 条结果（还有更多）"
+  } else {
+    "{hits.count()} 条结果"
+  }
   let hint = if windowed { "这本书按窗加载：只搜索已经取到正文的章节" } else { "" }
 
   Column {
@@ -999,15 +1036,43 @@ component Find(id: engine.Engine?, windowed: bool = false, base: int = 0, loaded
       padding: [0, 20]
       gap: 8
       align: .center
-      TextField {
-        bind text: query
-        placeholder: "搜索这本书的正文"
-        returnKey: .search
-        autocapitalize: .off
-        autocorrect: .no
+      // 一条搜索框该有的样子：圆角底、放大镜、清空；不是一条裸输入线。
+      Row {
         grow: 1
+        gap: 6
+        align: .center
+        padding: [0, 10]
+        height: 38
+        radius: 10
+        background: palette.rule
+        Symbol(Icons.search) {
+          font: .footnote
+          color: palette.muted
+        }
+        TextField {
+          bind text: query
+          ref: field
+          placeholder: "搜索这本书的正文"
+          returnKey: .search
+          plain: true
+          // 重新打开结果时不用再弹一次键盘。
+          autofocus: initial.trim().isEmpty()
+          autocapitalize: .off
+          autocorrect: .no
+          grow: 1
+          on submit { await run() }
+        }
+        if !query.isEmpty() {
+          Button("") {
+            icon: Icons.close
+            variant: .plain
+            color: palette.muted
+            label: "清空搜索"
+            on press { clearQuery() }
+          }
+        }
       }
-      Button(if busy { "搜索中…" } else { "查找" }) {
+      Button("查找") {
         disabled: busy || query.trim().isEmpty()
         on press { await run() }
       }
@@ -1031,8 +1096,15 @@ component Find(id: engine.Engine?, windowed: bool = false, base: int = 0, loaded
         grow: 1
         justify: .center
         align: .center
+        gap: 10
         padding: [24, 40]
-        Text(if ran { "没有找到" } else { "输入一个词，搜这本书的正文" }) {
+        if !ran && !busy {
+          Symbol(Icons.search) {
+            font: .title
+            color: palette.muted.opacity(0.35)
+          }
+        }
+        Text(if busy { "正在搜索…" } else if ran { "没有找到「{ranQuery}」" } else { "输入一个词，搜这本书的正文" }) {
           font: .footnote
           color: palette.muted
           textAlign: .center
@@ -1043,26 +1115,36 @@ component Find(id: engine.Engine?, windowed: bool = false, base: int = 0, loaded
         ref: list
         grow: 1
         appearance: .bare
-        for hit in hits key "{hit.spine}:{hit.offset}" {
-          Row {
-            padding: [12, 20]
-            gap: 10
-            align: .center
-            on press {
-              emit go(hit.spine, hit.node, hit.offset, hit.end)
-              dismiss()
-            }
-            Column {
-              grow: 1
-              gap: 4
-              Text(nameOf(hit)) {
-                font: .footnote
-                color: palette.muted
-                lines: 1
+        for (i, hit) in hits.enumerated() key "{hit.spine}:{hit.offset}" {
+          Column {
+            // 明确的细线，颜色跟着纸色走；系统分隔线在纸色上总是偏灰。
+            if i > 0 {
+              View {
+                height: 1
+                background: palette.rule
+                margin: [0, 20]
               }
-              Text(contextOf(hit)) {
-                color: palette.ink
-                lines: 3
+            }
+            Row {
+              padding: [12, 20]
+              gap: 10
+              align: .center
+              on press {
+                emit go(hits, i, ranQuery)
+                dismiss()
+              }
+              Column {
+                grow: 1
+                gap: 4
+                Text(nameOf(hit)) {
+                  font: .footnote
+                  color: palette.muted
+                  lines: 1
+                }
+                RichText(contextSpans(hit)) {
+                  color: palette.ink
+                  lines: 3
+                }
               }
             }
           }
@@ -1216,6 +1298,12 @@ component Reader(book: lib.Book) {
   state findStart = ""
   state findEnd = ""
   state findRects: [PageMark] = []
+  /// 书内搜索留下的那批命中（引擎里这一窗的章号）、现在第几条、搜的词，
+  /// 以及跑搜索时窗口从哪里开始。有它们，翻上一条/下一条不用重新搜。
+  state findHits: [engine.FindHit] = []
+  state findAt = -1
+  state findQuery = ""
+  state findBase = 0
 
   /// 阅读时长：打开（或重新开始活动）的时刻、最后一次活动的时刻、已经记到
   /// 哪一刻。空闲超过五分钟就不再算，书页开着过夜不会记成读了一夜。
@@ -1931,6 +2019,59 @@ component Reader(book: lib.Book) {
     findRects = rects
   }
 
+  /// 跳到搜索列表里的第 `at` 条：把它的引擎章号换回这一窗的，再把两端的
+  /// 稳定位置交给页面去标。整窗换过以后位置对不上，就只回到那一章的开头。
+  fn showFind(at: int) {
+    if at < 0 || at >= findHits.count() { return }
+    findAt = at
+    let hit = findHits[at]
+    let chapter = findBase + hit.spine
+    let local = chapter - windowBase
+    let count = engine.chapterCount(engineId)
+    if local < 0 || local >= count {
+      goTo(chapter, 0)
+      return
+    }
+    let start = "{local}:{hit.node}:{hit.offset}"
+    let stop = "{local}:{hit.node}:{hit.end}"
+    goTo(chapter, 0, locator: start)
+    findStart = start
+    findEnd = stop
+    findRects = []
+    // 同一章的页模式下 goTo 已经排好版了；换章时，下一次排版（show）
+    // 会把命中画上去。
+    if library.mode == "page" && engine.lastChapter(engineId) == local {
+      refreshFind()
+    }
+  }
+
+  fn findNext() {
+    if findAt + 1 < findHits.count() { showFind(at: findAt + 1) }
+  }
+
+  fn findPrev() {
+    if findAt > 0 { showFind(at: findAt - 1) }
+  }
+
+  fn clearFindHits() {
+    findHits = []
+    findAt = -1
+    findQuery = ""
+    clearFind()
+  }
+
+  /// 书内搜索的入口：也用它重新打开结果列表，带着上一轮的词。
+  fn openFind() {
+    present(Find(id: engineId, windowed: windowed, base: windowBase, loaded: loadedChapters, initial: findQuery) {
+      on go(hits, at, query) {
+        findHits = hits
+        findBase = windowBase
+        findQuery = query
+        showFind(at: at)
+      }
+    })
+  }
+
   /// 读者去了别处：搜索命中的标记不再属于这一页。
   fn clearFind() {
     if findStart.isEmpty() && findEnd.isEmpty() && findRects.isEmpty() { return }
@@ -2195,6 +2336,8 @@ component Reader(book: lib.Book) {
       let _n = engine.appendChapter(engineId, title: chapterTitleOf(at), text: placeholderOf(at))
     }
     windowBase = base
+    // 搜索结果是按原来那一窗的章号记的；换窗后对不上了，收起结果条。
+    if !findHits.isEmpty() && base != findBase { clearFindHits() }
     loadedChapters = []
     // 要读的那一章先取：正文到了才排版，读者看不见占位。
     if await loadChapter(target, redraw: false) {
@@ -2829,24 +2972,7 @@ component Reader(book: lib.Book) {
           variant: .glass
           label: "搜索"
           tooltip: "书内搜索"
-          on press {
-            present(Find(id: engineId, windowed: windowed, base: windowBase, loaded: loadedChapters) {
-              on go(spine, node, offset, end) {
-                let chapter = windowBase + spine
-                let start = "{spine}:{node}:{offset}"
-                let stop = "{spine}:{node}:{end}"
-                goTo(chapter, 0, locator: start)
-                findStart = start
-                findEnd = stop
-                findRects = []
-                // 同一章的页模式下 goTo 已经排好版了；换章时，下一次排版
-                // （show）会把命中画上去。
-                if library.mode == "page" && engine.lastChapter(engineId) == spine {
-                  refreshFind()
-                }
-              }
-            })
-          }
+          on press { openFind() }
         }
         Button("") {
           icon: Icons.typography
@@ -2900,6 +3026,56 @@ component Reader(book: lib.Book) {
           padding: [3, 9]
           radius: 11
           a11yHidden: true
+        }
+      }
+
+      // 书内搜索的那一批还在：翻上一条、下一条，点中间回到结果列表。
+      if findAt >= 0 && !findHits.isEmpty() {
+        Row {
+          absolute: true
+          bottom: env.safeBottom + chromeMargin + 38
+          left: 0
+          right: 0
+          justify: .center
+          Row {
+            gap: 2
+            align: .center
+            padding: [2, 4]
+            radius: 20
+            background: palette.paper
+            border: 1
+            borderColor: palette.rule
+            Button("") {
+              icon: Icons.back
+              variant: .plain
+              color: palette.ink
+              label: "上一条结果"
+              disabled: findAt <= 0
+              on press { findPrev() }
+            }
+            Button("{findAt + 1} / {findHits.count()}") {
+              variant: .plain
+              font: Font(size: 12)
+              color: palette.muted
+              label: "搜索「{findQuery}」的结果"
+              on press { openFind() }
+            }
+            Button("") {
+              icon: Icons.disclosure
+              variant: .plain
+              color: palette.ink
+              label: "下一条结果"
+              disabled: findAt >= findHits.count() - 1
+              on press { findNext() }
+            }
+            Button("") {
+              icon: Icons.close
+              variant: .plain
+              color: palette.muted
+              label: "结束搜索"
+              on press { clearFindHits() }
+            }
+          }
         }
       }
     }

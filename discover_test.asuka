@@ -1,0 +1,44 @@
+// 发现页的第一层：书源横着挑，分类是标签而不是整行。两样都试一次。
+
+import ./sources
+
+fn demoSources() -> sources.Sources {
+  let s = sources.Sources()
+  s.entries = [
+    sources.Entry(
+      id: "a",
+      name: "甲源",
+      url: "https://a.test",
+      json: r#"{"bookSourceName":"甲源","bookSourceUrl":"https://a.test","exploreUrl":"甲一::/a1\n甲二::/a2"}"#,
+    ),
+    sources.Entry(
+      id: "b",
+      name: "乙源",
+      url: "https://b.test",
+      json: r#"{"bookSourceName":"乙源","bookSourceUrl":"https://b.test","exploreUrl":"乙一::/b1\n乙二::/b2"}"#,
+    ),
+  ]
+  return s
+}
+
+component DiscoverHarness(store: sources.Sources) {
+  provide store
+  Quire()
+}
+
+test "a source picked above leaves the other sources' categories out" {
+  let app = mount(DiscoverHarness(demoSources()), provide: Library())
+  await app.idle()
+  app.tap("发现")
+  await app.idle()
+  app.expect("甲一")
+  app.expect("乙一")
+  app.expect("全部")
+  app.nextTo("全部").tap("甲源")
+  await app.idle()
+  app.expect("甲二")
+  app.expectNo("乙二")
+  app.tap("全部")
+  await app.idle()
+  app.expect("乙二")
+}

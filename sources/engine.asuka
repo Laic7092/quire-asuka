@@ -1,4 +1,5 @@
-// 一个书源能做的事：搜索、详情、目录、正文。全部交给 legado-engine：
+// 一个书源能做的事：搜索、详情、目录、正文，以及文件型书源的下载。
+// 全部交给 legado-engine：
 // Legado 的规则、QuickJS、cookie 和书源变量都在它那里。这个应用只把书源的
 // JSON、书和章节的字段递过去，再把回来的 JSON 变成界面用的结构。
 //
@@ -18,6 +19,8 @@ pub struct Book {
   bookUrl: string
   /// 目录所在的那一页，详情页说过的话：目录和正文的规则要它。
   tocUrl: string = ""
+  /// 详情页给的下载链接（一行一个 `名称::地址`）：文件型书源只有这个。
+  downloadUrls: string = ""
 }
 
 pub struct Info {
@@ -40,6 +43,18 @@ pub struct Chapter {
 pub struct Detail {
   info: Info
   chapters: [Chapter]
+  /// 文件型书源（`bookSourceType: 3`）的下载选项：它有文件，没有章节。
+  files: [DownloadOption] = []
+}
+
+/// A file the engine wrote: the bytes at `path`, and how to read them
+/// (`charset` is `utf-8`, `gb18030`, …).
+pub struct Download {
+  path: string = ""
+  size: int = 0
+  contentType: string? = none
+  charset: string = ""
+  url: string = ""
 }
 
 /// 这个平台有没有可以工作的书源引擎。
@@ -74,6 +89,9 @@ fn mergeBook(from: Book, parsed: NativeBook) -> Book {
   if let toc = parsed.tocUrl {
     if !toc.trim().isEmpty() { book.tocUrl = toc }
   }
+  if let files = parsed.downloadUrls {
+    if !files.trim().isEmpty() { book.downloadUrls = files }
+  }
   return book
 }
 
@@ -98,6 +116,7 @@ fn bookJSON(book: Book) -> string = json.encode(NativeBook(
   kind: maybe(book.kind),
   wordCount: maybe(book.wordCount),
   latestChapterTitle: maybe(book.lastChapter),
+  downloadUrls: maybe(book.downloadUrls),
 ))
 
 fn chapterJSON(chapter: Chapter) -> string = json.encode(NativeChapter(
@@ -190,11 +209,16 @@ pub async fn info(s: BookSource, bookUrl: string, from: Book) throws -> Info {
   return try await infoNative(s, bookUrl, from)
 }
 
-/// 详情页和目录一起取：一本书点开后要的东西。
+/// 详情页和目录一起取：一本书点开后要的东西。文件型书源没有目录，
+/// 就不去要，直接把它给出的文件带回来。
 pub async fn detailOf(s: BookSource, book: Book) throws -> Detail {
   let own = try await info(s, book.bookUrl, book)
+  let files = downloadOptions(own.book.downloadUrls)
+  if isDownloadSource(s) {
+    return Detail(info: own, chapters: [], files: files)
+  }
   let chapters = try await tocOf(s, own.book)
-  return Detail(info: own, chapters: chapters)
+  return Detail(info: own, chapters: chapters, files: files)
 }
 
 async fn tocNative(s: BookSource, book: Book) throws -> [Chapter] {
@@ -259,4 +283,47 @@ pub async fn wholeText(s: BookSource, tocUrl: string, limit: int = 0) throws -> 
   }
   if out.isEmpty() { throw Error("没有读到任何章节") }
   return out.joined(separator: "\n")
+}
+
+/// 一个文件：书源用自己的请求头、cookie 和代理把它取下来，原样写到
+/// `into`（引擎建父目录，先写 `.part` 再改名）。`charset` 是引擎嗅出
+/// 的读法，TXT 导入时按它读。
+pub async fn downloadOf(s: BookSource, url: string, into: string) throws -> Download {
+  if !bookSourcesAvailable() { throw unavailable() }
+  let text = try await nativeDownload(sourceJSON(s), url: url, dest: into)
+  return try json.decode(text)
+}
+
+/// 书源现在存着的变量（引擎里那份，不是书源 JSON 里的 `variable`：
+/// 引擎 0.3.0 不读那个字段，导入时的值由 `seedVariables` 写进来）。
+pub async fn storedVariables(s: BookSource) throws -> string {
+  if !bookSourcesAvailable() { throw unavailable() }
+  return try await nativeEval(sourceJSON(s), script: "source.getVariable()")
+}
+
+/// 存一段变量 JSON：整段给 `getVariable()`，每个键也给 `get()`。
+pub async fn saveVariables(s: BookSource, text: string) throws {
+  if !bookSourcesAvailable() { throw unavailable() }
+  let t = text.trim()
+  if !t.isEmpty() {
+    let parsed = try? json.parse(t)
+    if parsed == none { throw Error(r#"变量要写成一段 JSON 对象，如 {"user":"…","pass":"…"}"#) }
+    if let v = parsed {
+      if v.asObject() == none {
+        throw Error(r#"变量要写成一段 JSON 对象，如 {"user":"…","pass":"…"}"#)
+      }
+    }
+  }
+  try await nativeEval(sourceJSON(s), script: variablesScript(t))
+}
+
+/// 书源的 Cookie 头（从网页登录里拿回来，或看本机现在的登录态）。
+pub async fn cookieHeaderOf(s: BookSource, url: string) throws -> string {
+  if !bookSourcesAvailable() { throw unavailable() }
+  return try await nativeCookieHeader(sourceJSON(s), url: url)
+}
+
+pub async fn setCookieOf(s: BookSource, url: string, cookie: string) throws {
+  if !bookSourcesAvailable() { throw unavailable() }
+  try await nativeSetCookie(sourceJSON(s), url: url, cookie: cookie)
 }

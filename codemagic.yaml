@@ -56,7 +56,7 @@ workflows:
       <<: *xcode
       vars:
         ENGINE_VERSION: v0.5.1
-        LEGADO_VERSION: v0.2.0
+        LEGADO_VERSION: v0.3.0
     cache: *asuka_cache
     when: *skip_docs
     triggering:
@@ -100,7 +100,7 @@ workflows:
       <<: *xcode
       vars:
         ENGINE_VERSION: v0.5.1
-        LEGADO_VERSION: v0.2.0
+        LEGADO_VERSION: v0.3.0
     cache: *asuka_cache
     when: *skip_docs
     triggering:

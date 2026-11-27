@@ -86,6 +86,10 @@ component Quire {
     }
     if let s = allSources {
       s.applySync(await library.syncIfAuto(s.syncState()))
+      // 书源变量：导入的 JSON 里带着一份（Legado 的 `variable`），引擎
+      // 不读它，只读存储目录下的那份。开机补一次，几年旧书源和从同步
+      // 里拿回来的书源也能登。
+      await s.seedVariables()
     }
   }
 
