@@ -137,6 +137,11 @@ pub struct ExploreCategory {
 /// `标题::地址`。有些导出的 JSON 还留着最后一个逗号，也要认。
 let categoryTrailingComma = regex.must(r",\s*([\]\}])")
 
+/// 书源脚本里的 `source.get('…')` / `source.put('…')`：这些就是它要的
+/// 变量名。wenku8 的 jsLib 用 `wenku8_user` / `wenku8_pass` 登录，书源
+/// JSON 里却没有 `variable` 字段，读者只能从这里看出要填什么。
+let sourceVariableKey = regex.must(r#"source\.(?:get|put)\(\s*['"]([^'"]+)['"]"#)
+
 fn parseCategoryJSON(t: string) -> [ExploreCategory] {
   var out: [ExploreCategory] = []
   if let v = try? json.parse(t) {
@@ -302,6 +307,65 @@ pub fn varsOf(s: BookSource) -> [string: string] {
     }
   }
   return out
+}
+
+/// 变量的键：书源 `variable` 里写下的，加上 jsLib / 规则里
+/// `source.get('…')` / `source.put('…')` 提到的。编辑器按这个逐项画
+/// 输入框，读者不必猜 JSON 里要写什么。
+pub fn variableKeys(s: BookSource) -> [string] {
+  var out: [string] = []
+  for (k, _) in varsOf(s) {
+    let key = k.trim()
+    if !key.isEmpty() && !out.contains(key) { out.push(key) }
+  }
+  let scripts = [
+    s.jsLib,
+    s.loginUrl,
+    s.searchUrl,
+    s.exploreUrl,
+    s.variableComment,
+    s.bookSourceComment,
+    s.searchRules().bookList,
+    s.searchRules().name,
+    s.searchRules().author,
+    s.searchRules().bookUrl,
+    s.infoRules().init,
+    s.infoRules().name,
+    s.infoRules().author,
+    s.infoRules().downloadUrls,
+    s.tocRules().chapterList,
+    s.tocRules().chapterName,
+    s.tocRules().chapterUrl,
+    s.contentRules().content,
+    s.contentRules().webJs,
+  ].joined(separator: "\n")
+  for found in sourceVariableKey.findAllSubmatches(scripts) {
+    if found.count() < 2 { continue }
+    let key = found[1].trim()
+    if !key.isEmpty() && !out.contains(key) { out.push(key) }
+  }
+  return out
+}
+
+/// 一段变量 JSON 里一个键现在的值；不是对象、或者没有这个键时是空。
+pub fn variableValueOf(text: string, key: string) -> string {
+  if let v = try? json.parse(text.trim()) {
+    if let o = v.asObject() {
+      if let val = o[key] { return stringOf(val) }
+    }
+  }
+  return ""
+}
+
+/// 改一段变量 JSON 里的一个键，别的键和值原样留着。不是 JSON 对象时
+/// 从空对象开始。
+pub fn withVariableValue(text: string, key: string, value: string) -> string {
+  var o: [string: json.Value] = [:]
+  if let v = try? json.parse(text.trim()) {
+    if let existing = v.asObject() { o = existing }
+  }
+  o[key] = value
+  return json.encode(o)
 }
 
 /// 文件型书源（`bookSourceType: 3`）：没有章节，只有 `downloadUrls`。

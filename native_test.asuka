@@ -55,3 +55,13 @@ test "a cookie the host sets is the source's session" {
   expect(header.contains("sid=abc"))
   expect(header.contains("theme=dark"))
 }
+
+test "a source's cookie can be cleared for another account" {
+  if !sources.nativeAvailable() { return }
+  let one = r#"{"bookSourceUrl":"https://clear-cookie.test"}"#
+  let def = try sources.decodeSource(try sources.parseList(one)[0])
+  try await sources.setCookieOf(def, url: "https://clear-cookie.test/", cookie: "sid=abc")
+  try await sources.clearCookiesOf(def, url: "https://clear-cookie.test/")
+  let header = try await sources.cookieHeaderOf(def, url: "https://clear-cookie.test/page")
+  expect(!header.contains("sid=abc"))
+}

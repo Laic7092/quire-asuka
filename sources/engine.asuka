@@ -327,3 +327,12 @@ pub async fn setCookieOf(s: BookSource, url: string, cookie: string) throws {
   if !bookSourcesAvailable() { throw unavailable() }
   try await nativeSetCookie(sourceJSON(s), url: url, cookie: cookie)
 }
+
+/// 清掉这个书源在 url 下的 Cookie（引擎的 `cookie.removeCookie`）。
+/// 网页登录换了账号，或者登录态坏了时用。
+pub async fn clearCookiesOf(s: BookSource, url: string) throws {
+  if !bookSourcesAvailable() { throw unavailable() }
+  let at = if url.trim().isEmpty() { baseUrlOf(s) } else { url.trim() }
+  if at.isEmpty() { throw Error("这条书源没有地址，清不了 Cookie") }
+  try await nativeEval(sourceJSON(s), script: "cookie.removeCookie({json.encode(at)});")
+}

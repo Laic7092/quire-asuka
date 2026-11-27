@@ -65,3 +65,30 @@ test "a variable is stored for getVariable and for each key" {
   expect(script.contains("source.put(\"user\", \"a\")"))
   expect(script.contains("source.put(\"pass\", \"b\")"))
 }
+
+test "variable keys come from the variable field and the source's scripts" {
+  let text = r#"{"bookSourceName":"登录","bookSourceUrl":"https://w.test","variable":"{\"user\":\"\",\"pass\":\"\"}","jsLib":"var a=source.get('wenku8_user'); source.put(\"wenku8_pass\", 'x');"}"#
+  let def = try sources.decodeSource(try sources.parseList(text)[0])
+  let keys = sources.variableKeys(def)
+  expect(keys.contains("user"))
+  expect(keys.contains("pass"))
+  expect(keys.contains("wenku8_user"))
+  expect(keys.contains("wenku8_pass"))
+  expect(keys == keys.unique())
+}
+
+test "a variable value reads and writes without losing the others" {
+  let text = r#"{"user":"a","keep":"x","n":3}"#
+  expect(sources.variableValueOf(text, "user") == "a")
+  expect(sources.variableValueOf(text, "n") == "3")
+  let next = sources.withVariableValue(text, "pass", "b")
+  expect(sources.variableValueOf(next, "user") == "a")
+  expect(sources.variableValueOf(next, "keep") == "x")
+  expect(sources.variableValueOf(next, "pass") == "b")
+}
+
+test "a source with no variable still shows the keys its login script asks for" {
+  let text = r#"{"bookSourceName":"轻小说文库","bookSourceUrl":"https://www.wenku8.net","jsLib":"var u=source.get('wenku8_user');var p=source.get('wenku8_pass');"}"#
+  let def = try sources.decodeSource(try sources.parseList(text)[0])
+  expect(sources.variableKeys(def) == ["wenku8_user", "wenku8_pass"])
+}

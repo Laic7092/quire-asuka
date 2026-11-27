@@ -57,3 +57,23 @@ test "pasting a collection says what is in it, then imports it" {
   app.expect("新导入：甲源、乙源")
   expect(store.entries.count() == 2)
 }
+
+test "a source in several groups is listed once, with its groups as labels" {
+  let store = sources.Sources()
+  store.entries = [
+    sources.Entry(
+      id: "multi",
+      name: "多组源",
+      group: "甲, 乙, 丙",
+      url: "https://multi.test",
+      json: r#"{"bookSourceName":"多组源","bookSourceUrl":"https://multi.test","bookSourceGroup":"甲, 乙, 丙"}"#,
+    ),
+  ]
+  let app = mount(ManagerHarness(store))
+  await app.idle()
+  let texts = app.texts()
+  expect(texts.count(where: t => t == "多组源") == 1)
+  app.expect("甲")
+  app.expect("乙")
+  app.expect("丙")
+}

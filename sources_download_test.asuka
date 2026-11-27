@@ -1,0 +1,34 @@
+// 书源的文件下载：域名不是扩展名（知轩的下载站在 `zxcs.zip`），
+// 也不能因为域名里有 `.zip` 就不让人下。
+
+import ./sources
+
+test "a download host that looks like an archive isn't one" {
+  let zxcs = "https://download.zxcs.zip/《我的右眼是神级计算机》（校对版全本）作者：王自律.txt"
+  expect(!downloadUnsupported(url: zxcs))
+  let file = sources.DownloadOption(name: "TXT", url: zxcs)
+  expect(downloadNameFor(title: "我的右眼是神级计算机", option: file, count: 1) == "我的右眼是神级计算机.txt")
+}
+
+test "an archive or a PDF in the path is still refused" {
+  expect(downloadUnsupported("https://d.test/book.zip"))
+  expect(!downloadUnsupported("https://d.test/book.epub?x=1"))
+  expect(downloadUnsupported("https://d.test/down.php?type=pdf"))
+  expect(!downloadUnsupported("https://d.test/down.php?type=txt"))
+  expect(!downloadUnsupported("https://d.test/book.txt"))
+}
+
+test "a query says txt or epub when the path doesn't" {
+  let wenku = sources.DownloadOption(name: "简体(G)", url: "https://dl.wenku8.com/down.php?type=txt&node=1&id=1")
+  expect(downloadNameFor(title: "文学少女", option: wenku, count: 1) == "文学少女.txt")
+  let epub = sources.DownloadOption(name: "EPUB", url: "https://d.test/down.php?id=1")
+  expect(downloadNameFor(title: "文学少女", option: epub, count: 1) == "文学少女.epub")
+  let utf8 = sources.DownloadOption(name: "简体(U)", url: "https://dl.wenku8.com/down.php?type=utf8&node=1&id=1")
+  expect(downloadNameFor(title: "文学少女", option: utf8, count: 1) == "文学少女.txt")
+}
+
+test "a pasted Cookie header loses its label and line breaks" {
+  expect(cookieHeaderFrom("Cookie: jieqiUserInfo=a; jieqiUserName=b") == "jieqiUserInfo=a; jieqiUserName=b")
+  expect(cookieHeaderFrom("jieqiUserInfo=a\njieqiUserName=b") == "jieqiUserInfo=a; jieqiUserName=b")
+  expect(cookieHeaderFrom("") == "")
+}

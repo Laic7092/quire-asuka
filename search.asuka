@@ -42,6 +42,20 @@ struct ExploreSource {
   categories: [sources.ExploreCategory]
 }
 
+/// 发现页的一行：顶部的书源筛选，或者一个书源的名字 + 分类。
+/// 全放进一个 List 里，List 才能统一处理导航栏和状态栏的顶部 inset。
+let discoverFilterKey = "__discover_filter__"
+
+enum DiscoverRow {
+  filterBar
+  source(ExploreSource)
+
+  fn key() -> string = match self {
+    .filterBar => discoverFilterKey
+    .source(s) => s.id
+  }
+}
+
 async fn exploreSourceOf(store: sources.Sources, e: sources.Entry) -> ExploreSource? {
   if let d = store.definition(e) {
     let categories = await sources.exploreCategoriesOf(d)
@@ -73,23 +87,75 @@ fn fileTitle(title: string) -> string {
   return if t.isEmpty() { "网络小说" } else { t }
 }
 
-/// 下载下来的文件名：书名，加上书源给的名字（有多个文件时），扩展名
-/// 看地址和名字（`type=txt` 也算 TXT）。
+/// 地址里路径的那一段：去掉 `?` 后的查询和 `#` 后的片段。
+/// `https://download.zxcs.zip/书名.txt` 里的 `.zip` 是域名，不是扩展名。
+fn urlPathOf(url: string) -> string {
+  var path = url.trim()
+  if let at = path.find("?") { path = path.byteSlice(0, at) }
+  if let at = path.find("#") { path = path.byteSlice(0, at) }
+  return path
+}
+
+/// 查询串里的一个参数（`type=txt` 的 `type`），没有时是空。
+fn urlQueryValue(url: string, key: string) -> string {
+  let at = url.find("?") ?? -1
+  if at < 0 { return "" }
+  var query = url.byteSlice(at + 1, url.byteCount())
+  if let hash = query.find("#") { query = query.byteSlice(0, hash) }
+  for part in query.split("&") {
+    if let eq = part.find("=") {
+      if part.byteSlice(0, eq).trim().lower() == key {
+        return part.byteSlice(eq + 1, part.byteCount()).trim().lower()
+      }
+    }
+  }
+  return ""
+}
+
+/// 路径最后一段的扩展名，小写；没有点是空。域名不在这里面。
+fn fileExtensionOf(path: string) -> string {
+  let lower = path.lower()
+  let slash = lower.findLast("/") ?? -1
+  let name = if slash >= 0 { lower.byteSlice(slash + 1, lower.byteCount()) } else { lower }
+  let dot = name.findLast(".") ?? -1
+  if dot < 0 || dot + 1 >= name.byteCount() { return "" }
+  return name.byteSlice(dot + 1, name.byteCount())
+}
+
+/// 下载下来的文件名：书名，加上书源给的名字（有多个文件时）。扩展名先看
+/// 路径，再看 `?type=txt` 这类查询，最后才看选项名字。
 fn downloadNameFor(title: string, option: sources.DownloadOption, count: int) -> string {
-  let hint = "{option.name} {option.url}".lower()
-  let ext = if hint.contains("epub") { ".epub" } else { ".txt" }
+  let ext = fileExtensionOf(urlPathOf(option.url))
+  let type = urlQueryValue(option.url, "type")
+  let format = urlQueryValue(option.url, "format")
+  let kind = "{type} {format}".lower()
+  let chosen = if ext == "epub" { ".epub" } else if ext == "txt" {
+    ".txt"
+  } else if kind.contains("epub") {
+    ".epub"
+  } else if kind.contains("txt") || kind.contains("utf8") || kind.contains("utf-8") {
+    ".txt"
+  } else if option.name.lower().contains("epub") {
+    ".epub"
+  } else {
+    ".txt"
+  }
   var base = fileTitle(title)
   if count > 1 { base = "{base}-{fileTitle(option.name)}" }
-  return "{base}{ext}"
+  return "{base}{chosen}"
 }
 
 /// 压缩包、PDF 之类，下载下来阅读器也打不开：在点下去之前说清楚。
+/// 只看路径的扩展名和 `type`/`format` 参数，不看域名：`zxcs.zip` 是
+/// 知轩的域名，下载的却是一个 .txt。
 fn downloadUnsupported(url: string) -> bool {
-  let lower = url.lower()
-  for ext in [".zip", ".rar", ".7z", ".pdf", ".mobi", ".azw3"] {
-    if lower.contains(ext) { return true }
-  }
-  return false
+  let blocked = ["zip", "rar", "7z", "pdf", "mobi", "azw3"]
+  let ext = fileExtensionOf(urlPathOf(url))
+  if blocked.contains(ext) { return true }
+  let kind = urlQueryValue(url, "type")
+  if blocked.contains(kind) { return true }
+  let format = urlQueryValue(url, "format")
+  return blocked.contains(format)
 }
 
 /// 搜索结果里的一条：封面、书名、作者，和它来自哪个书源。
@@ -540,29 +606,26 @@ fn sourceGroupNames(all: [sources.Entry]) -> [string] {
   return names
 }
 
-fn sourceSections(all: [sources.Entry], filter: string, query: string) -> [SourceSection] {
+/// 当前要列的书源：按分组筛选、按关键词找，一条书源只出现一次。
+/// 它属于几个分组，是下一行标签的事，不再按分组重复列。
+fn sourceRows(all: [sources.Entry], filter: string, query: string) -> [sources.Entry] {
   let q = query.trim()
-  var out: [SourceSection] = []
-  for name in sourceGroupNames(all) {
-    if !filter.isEmpty() && filter != name { continue }
-    var rows: [sources.Entry] = []
-    for e in all {
-      let groups = sources.entryGroups(e)
-      let inGroup = if name == sourceUngrouped { groups.isEmpty() } else { groups.contains(name) }
-      let matches = q.isEmpty() || e.name.contains(q, ignoreCase: true) ||
-        e.url.contains(q, ignoreCase: true) || e.group.contains(q, ignoreCase: true)
-      if inGroup && matches { rows.push(e) }
+  var rows: [sources.Entry] = []
+  for e in all {
+    let groups = sources.entryGroups(e)
+    let inGroup = if filter.isEmpty() {
+      true
+    } else if filter == sourceUngrouped {
+      groups.isEmpty()
+    } else {
+      groups.contains(filter)
     }
-    rows.sort(key: e => e.name)
-    if !rows.isEmpty() {
-      out.push(SourceSection(
-        key: name,
-        title: if name == sourceUngrouped { "未分组" } else { name },
-        rows: rows,
-      ))
-    }
+    let matches = q.isEmpty() || e.name.contains(q, ignoreCase: true) ||
+      e.url.contains(q, ignoreCase: true) || e.group.contains(q, ignoreCase: true)
+    if inGroup && matches { rows.push(e) }
   }
-  return out
+  rows.sort(key: e => e.name)
+  return rows
 }
 
 /// 粘贴时先看一眼：这段 JSON 里有几个书源、叫什么，或者哪里不对。
@@ -580,6 +643,30 @@ fn isJsonObject(text: string) -> bool {
     return v.asObject() != none
   }
   return false
+}
+
+/// Cookie 写到书源根地址下（路径是 `/`）；`baseUrlOf` 去掉了末尾的 `/`。
+fn cookieUrlOf(s: sources.BookSource) -> string {
+  let base = sources.baseUrlOf(s)
+  if base.isEmpty() { return "" }
+  return if base.hasSuffix("/") { base } else { "{base}/" }
+}
+
+/// 从浏览器复制过来的可能是 `Cookie: a=b; c=d`，只留后面那段；也允许
+/// 只粘 `a=b; c=d`。多行粘贴时把换行当成空格。
+fn cookieHeaderFrom(text: string) -> string {
+  var header = text.trim().replace("\r", "\n")
+  header = header.split("\n").map(line => line.trim()).filter(line => !line.isEmpty()).joined(separator: "; ")
+  if header.lower().hasPrefix("cookie:") {
+    header = header.byteSlice(7, header.byteCount()).trim()
+  }
+  return header
+}
+
+/// 变量名像密码、令牌或 Cookie 的，输入框遮起来。
+fn secretVariable(key: string) -> bool {
+  let k = key.lower()
+  return k.contains("pass") || k.contains("pwd") || k.contains("secret") || k.contains("token") || k.contains("cookie")
 }
 
 fn previewOf(text: string) -> SourcePreview {
@@ -627,17 +714,35 @@ component SourceManager {
 
   let all = allSources.list()
   let filters = sourceGroupNames(all)
-  let sections = sourceSections(all, filter, query)
-  let shown = sections.flatMap(section => section.rows)
+  let shown = sourceRows(all, filter, query)
+  let sectionTitle = if filter.isEmpty() {
+    "全部书源"
+  } else if filter == sourceUngrouped {
+    "未分组"
+  } else {
+    filter
+  }
+  let sections: [SourceSection] = if shown.isEmpty() {
+    []
+  } else {
+    [SourceSection(key: "all", title: sectionTitle, rows: shown)]
+  }
   let allSelected = !shown.isEmpty() && shown.all(e => selected.contains(e.id))
 
   /// 正在编辑哪条书源的变量（空的是收起），和这段 JSON、说明与结果。
   state loginId = ""
   state loginText = ""
+  state loginKeys: [string] = []
+  state loginRaw = false
   state loginNote = ""
   state loginHelp = ""
   state loginBusy = false
   state verifying = false
+  /// 网页登录拿回来的 Cookie：直接进书源的会话，绕开书源自己的登录脚本。
+  state cookieText = ""
+  state cookieNote = ""
+  state cookieBusy = false
+  state cookieHave = false
 
   async fn toggleLogin(e: sources.Entry) {
     if loginId == e.id {
@@ -648,6 +753,11 @@ component SourceManager {
     loginNote = ""
     loginHelp = ""
     loginText = ""
+    loginKeys = []
+    loginRaw = false
+    cookieText = ""
+    cookieNote = ""
+    cookieHave = false
     let def = allSources.definition(e)
     if def == none {
       loginNote = "这条书源读不出来"
@@ -656,10 +766,18 @@ component SourceManager {
     }
     let d = def!
     loginHelp = d.variableComment.trim()
+    if loginHelp.isEmpty() { loginHelp = d.bookSourceComment.trim() }
+    loginKeys = sources.variableKeys(d)
     let stored = (try? await sources.storedVariables(d)) ?? ""
     var text = stored.trim()
     if text.isEmpty() { text = d.variable.trim() }
     loginText = if text.isEmpty() { "\{}" } else { text }
+    loginRaw = loginKeys.isEmpty() || !isJsonObject(loginText)
+    let at = cookieUrlOf(d)
+    if !at.isEmpty() {
+      let current = (try? await sources.cookieHeaderOf(d, url: at)) ?? ""
+      cookieHave = !current.trim().isEmpty()
+    }
     loginId = e.id
     loginBusy = false
   }
@@ -682,6 +800,60 @@ component SourceManager {
     loginBusy = false
   }
 
+  async fn saveCookie(e: sources.Entry) {
+    if cookieBusy { return }
+    let def = allSources.definition(e)
+    if def == none {
+      cookieNote = "这条书源读不出来"
+      return
+    }
+    let at = cookieUrlOf(def!)
+    if at.isEmpty() {
+      cookieNote = "这条书源没有地址，存不了 Cookie"
+      return
+    }
+    let header = cookieHeaderFrom(cookieText)
+    if header.isEmpty() {
+      cookieNote = "先把浏览器里的 Cookie 粘进来"
+      return
+    }
+    cookieBusy = true
+    cookieNote = ""
+    do {
+      try await sources.setCookieOf(def!, url: at, cookie: header)
+      cookieHave = true
+      cookieText = ""
+      cookieNote = "已保存，接下来的搜索和发现会带上它"
+    } catch err {
+      cookieNote = err.message
+    }
+    cookieBusy = false
+  }
+
+  async fn clearCookie(e: sources.Entry) {
+    if cookieBusy { return }
+    let def = allSources.definition(e)
+    if def == none {
+      cookieNote = "这条书源读不出来"
+      return
+    }
+    let at = cookieUrlOf(def!)
+    if at.isEmpty() {
+      cookieNote = "这条书源没有地址，清不了 Cookie"
+      return
+    }
+    cookieBusy = true
+    cookieNote = ""
+    do {
+      try await sources.clearCookiesOf(def!, url: at)
+      cookieHave = false
+      cookieNote = "已清除这个书源的 Cookie"
+    } catch err {
+      cookieNote = err.message
+    }
+    cookieBusy = false
+  }
+
   /// 登录有没有用，只能问一次真请求：书源的登录是它自己的 jsLib 在
   /// 搜索/发现时做的，ABI 没有单独问「登录了吗」的调用。
   async fn verifyLogin(e: sources.Entry) {
@@ -691,10 +863,26 @@ component SourceManager {
       loginNote = "这条书源读不出来"
       return
     }
+    let d = def!
     verifying = true
     loginNote = "正在用这条书源搜一次…"
+    // 粘了 Cookie 还没点保存的，验证时先存下来：页面上「验证」的
+    // 意思就是「用现在填的去试」。
+    let header = cookieHeaderFrom(cookieText)
+    let at = cookieUrlOf(d)
+    if !header.isEmpty() && !at.isEmpty() {
+      do {
+        try await sources.setCookieOf(d, url: at, cookie: header)
+        cookieHave = true
+        cookieText = ""
+      } catch err {
+        loginNote = "Cookie 没存上：{err.message}"
+        verifying = false
+        return
+      }
+    }
     do {
-      let books = try await sources.search(def!, key: "我的", page: 1)
+      let books = try await sources.search(d, key: "我的", page: 1)
       loginNote = "搜索可以用了，这次找到 {books.count()} 本"
     } catch err {
       loginNote = "还不行：{err.message}"
@@ -979,10 +1167,28 @@ component SourceManager {
                         font: .body
                         lines: 1
                       }
-                      Text(if e.group.isEmpty() { e.url } else { "{e.group} · {e.url}" }) {
+                      Text(e.url) {
                         font: .caption
                         color: .tertiaryLabel
                         lines: 1
+                      }
+                      if !sources.entryGroups(e).isEmpty() {
+                        Scroll {
+                          width: 100%
+                          horizontal: true
+                          Row {
+                            gap: 4
+                            for g in sources.entryGroups(e) key g {
+                              Text(g) {
+                                font: .caption
+                                color: .secondaryLabel
+                                padding: [2, 6]
+                                radius: 4
+                                background: .secondaryBackground
+                              }
+                            }
+                          }
+                        }
                       }
                     }
                     if !selecting {
@@ -1015,29 +1221,67 @@ component SourceManager {
                           color: .secondaryLabel
                         }
                       }
-                      Text("按书源的说明填键和值：整段给 source.getVariable()，每个键也给 source.get()。") {
+                      if loginKeys.isEmpty() {
+                        Text("这条书源没有在规则里写出变量名。它若需要登录，请照书源的说明写一段 JSON。") {
+                          font: .caption
+                          color: .tertiaryLabel
+                        }
+                      } else {
+                        Text("这个书源要这些变量：{loginKeys.joined(separator: "、")}") {
+                          font: .caption
+                          color: .tertiaryLabel
+                        }
+                        if !loginRaw {
+                          for key in loginKeys key key {
+                            Column {
+                              gap: 4
+                              Text(key) {
+                                font: .caption.bold()
+                                color: .secondaryLabel
+                              }
+                              TextField {
+                                text: sources.variableValueOf(loginText, key)
+                                on change(v) { loginText = sources.withVariableValue(loginText, key, v) }
+                                placeholder: if secretVariable(key) { "密码或令牌" } else { "值" }
+                                autocapitalize: .off
+                                autocorrect: .no
+                                secure: secretVariable(key)
+                              }
+                            }
+                          }
+                        }
+                      }
+                      if loginKeys.isEmpty() || loginRaw {
+                        TextField {
+                          bind text: loginText
+                          multiline: true
+                          height: 120
+                          autocapitalize: .off
+                          autocorrect: .no
+                          placeholder: r#"{"user":"…","pass":"…"}"#
+                        }
+                        Text(if isJsonObject(loginText) {
+                          "这段 JSON 可以保存。"
+                        } else {
+                          r#"还不是一段 JSON 对象：要像 {"user":"…"} 这样。"#
+                        }) {
+                          font: .caption
+                          color: if isJsonObject(loginText) { .secondaryLabel } else { .orange }
+                        }
+                      }
+                      if !loginKeys.isEmpty() {
+                        Button(if loginRaw { "回到逐项填写" } else { "原始 JSON" }) {
+                          variant: .plain
+                          on press { loginRaw = !loginRaw }
+                        }
+                      }
+                      Text("保存时整段给 source.getVariable()，每个键也给 source.get()。") {
                         font: .caption
                         color: .tertiaryLabel
                       }
-                      TextField {
-                        bind text: loginText
-                        multiline: true
-                        height: 120
-                        autocapitalize: .off
-                        autocorrect: .no
-                        placeholder: r#"{"user":"…","pass":"…"}"#
-                      }
-                      Text(if isJsonObject(loginText) {
-                        "这段 JSON 可以保存。"
-                      } else {
-                        r#"还不是一段 JSON 对象：要像 {"user":"…"} 这样。"#
-                      }) {
-                        font: .caption
-                        color: if isJsonObject(loginText) { .secondaryLabel } else { .orange }
-                      }
                       Row {
                         gap: 10
-                        Button(if loginBusy { "保存中…" } else { "保存" }) {
+                        Button(if loginBusy { "保存中…" } else { "保存变量" }) {
                           on press { await saveLogin(e) }
                           disabled: loginBusy || !isJsonObject(loginText)
                         }
@@ -1052,6 +1296,53 @@ component SourceManager {
                       }
                       if !loginNote.isEmpty() {
                         Text(loginNote) {
+                          font: .footnote
+                          color: .secondaryLabel
+                        }
+                      }
+
+                      View {
+                        height: 1
+                        width: 100%
+                        background: .separator
+                      }
+
+                      Text("网页登录 / Cookie") {
+                        font: .caption.bold()
+                        color: .secondaryLabel
+                      }
+                      Text(if cookieHave {
+                        "这个书源已经有一份 Cookie。要换账号，粘贴新的再保存。"
+                      } else {
+                        "书源要验证码、扫码，或者它自己的登录脚本登不上时，在浏览器登录后复制 Cookie 请求头粘到这里。"
+                      }) {
+                        font: .caption
+                        color: .tertiaryLabel
+                      }
+                      TextField {
+                        bind text: cookieText
+                        multiline: true
+                        height: 78
+                        autocapitalize: .off
+                        autocorrect: .no
+                        placeholder: "jieqiUserInfo=…; jieqiUserName=…"
+                      }
+                      Row {
+                        gap: 10
+                        Button(if cookieBusy { "保存中…" } else { "保存 Cookie" }) {
+                          on press { await saveCookie(e) }
+                          disabled: cookieBusy
+                        }
+                        if cookieHave {
+                          Button("清除 Cookie") {
+                            variant: .plain
+                            on press { await clearCookie(e) }
+                            disabled: cookieBusy
+                          }
+                        }
+                      }
+                      if !cookieNote.isEmpty() {
+                        Text(cookieNote) {
                           font: .footnote
                           color: .secondaryLabel
                         }
@@ -1516,7 +1807,6 @@ screen Search {
   View {
     grow: 1
     padding: [0, env.safeLeft, 0, env.safeRight]
-    background: .background
 
     if allSources.isEmpty() {
       Column {
@@ -1622,6 +1912,13 @@ screen Discover {
   state jump = ""
   let picked = sources.find(s => s.id == jump)
   let shown = if picked == none { sources } else { [picked!] }
+  // 筛选条也是 List 的一行：它若摆在 List 外面，List 还会再按导航栏
+  // 留一次顶部空间，中间就空出一截。
+  let items: [DiscoverRow] = if sources.count() > 1 {
+    [DiscoverRow.filterBar] + shown.map(s => DiscoverRow.source(s))
+  } else {
+    shown.map(s => DiscoverRow.source(s))
+  }
 
   toolbar {
     Button("搜索书源") {
@@ -1651,7 +1948,6 @@ screen Discover {
   View {
     grow: 1
     padding: [0, env.safeLeft, 0, env.safeRight]
-    background: .background
     match rows {
       .pending => Column {
         grow: 1
@@ -1702,56 +1998,56 @@ screen Discover {
           }
         }
       } else {
-        Column {
+        // 整页只有一个 List：顶部 inset、状态栏和导航栏都交给它。
+        // 筛选条是它的第一行，不再在 List 外面自己算一遍安全区。
+        List {
+          appearance: .plain
           grow: 1
-          if sources.count() > 1 {
-            // 书源多的时候，先横着挑一个，再竖着看它的分类。
-            Scroll {
-              width: 100%
-              horizontal: true
-              padding: [10, lib.pageKeyline, 2, lib.pageKeyline]
-              Row {
-                gap: 8
-                SourceFilterChip("全部", jump.isEmpty()) {
-                  on choose { jump = "" }
-                }
-                for s in sources key s.id {
-                  SourceFilterChip(s.name, jump == s.id) {
-                    on choose { jump = if jump == s.id { "" } else { s.id } }
+          section: i => items[i].key()
+          header: id => if id == discoverFilterKey {
+            View { height: 0 }
+          } else if let s = sourceById(shown, id) {
+            Row {
+              gap: 8
+              align: .center
+              padding: [12, lib.pageKeyline, 8, lib.pageKeyline]
+              Text(s.name) {
+                font: .headline
+                grow: 1
+                lines: 1
+              }
+              Text(if s.group.isEmpty() { "{s.categories.count()} 个分类" } else { "{s.group} · {s.categories.count()} 个分类" }) {
+                font: .caption
+                color: .secondaryLabel
+                lines: 1
+              }
+            }
+          } else {
+            View { height: 0 }
+          }
+          for item in items key item.key() {
+            match item {
+              .filterBar => Scroll {
+                width: 100%
+                horizontal: true
+                padding: [8, lib.pageKeyline, 2, lib.pageKeyline]
+                Row {
+                  gap: 8
+                  SourceFilterChip("全部", jump.isEmpty()) {
+                    on choose { jump = "" }
+                  }
+                  for s in sources key s.id {
+                    SourceFilterChip(s.name, jump == s.id) {
+                      on choose { jump = if jump == s.id { "" } else { s.id } }
+                    }
                   }
                 }
               }
-            }
-          }
-          List {
-            appearance: .plain
-            grow: 1
-            section: i => shown[i].id
-            header: id => if let s = sourceById(shown, id) {
-              Row {
-                gap: 8
-                align: .center
-                padding: [16, lib.pageKeyline, 2, lib.pageKeyline]
-                Text(s.name) {
-                  font: .headline
-                  grow: 1
-                  lines: 1
-                }
-                Text(if s.group.isEmpty() { "{s.categories.count()} 个分类" } else { "{s.group} · {s.categories.count()} 个分类" }) {
-                  font: .caption
-                  color: .secondaryLabel
-                  lines: 1
-                }
-              }
-            } else {
-              View {}
-            }
-            // 一个书源一行：分类是标签，一行放得下好几个。
-            for s in shown key s.id {
-              Row {
+              // 一个书源一行：分类是标签，一行放得下好几个。
+              .source(s) => Row {
                 wrap: true
                 gap: 8
-                padding: [2, lib.pageKeyline, 18, lib.pageKeyline]
+                padding: [4, lib.pageKeyline, 18, lib.pageKeyline]
                 for c in s.categories key c.url {
                   CategoryChip(c.title) {
                     on choose {
@@ -1793,7 +2089,6 @@ screen DiscoverList(row: ExploreHit) {
 
   View {
     grow: 1
-    background: .background
     match books {
       .pending => Column {
         grow: 1
