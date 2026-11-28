@@ -268,10 +268,13 @@ screen DiscoverList(row: ExploreHit) {
   state extra: [sources.Book] = []
   state nextPage = 2
   state loadingMore = false
+  state stopping = false
   state moreNote = ""
   /// 静态分类地址只有第一页，就不给「加载更多」。
   state more = sources.canExplorePages(row.category.url)
   let shownBooks = (books.value ?? []) + extra
+  /// 下一页实际要请求的地址：转圈时显示出来，慢在哪儿一眼能看见。
+  let nextTarget = sources.pagePreview(row.category.url, nextPage)
 
   /// List 的每一行：先书，最后是「加载更多」那一行（到了头就没有）。
   fn shownRows() -> [DiscoverBookRow] {
@@ -291,6 +294,7 @@ screen DiscoverList(row: ExploreHit) {
       return
     }
     loadingMore = true
+    stopping = false
     moreNote = ""
     do {
       let found = try await withTimeout(20s) {
@@ -312,9 +316,14 @@ screen DiscoverList(row: ExploreHit) {
         nextPage += 1
       }
     } catch e {
-      moreNote = e.message
+      // 超时也取消不了正在跑的 native 调用（结构化取消要等它停），但叫停
+      // 之后引擎不会再重试：下一次点按不用排在那 45 秒后面。
+      let stopped = stopping || sources.nativeCancelled()
+      sources.nativeCancel()
+      moreNote = if stopped { "已停止" } else { e.message }
     }
     loadingMore = false
+    stopping = false
   }
 
   View {
@@ -395,6 +404,24 @@ screen DiscoverList(row: ExploreHit) {
                 padding: [6, lib.pageKeyline, 24, lib.pageKeyline]
                 if loadingMore {
                   ProgressRing {}
+                  Text("正在取第 {nextPage} 页…") {
+                    font: .caption
+                    color: .secondaryLabel
+                  }
+                  Text(nextTarget) {
+                    font: .caption2
+                    color: .tertiaryLabel
+                    textAlign: .center
+                    lines: 2
+                  }
+                  Button(if stopping { "正在停止…" } else { "停止" }) {
+                    variant: .glass
+                    disabled: stopping
+                    on press {
+                      stopping = true
+                      sources.nativeCancel()
+                    }
+                  }
                 } else if more {
                   Button("加载更多") {
                     on press { await loadMore() }

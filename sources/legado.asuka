@@ -291,14 +291,38 @@ fn withPageParam(url: string, page: int) -> string {
   return "{head}?{parts.joined(separator: "&")}{tail}"
 }
 
-/// 这个分类能不能看下一页：地址里有页号模板，脚本自己在拼 `page`，或者
-/// 查询串里已经写着页号。静态的分类地址（`/category/xuanhuan/`）只有第一页。
+/// 这个分类能不能看下一页：地址里有页号模板，脚本自己在拼 `page`，有
+/// `<1,2,3>` 的页码选项，或者查询串里已经写着页号。静态的分类地址
+/// （`/category/xuanhuan/`）只有第一页。
 pub fn canExplorePages(url: string) -> bool {
+  if engineFillsPage(url) { return true }
+  return pageParamOf(url).toInt() != none
+}
+
+/// 引擎自己会填页号的地址：`{{page}}` / `{page}` 模板、`searchPage`、
+/// `<js>` / `@js:` 脚本里的 `page`，以及 `<1,2,3>` 这种页码选项。
+/// 0.4.0 的 `legado_explore_page(url, key, page)` 认得这些，所以第一页和
+/// 下一页都把原址交给它：App 再改写一遍，会把脚本里自己声明的 `page`
+/// （`let page = …`）改坏。
+pub fn engineFillsPage(url: string) -> bool {
   let u = url.lower()
   if u.contains(r"{page}") || u.contains("searchpage") { return true }
-  // 脚本自己拼 page：explorePageUrl 把 `page=N;` 写进脚本开头。
   if u.contains("<js>") || u.contains("@js:") { return u.contains("page") }
-  return pageParamOf(url).toInt() != none
+  return pageChoices.find(url) != none
+}
+
+/// `<1,2,3>`：引擎按页号从选项里挑一个。
+let pageChoices = regex.must(r"<\s*\d+\s*(?:,\s*\d+\s*)*>")
+
+/// 转圈时给人看的地址：模板和写死的页号换成这一页；`<1,2,3>` 和没有
+/// 模板的脚本原样——那些的页号是引擎放进脚本里的，地点本身不变。
+pub fn pagePreview(url: string, page: int) -> string {
+  if !engineFillsPage(url) { return explorePageUrl(url, page) }
+  let u = url.lower()
+  if !u.contains(r"{page}") && !u.contains("searchpage") { return url }
+  var out = url.replace(r"{{page}}", "{page}")
+  out = out.replace(r"{page}", "{page}")
+  return out.replace("searchPage", "{page}")
 }
 
 let jsTag = regex.must(r"(?is)<js>")

@@ -200,12 +200,13 @@ pub async fn explore(s: BookSource, url: string) throws -> [Book] {
   return try await exploreNative(s, url, 1)
 }
 
-/// 发现页的下一页。0.4.0 的 `legado_explore_page` 填 `{{key}}` / `{{page}}`，
-/// 也认 `<1,2,3>` 和 `@js:`；地址里写死的 `?page=1` 它不改，所以先过一遍
-/// `explorePageUrl`（它同时保留旧的 `<js>page=` 写法），再把页号递给引擎。
+/// 发现页的下一页。模板、`<js>` / `@js:` 脚本和 `<1,2,3>` 都由 0.4.0 的
+/// `legado_explore_page` 填，原址递给它——第一页走的也是这条路，两边
+/// 于是是同一种写法。只有地址里写死的 `?page=1` 引擎不改，才在 App 这边换。
 pub async fn explorePage(s: BookSource, url: string, page: int) throws -> [Book] {
   if !bookSourcesAvailable() { throw unavailable() }
-  return try await exploreNative(s, explorePageUrl(url, page), page)
+  let target = if engineFillsPage(url) { url } else { explorePageUrl(url, page) }
+  return try await exploreNative(s, target, page)
 }
 
 async fn infoNative(s: BookSource, bookUrl: string, from: Book) throws -> Info {
