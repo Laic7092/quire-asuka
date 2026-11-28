@@ -205,7 +205,7 @@ legado-engine 负责在线书源的规则、JavaScript、cookie 与变量。
 
 # 固定版本
 ENGINE_VERSION=v0.6.0 .github/scripts/fetch-engine.sh linux-x64
-LEGADO_VERSION=v0.4.0 .github/scripts/fetch-legado.sh linux-x64
+LEGADO_VERSION=v0.4.1 .github/scripts/fetch-legado.sh linux-x64
 ```
 
 ebook-engine 的下载会校验 Release 中的 `SHA256SUMS`。需要从源码构建时：
@@ -215,7 +215,7 @@ ebook-engine 的下载会校验 Release 中的 `SHA256SUMS`。需要从源码构
 .github/scripts/build-legado.sh linux-x64 ../legado-engine
 ```
 
-CI 通过 `ENGINE_VERSION` / `LEGADO_VERSION` 选择版本，现在钉在 `v0.6.0` / `v0.4.0`：
+CI 通过 `ENGINE_VERSION` / `LEGADO_VERSION` 选择版本，现在钉在 `v0.6.0` / `v0.4.1`：
 这本书的应用按 ebook-engine 的 C ABI 写（稳定位置、流式章节、高度索引、全文搜索），
 legado-engine 则提供 `legado_open` / `legado_search` / `legado_info` / `legado_toc` / `legado_content`
 这几个调用，0.3.0 又加了 `legado_download`（书源的文件，原样落盘）和 `legado_eval`
