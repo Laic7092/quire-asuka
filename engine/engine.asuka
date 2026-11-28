@@ -1,4 +1,4 @@
-// The book engine, called through its C ABI (ebook-engine 0.6.0's
+// The book engine, called through its C ABI (ebook-engine 0.7.0's
 // `crates/ebook-abi`): it parses EPUB and plain text, lays a chapter out into
 // pages, rasterizes a page to a file this app shows, and searches a book's
 // text.
@@ -27,16 +27,19 @@ extern fn quire_layout(
   width: Float32, height: Float32,
   top: Float32, right: Float32, bottom: Float32, left: Float32,
   fontScale: Float32, lineScale: Float32, letterPx: Float32, wordPx: Float32, align: UInt32,
+  rules: UInt32, profile: UInt32,
 ) -> Int32
 extern fn quire_scroll_begin(
   engine: Engine?, width: Float32, height: Float32,
   top: Float32, right: Float32, bottom: Float32, left: Float32,
   fontScale: Float32, lineScale: Float32, letterPx: Float32, wordPx: Float32, align: UInt32,
+  rules: UInt32, profile: UInt32,
 ) -> Int32
 extern fn quire_scroll_slice(
   engine: Engine?, spine: UInt32, width: Float32, height: Float32,
   top: Float32, right: Float32, bottom: Float32, left: Float32,
   fontScale: Float32, lineScale: Float32, letterPx: Float32, wordPx: Float32, align: UInt32,
+  rules: UInt32, profile: UInt32,
   y: Float32, sliceHeight: Float32, scale: Float32,
   ink: UInt32, paper: UInt32, bold: bool, path: CString,
 ) -> Int32
@@ -343,14 +346,23 @@ pub struct Margins {
   left: float
 }
 
+/// ---- 文本政策与版式档案 ----
+///
+/// `rules` 是三个中文排版开关，每个两位：0 跟随原书、1 开、2 关。位 0-1
+/// 标点挤压（引号、书名号各收半宽），2-3 行末标点悬挂（探出版心，不换行），
+/// 4-5 中西文自动间距（1/4 em）。`profile` 是版式档案：0 跟随本书（按书的
+/// 语言）、1 通用（贪心断行、不对齐）、2 简体中文（行/页动态规划、两端对齐、
+/// 孤字与孤行修复、页底齐平）。两个都是 0 时与 0.6.0 的输出逐字节一致。
+///
 /// Lays a chapter (`spine`, 0-based) out for a view of this size. Returns
 /// its page count, -1 when it failed.
-pub fn layout(id: Engine?, spine: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float = 0, word: float = 0, align: int = 0) -> int {
+pub fn layout(id: Engine?, spine: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float = 0, word: float = 0, align: int = 0, rules: int = 0, profile: int = 0) -> int {
   if !isOpen(id) { return -1 }
   let rc = quire_layout(
     id, u32(clamping: spine), 0, width, height,
     margins.top, margins.right, margins.bottom, margins.left,
     fontScale, lineScale, letter, word, u32(clamping: align),
+    u32(clamping: rules), u32(clamping: profile),
   )
   if rc < 0 { return -1 }
   return int(eb_plain_page_count(id))
@@ -359,12 +371,13 @@ pub fn layout(id: Engine?, spine: int, width: float, height: float, margins: Mar
 /// Lays a chapter out as one continuous scroll column. Returns its content
 /// height in points, -1 when it failed. `margins.top`/`bottom` are ignored:
 /// the host puts the top and bottom room around the list, not in each tile.
-pub fn layoutScroll(id: Engine?, spine: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float = 0, word: float = 0, align: int = 0) -> float {
+pub fn layoutScroll(id: Engine?, spine: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float = 0, word: float = 0, align: int = 0, rules: int = 0, profile: int = 0) -> float {
   if !isOpen(id) { return -1 }
   let rc = quire_layout(
     id, u32(clamping: spine), 1, width, height,
     0, margins.right, 0, margins.left,
     fontScale, lineScale, letter, word, u32(clamping: align),
+    u32(clamping: rules), u32(clamping: profile),
   )
   if rc < 0 { return -1 }
   return eb_plain_content_height(id)
@@ -386,12 +399,13 @@ pub fn renderSlice(id: Engine?, page: int, y: float, height: float, scale: float
 /// Lays `spine` out for scrolling and rasterizes one window of it in the
 /// same engine call, so a background tile cannot be drawn from another
 /// chapter's layout. Top and bottom margins are the host's, hence 0.
-pub fn scrollSlice(id: Engine?, spine: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float, word: float, y: float, sliceHeight: float, scale: float, ink: u32, paper: u32, bold: bool, path: string) -> bool {
+pub fn scrollSlice(id: Engine?, spine: int, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float, word: float, y: float, sliceHeight: float, scale: float, ink: u32, paper: u32, bold: bool, path: string, rules: int = 0, profile: int = 0) -> bool {
   if !isOpen(id) { return false }
   return quire_scroll_slice(
     id, u32(clamping: spine), width, height,
     0, margins.right, 0, margins.left,
     fontScale, lineScale, letter, word, 0,
+    u32(clamping: rules), u32(clamping: profile),
     y, sliceHeight, scale, ink, paper, bold, path,
   ) == 0
 }
@@ -421,12 +435,13 @@ pub struct FlowLoc {
 /// margins are the scroll container's own room, so they're dropped here; left
 /// and right are the text's column. Returns the chapter count, -1/-2 an error.
 /// Call it after the font is registered: a new font drops the session.
-pub fn beginScroll(id: Engine?, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float = 0, word: float = 0, align: int = 0) -> int {
+pub fn beginScroll(id: Engine?, width: float, height: float, margins: Margins, fontScale: float, lineScale: float, letter: float = 0, word: float = 0, align: int = 0, rules: int = 0, profile: int = 0) -> int {
   if !isOpen(id) { return -1 }
   return int(quire_scroll_begin(
     id, width, height,
     0, margins.right, 0, margins.left,
     fontScale, lineScale, letter, word, u32(clamping: align),
+    u32(clamping: rules), u32(clamping: profile),
   ))
 }
 
@@ -743,10 +758,10 @@ pub fn title(id: Engine?) -> string = eb_plain_title(id)
 
 /// The C ABI this binding is written against: `EB_ABI_VERSION` in the
 /// header. A library built for another one is a build mistake, not a book's.
-pub let expectedAbi = 3
+pub let expectedAbi = 4
 
 /// What the linked library reports: the ABI it was compiled for, and the
-/// library's own version string ("ebook-abi 0.6.0").
+/// library's own version string ("ebook-abi 0.7.0").
 pub fn abiVersion() -> int = int(eb_plain_abi_version())
 pub fn version() -> string = eb_plain_version()
 

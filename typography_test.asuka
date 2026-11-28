@@ -1,0 +1,53 @@
+// 中文排版设置一路走到引擎：标点挤压、行末悬挂、中西文间距和版式档案不是
+// 应用自己算的，是引擎按它那张表排的。这里用一本现造的书看同一章换开关
+// 之后行断在别处——管线的任何一段没接上，这个测试都会红。
+
+import ./engine
+
+let typeMargins = engine.Margins(top: 24, right: 24, bottom: 24, left: 24)
+
+/// 一本句子里全是成对引号的书：压不压半宽，一行装得下的字数不一样。
+fn quoteBook() -> engine.Engine? {
+  let id = engine.newBook("引号")
+  var body = ""
+  for i in 0..<40 { body += "他说：“这一段有很多引号。”她说：“是很多。”\n" }
+  let _n = engine.appendChapter(id, "一", body)
+  return id
+}
+
+fn lineThree(id: engine.Engine?, rules: int) -> string {
+  let _pages = engine.layout(
+    id, 0, 200, 600, typeMargins, 1.0, 1.6, 0, 0,
+    align: 0, rules: rules, profile: 0,
+  )
+  return engine.lineText(id, 2)
+}
+
+test "打开标点挤压，行就断在别处" {
+  let id = quoteBook()
+  expect(engine.isOpen(id))
+  let plain = lineThree(id, rules: 0)
+  // 位 0-1 是挤压：1 = 开。引号成对收半宽之后，一行装得下的字多了。
+  let squeezed = lineThree(id, rules: 1)
+  expect(!plain.isEmpty())
+  expect(squeezed != plain)
+  // 同一个设置再排一次还是那一行：引擎是纯函数，缓存不能掺进来。
+  expect(lineThree(id, rules: 1) == squeezed)
+  expect(lineThree(id, rules: 0) == plain)
+  // 2 = 关，和「跟随原书」（书里没写 CSS 就是关）是同一批行。
+  expect(lineThree(id, rules: 2) == plain)
+}
+
+test "三个开关一位两位地装进一个整数" {
+  let library = Library()
+  expect(library.textRules() == 0)
+  library.ruleTrim = 1
+  expect(library.textRules() == 1)
+  library.ruleHang = 1
+  expect(library.textRules() == 1 | 1 << 2)
+  library.ruleSpace = 2
+  expect(library.textRules() == 1 | 1 << 2 | 2 << 4)
+  // 任一项「关」都写 2，不是 0：0 是「跟随原书」，读法不一样。
+  library.ruleTrim = 2
+  expect(library.textRules() & 3 == 2)
+}

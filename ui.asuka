@@ -1,0 +1,135 @@
+// 各个页面共用的小块：空着的时候说什么、加载失败时说什么、一条窄提示。
+// 放在一处，各页的口径才一致——图标多大、标题什么字号、说明怎么折行、
+// 动作按钮放在哪里，不用每页各写一套。
+
+/// 空着的一整块：页面中央，图标、一句标题、一句说明，可以带一个动作。
+/// 列表里的一节用它时 fill: false，不会把剩下的空间都占掉。
+component EmptyState(title: string) {
+  prop icon = Icons.emptyBook
+  prop note = ""
+  /// 动作按钮的文字；空的不放按钮。
+  prop action = ""
+  prop fill = true
+  event act
+
+  Column {
+    grow: if fill { 1 } else { 0 }
+    justify: .center
+    align: .center
+    gap: 12
+    padding: [24, 40]
+    if !icon.isEmpty() {
+      Symbol(icon) {
+        font: .title
+        color: .tertiaryLabel
+      }
+    }
+    Text(title) {
+      font: .headline
+    }
+    if !note.isEmpty() {
+      Text(note) {
+        font: .footnote
+        color: .secondaryLabel
+        textAlign: .center
+      }
+    }
+    if !action.isEmpty() {
+      Button(action) {
+        on press { emit act }
+      }
+    }
+  }
+}
+
+/// 一段没有东西的窄提示：放进一页的某一段里，不占满一屏。
+component EmptyNote(text: string) {
+  prop icon = Icons.emptyBook
+
+  Row {
+    gap: 10
+    align: .center
+    padding: [14, 16]
+    radius: 14
+    background: .secondaryBackground
+    Symbol(icon) {
+      font: .subheadline
+      color: .tertiaryLabel
+    }
+    Text(text) {
+      font: .footnote
+      color: .secondaryLabel
+      grow: 1
+    }
+  }
+}
+
+/// 一次加载失败：一句人话（调用方已经过了一遍 lib.plain）、可选的细节，
+/// 和一个重试。地址、章节这类上下文用 detail 带进来。
+component LoadFailed(title: string) {
+  prop message = ""
+  prop detail = ""
+  prop icon = Icons.syncFailed
+  event retry
+
+  Column {
+    grow: 1
+    justify: .center
+    align: .center
+    gap: 12
+    padding: [24, 40]
+    Symbol(icon) {
+      font: .title
+      color: .tertiaryLabel
+    }
+    Text(title) {
+      font: .headline
+    }
+    if !message.isEmpty() {
+      Text(message) {
+        font: .footnote
+        color: .secondaryLabel
+        textAlign: .center
+      }
+    }
+    if !detail.isEmpty() {
+      Text(detail) {
+        font: .caption2
+        color: .tertiaryLabel
+        textAlign: .center
+        lines: 2
+      }
+    }
+    Button("重试") {
+      on press { emit retry }
+    }
+  }
+}
+
+/// 一件要等的事：转圈，和一句「在做什么」。等的是哪本书、哪个分类，
+/// 调用方写进 text；要显示地址这类上下文时用 detail。
+component LoadingNote(text: string) {
+  prop detail = ""
+
+  Column {
+    grow: 1
+    justify: .center
+    align: .center
+    gap: 12
+    padding: [24, 40]
+    ProgressRing {}
+    Text(text) {
+      font: .footnote
+      color: .secondaryLabel
+      textAlign: .center
+    }
+    if !detail.isEmpty() {
+      Text(detail) {
+        font: .caption2
+        color: .tertiaryLabel
+        textAlign: .center
+        lines: 2
+      }
+    }
+  }
+}

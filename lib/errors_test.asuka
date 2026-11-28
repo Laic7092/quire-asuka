@@ -1,0 +1,42 @@
+// 错误的人话版本：常见的网络、文件、权限失败要认出来；应用自己写的中文
+// 和没见过的英文原样通过。
+
+test "a connection failure becomes something a reader can act on" {
+  expect(plain("The Internet connection appears to be offline.").contains("网络"))
+  expect(plain("Could not resolve host: example.com").contains("网络"))
+}
+
+test "an account the server refused says so, before the network does" {
+  expect(plain("HTTP 401 Unauthorized").contains("账号"))
+  expect(plain("invalid credential").contains("账号"))
+}
+
+test "a timeout isn't the same as no network" {
+  expect(plain("The request timed out.").contains("太久"))
+}
+
+test "a missing file says it's gone, not 'enoent'" {
+  expect(plain("No such file or directory (os error 2)").contains("不在"))
+  expect(plain("permission denied (os error 13)").contains("权限"))
+  expect(plain("NSURLSession: no space left on device").contains("空间"))
+}
+
+test "the app's own Chinese is left as it is" {
+  let own = "《背影》的正文还没备份到云端"
+  expect(plain(own) == own)
+}
+
+test "an error nobody has seen keeps its own words" {
+  expect(plain("boom at 3am") == "boom at 3am")
+}
+
+test "an empty error still says something" {
+  expect(!plain("").isEmpty())
+}
+
+test "a long error is clipped to one line" {
+  let long = "x".repeat(500)
+  expect(plain(long).count() <= 161)
+  expect(!plain(long).contains("\n"))
+  expect(plain("a\nb").contains("a b"))
+}

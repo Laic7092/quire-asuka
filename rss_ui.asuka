@@ -71,19 +71,12 @@ component RssManager {
     }
 
     if rows.isEmpty() {
-      Column {
-        gap: 10
-        padding: [22, 0]
-        align: .center
-        Text("还没有订阅源") { font: .headline }
-        Text("导入一份阅读（Legado）的订阅源 JSON；混在书源合集里的订阅源也会落在这里。") {
-          font: .footnote
-          color: .secondaryLabel
-          textAlign: .center
-        }
-        Button("导入订阅源") {
-          on press { present(SourceImport()) }
-        }
+      EmptyState("还没有订阅源") {
+        fill: false
+        icon: Icons.globe
+        note: "导入一份阅读（Legado）的订阅源 JSON；混在书源合集里的订阅源也会落在这里。"
+        action: "导入订阅源"
+        on act { present(SourceImport()) }
       }
     } else {
       List {
@@ -173,7 +166,7 @@ screen RssFeed(entry: sources.RssEntry) {
       articles = page.articles
       nextUrl = page.nextUrl
     } catch e {
-      error = e.message
+      error = lib.plain(e.message)
     }
     busy = false
   }
@@ -192,7 +185,7 @@ screen RssFeed(entry: sources.RssEntry) {
       articles = articles + page.articles
       nextUrl = page.nextUrl
     } catch e {
-      error = e.message
+      error = lib.plain(e.message)
     }
     moreBusy = false
   }
@@ -222,48 +215,18 @@ screen RssFeed(entry: sources.RssEntry) {
       }
 
       if busy {
-        Column {
-          grow: 1
-          justify: .center
-          align: .center
-          gap: 12
-          ProgressRing {}
-          Text("正在取文章…") {
-            font: .footnote
-            color: .secondaryLabel
-          }
-        }
+        LoadingNote("正在取文章…")
       } else if articles.isEmpty() && !error.isEmpty() {
-        Column {
-          grow: 1
-          justify: .center
-          align: .center
-          gap: 12
-          Text("文章没有取回来") { font: .headline }
-          Text(error) {
-            font: .footnote
-            color: .secondaryLabel
-            textAlign: .center
-          }
-          Button("重试") {
-            on press { await reload() }
-          }
+        LoadFailed("文章没有取回来") {
+          message: error
+          on retry { await reload() }
         }
       } else if articles.isEmpty() {
-        Column {
-          grow: 1
-          justify: .center
-          align: .center
-          gap: 10
-          Text("这个订阅源还没有文章") { font: .headline }
-          Text("可能是订阅地址或规则不对；也可以刷新再试。") {
-            font: .footnote
-            color: .secondaryLabel
-            textAlign: .center
-          }
-          Button("刷新") {
-            on press { await reload() }
-          }
+        EmptyState("这个订阅源还没有文章") {
+          icon: Icons.globe
+          note: "可能是订阅地址或规则不对；也可以刷新再试。"
+          action: "刷新"
+          on act { await reload() }
         }
       } else {
         List {
@@ -341,7 +304,7 @@ screen RssArticle(entry: sources.RssEntry, article: sources.RssArticle) {
     do {
       body = try await sources.articleContentOf(entry, article)
     } catch e {
-      error = e.message
+      error = lib.plain(e.message)
     }
     busy = false
   }
@@ -363,34 +326,13 @@ screen RssArticle(entry: sources.RssEntry, article: sources.RssArticle) {
       }
 
       if busy {
-        Column {
-          grow: 1
-          justify: .center
-          align: .center
-          gap: 12
-          ProgressRing {}
-          Text("正在取正文…") {
-            font: .footnote
-            color: .secondaryLabel
-          }
-        }
+        LoadingNote("正在取正文…")
       } else if !error.isEmpty() {
-        Column {
-          grow: 1
-          justify: .center
-          align: .center
-          gap: 12
-          Text("正文没有取回来") { font: .headline }
-          Text(error) {
-            font: .footnote
-            color: .secondaryLabel
-            textAlign: .center
-          }
-          Button("重试") {
-            on press {
-              busy = true
-              await load()
-            }
+        LoadFailed("正文没有取回来") {
+          message: error
+          on retry {
+            busy = true
+            await load()
           }
         }
       } else {

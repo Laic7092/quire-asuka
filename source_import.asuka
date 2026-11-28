@@ -65,7 +65,7 @@ component SourceImport {
         await allSources.seedVariables(report.ids)
       }
     } catch e {
-      error = e.message
+      error = lib.plain(e.message)
     }
     busy = false
   }
@@ -92,7 +92,7 @@ component SourceImport {
         await allSources.seedVariables(report.ids)
       }
     } catch e {
-      error = e.message
+      error = lib.plain(e.message)
     }
     busy = false
   }
@@ -114,7 +114,7 @@ component SourceImport {
         address = t
       }
     } catch e {
-      error = e.message
+      error = lib.plain(e.message)
     }
   }
 

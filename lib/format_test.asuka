@@ -1,0 +1,19 @@
+// 大小的说法：书架、同步页和排版页用同一套单位。
+
+test "nothing is 0 MB, not 0 KB" {
+  expect(sizeText(0) == "0 MB")
+  expect(sizeText(-5) == "0 MB")
+}
+
+test "under a megabyte is counted in kilobytes" {
+  expect(sizeText(2048) == "2 KB")
+  expect(sizeText(1024 * 1024 - 1) == "1023 KB")
+}
+
+test "a megabyte and up, then gigabytes with one decimal" {
+  expect(sizeText(1024 * 1024) == "1 MB")
+  expect(sizeText(300 * 1024 * 1024) == "300 MB")
+  expect(sizeText(2 * 1024 * 1024 * 1024) == "2 GB")
+  // 2.5 GB: the tenth, not the hundredth.
+  expect(sizeText(2560 * 1024 * 1024) == "2.5 GB")
+}

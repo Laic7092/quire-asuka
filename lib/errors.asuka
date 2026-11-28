@@ -1,0 +1,61 @@
+// 错误原话是给开发者看的：网络库说 "The Internet connection appears to be
+// offline"，文件系统说 "No such file or directory (os error 2)"，JSON 说
+// "expected value at line 1 column 1"。这一层把它们翻成读者能行动的一句话。
+//
+// 应用自己抛的中文错误原样通过：那些句子本来就是写给人看的。认不出的
+// 英文原样带回来——宁可留一句难懂的细节，也别换成一句更含糊的话。
+
+/// 有汉字就当作已经是一句人话。扫描 UTF-8 的首字节（汉字在 U+4E00 以上，
+/// 首字节 0xE4–0xE9），比逐字比较便宜，且不必依赖正则的 Unicode 类。
+fn hasHan(text: string) -> bool {
+  return text.bytes().toArray().any(b => b >= 0xE4 && b <= 0xE9)
+}
+
+fn anyOf(text: string, words: [string]) -> bool = words.any(w => text.contains(w))
+
+/// 太长的一句话在界面上放不下，也会把日志塞满；掐到一行能读的长度。
+pub fn clipped(text: string, limit: int = 160) -> string {
+  let clean = text.trim().replace("\r", " ").replace("\n", " ")
+  if clean.count() <= limit { return clean }
+  return clean.slice(0, limit) + "…"
+}
+
+/// 一句能行动的话。"cancel" 先说，因为用户自己点了停止时不该听到失败。
+pub fn plain(message: string) -> string {
+  let raw = clipped(message)
+  if raw.isEmpty() { return "出了点问题，再试一次" }
+  if hasHan(raw) { return raw }
+  let m = raw.lower()
+
+  if anyOf(m, ["cancel", "abor"]) {
+    return "已取消"
+  }
+  if anyOf(m, ["401", "403", "unauthorized", "forbidden", "authentication", "credential", "password"]) {
+    return "账号或密码不对，或者授权过期了。检查后重试"
+  }
+  if anyOf(m, ["quota", "insufficient storage", "no space", "507", "disk full"]) {
+    return "云端或本机没空间了，清理一些再试"
+  }
+  if anyOf(m, ["certificate", "ssl", "tls", "handshake"]) {
+    return "安全连接没建立起来：证书验不过，或者被网络拦截了"
+  }
+  if anyOf(m, ["offline", "not connected", "network", "could not resolve", "couldn't resolve", "name or service", "host not found", "unreachable", "connection refused", "connect", "dns"]) {
+    return "网络不通，连不上服务器。检查网络后重试"
+  }
+  if anyOf(m, ["timed out", "timeout", "time out"]) {
+    return "等太久了，服务器没有回应。稍后再试"
+  }
+  if anyOf(m, ["not found", "no such file", "enoent", "404", "does not exist"]) {
+    return "要找的东西不在了：文件可能被删掉或挪走了"
+  }
+  if anyOf(m, ["permission", "denied", "eacces", "eperm", "read-only"]) {
+    return "没有权限读写它。检查文件的权限，或换个位置"
+  }
+  if anyOf(m, ["unsupported", "not supported", "not implemented", "unavailable"]) {
+    return "这个平台还不支持这项操作"
+  }
+  if anyOf(m, ["json", "decode", "parse", "unexpected token", "invalid"]) {
+    return "读回来的内容看不懂，可能不是期望的格式"
+  }
+  return raw
+}

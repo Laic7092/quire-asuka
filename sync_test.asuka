@@ -171,6 +171,10 @@ test "the catalog reads back what it wrote" {
     theme: "night",
     size: 22.0,
     goal: 30,
+    ruleTrim: 1,
+    ruleHang: 2,
+    profile: 2,
+    align: 4,
   )
   let back = try syncDecode(syncEncode(snap))
   expect(back.shelf.count() == 1)
@@ -182,6 +186,12 @@ test "the catalog reads back what it wrote" {
   expect(back.theme == "night")
   expect(back.size == 22.0)
   expect(back.goal == 30)
+  // 中文排版的档位跟着走；没写这些字段的旧 catalog 读成 0（跟随原书）。
+  expect(back.ruleTrim == 1)
+  expect(back.ruleHang == 2)
+  expect(back.ruleSpace == 0)
+  expect(back.profile == 2)
+  expect(back.align == 4)
 }
 
 test "a book's sidecar reads back its bookmarks and days" {
@@ -244,4 +254,20 @@ test "a source deleted on either device stays deleted" {
   expect(merged.entries.isEmpty())
   expect(merged.removed.get("a") == 30)
   expect(merged.removed.get("b") == 30)
+}
+
+test "a problem names the book and says why in words a reader knows" {
+  let p = SyncProblem(book: "背影", step: "上传正文", reason: "The request timed out.")
+  expect(p.line() == "《背影》上传正文：等太久了，服务器没有回应。稍后再试")
+}
+
+test "一条同步报告说清没做成几项，停下来也留着做完的" {
+  let r = SyncReport(uploaded: 2, problems: [
+    SyncProblem(book: "", step: "上传封面", reason: "no space left on device"),
+  ])
+  expect(r.text().contains("1 项没有完成"))
+  expect(r.text().contains("上传 2 个文件"))
+  let stopped = SyncReport(uploaded: 1, stopped: true)
+  expect(stopped.text().hasPrefix("已停止"))
+  expect(stopped.text().contains("上传 1 个文件"))
 }

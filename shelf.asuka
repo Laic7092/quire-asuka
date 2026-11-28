@@ -365,7 +365,7 @@ component ShelfBook(book: lib.Book, reading: lib.Reading) {
         do {
           snackbar(try await library.backupBook(book))
         } catch e {
-          snackbar(e.message)
+          snackbar(lib.plain(e.message))
         }
       }
     }
@@ -641,22 +641,10 @@ screen Shelf {
     }
   }
 
-  // Runs the import, and says so when it can't.
+  // Runs the import, and says so when it can't. 进度和汇总与 Files / Mail
+  // 递进来的多本是同一套（imports.asuka）。
   async fn bring(paths: [string]) {
-    for p in paths {
-      let title = lib.titleOf(lib.fileName(p))
-      do {
-        // A book already on the shelf (the same bytes, whatever the file is
-        // called) is reported, not added again.
-        if try await library.importFile(p) {
-          snackbar("已加入《{title}》")
-        } else {
-          snackbar("《{title}》已经在书架上了")
-        }
-      } catch e {
-        snackbar(e.message)
-      }
-    }
+    await bringBooks(library, paths)
   }
 
   async fn pick() {
@@ -672,7 +660,7 @@ screen Shelf {
       )
       await bring(paths)
     } catch e {
-      snackbar(e.message)
+      snackbar(lib.plain(e.message))
     }
   }
 
@@ -683,7 +671,7 @@ screen Shelf {
       if let s = allSources { s.applySync(merged) }
       snackbar(message)
     } catch e {
-      snackbar(e.message)
+      snackbar(lib.plain(e.message))
     }
   }
 

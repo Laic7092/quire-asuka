@@ -175,14 +175,6 @@ fn signedPercent(v: float) -> string {
 /// The page files: one a book, chapter, page and size, next to the app's data.
 fn pagesDir() -> string = fs.join([fs.appDir(), "pages"])
 
-/// The engine's own caches, as a size a reader can read.
-fn cacheText(bytes: int) -> string {
-  if bytes <= 0 { return "0 MB" }
-  let mb = (bytes + 999_999) / 1_000_000
-  if mb < 1024 { return "{mb} MB" }
-  return "{mb / 1024} GB"
-}
-
 /// How many bytes of page files the app keeps. They are a cache — a page is a
 /// few milliseconds to draw — so running over this costs one window's drawing,
 /// not correctness. Reading a book for an hour writes a couple of gigabytes of
@@ -265,917 +257,6 @@ fn slicePath(book: string, y: float, height: float, width: float, viewHeight: fl
   ])
 }
 
-/// A bookmark's row: its chapter's title from the table of contents (a chapter
-/// can be missing from it), and how far into the book it is.
-fn markTitle(mark: lib.Bookmark, items: [engine.TocItem]) -> string {
-  let item = items.find(i => i.spine == mark.chapter)
-  let name = item?.title ?? "第 {mark.chapter + 1} 章"
-  return "{name} · {(mark.percent * 100).int()}%"
-}
-
-/// What a row of the contents sheet is: a section's name, a place the reader
-/// kept, a chapter, or one of this chapter's pictures.
-enum ContentsRowKind {
-  header
-  bookmark
-  note
-  chapter
-  image
-}
-
-/// The chapter's picture with this engine id; none when it isn't there.
-fn imageOf(images: [engine.ImageInfo], id: int) -> engine.ImageInfo? {
-  for image in images {
-    if image.id == id { return image }
-  }
-  return none
-}
-
-/// One row of the contents sheet, all three kinds: a List's rows come from a
-/// `for`, so the sections are rows like any other.
-struct ContentsRow {
-  kind: ContentsRowKind
-  title: string
-  chapter: int
-  percent: float
-  index: int
-  id: string
-  /// A note row's quote and what the reader wrote; "" for other rows.
-  quote: string = ""
-  text: string = ""
-  /// The place as the engine names it, when it could be asked: what puts a
-  /// bookmark back on its own paragraph after the type has been resized.
-  locator: string = ""
-  /// An image row's place in the chapter's list.
-  image: int = -1
-}
-
-/// The contents sheet's tabs: the table of contents, the places kept, and the
-/// notes (highlights are notes without words).
-enum ContentsTab {
-  toc
-  bookmarks
-  notes
-}
-
-fn tabIndex(tab: ContentsTab) -> int = match tab {
-  .toc => 0
-  .bookmarks => 1
-  .notes => 2
-}
-
-fn tabAt(index: int) -> ContentsTab = if index == 1 {
-  .bookmarks
-} else if index == 2 {
-  .notes
-} else {
-  .toc
-}
-
-/// The 目录 tab: this chapter's pictures (when the book has them), then the
-/// book's own table of contents.
-fn tocRows(items: [engine.TocItem], images: [engine.ImageInfo]) -> [ContentsRow] {
-  var rows: [ContentsRow] = []
-  if !images.isEmpty() {
-    rows.push(ContentsRow(kind: .header, title: "本章图片", chapter: 0, percent: 0, index: 0, id: "h.images"))
-    for (i, image) in images.enumerated() {
-      let name = if image.alt.isEmpty() { lib.fileName(image.src) } else { image.alt }
-      rows.push(ContentsRow(
-        kind: .image, title: name, chapter: 0, percent: 0, index: i, id: "i.{i}",
-        text: if image.width > 0 { "{image.width} × {image.height}" } else { "" },
-        image: image.id,
-      ))
-    }
-  }
-  if !items.isEmpty() {
-    if !images.isEmpty() {
-      rows.push(ContentsRow(kind: .header, title: "目录", chapter: 0, percent: 0, index: 0, id: "h.toc"))
-    }
-    for (i, item) in items.enumerated() {
-      rows.push(ContentsRow(
-        kind: .chapter, title: item.title, chapter: item.spine, percent: 0, index: i,
-        id: "c.{i}",
-      ))
-    }
-  }
-  return rows
-}
-
-/// The 书签 tab: the places the reader kept, in the order they were made.
-fn bookmarkRows(marks: [lib.Bookmark], items: [engine.TocItem]) -> [ContentsRow] {
-  var rows: [ContentsRow] = []
-  for mark in marks {
-    rows.push(ContentsRow(
-      kind: .bookmark, title: markTitle(mark, items),
-      chapter: mark.chapter, percent: mark.percent, index: 0, id: mark.id,
-      locator: mark.locator,
-    ))
-  }
-  return rows
-}
-
-/// The 笔记 tab: notes and highlights together, in the order they were made.
-fn noteRows(notes: [lib.Note]) -> [ContentsRow] {
-  var rows: [ContentsRow] = []
-  for note in notes {
-    rows.push(ContentsRow(
-      kind: .note, title: note.preview(), chapter: note.chapter, percent: note.percent,
-      index: 0, id: note.id, quote: note.quote, text: note.text, locator: note.locator,
-    ))
-  }
-  return rows
-}
-
-component Contents(items: [engine.TocItem], at: int, book: string, images: [engine.ImageInfo] = []) {
-  event pick(index: int)
-  event goBookmark(chapter: int, percent: float, locator: string)
-  event dropBookmark(id: string)
-  event dropNote(id: string)
-  event image(index: int)
-  use library: Library
-  let env = environment()
-
-  state tab = ContentsTab.toc
-  let marks = library.bookmarksOf(book)
-  let notes = library.notesOf(book)
-  let rows = match tab {
-    .toc => tocRows(items, images)
-    .bookmarks => bookmarkRows(marks, items)
-    .notes => noteRows(notes)
-  }
-  let emptyText = match tab {
-    .toc => "这本书没有目录"
-    .bookmarks => "还没有书签"
-    .notes => "还没有笔记或高亮"
-  }
-  let list = Ref()
-  let palette = lib.paletteFor(library.theme)
-
-  // The row for the chapter being read: a spine may be missing from the TOC,
-  // and nested entries mean the row isn't the spine.
-  let here = if tab == .toc {
-    rows.index(r => r.kind == .chapter && r.chapter == at) ?? 0
-  } else {
-    0
-  }
-
-  // Open where the reader is, not at the first chapter. Coming back to 目录
-  // scrolls there again; the other tabs keep their own list.
-  task("{tabIndex(tab)}") {
-    if tab != .toc { return }
-    await sleep(30ms)
-    list.scrollToItem(here, animated: false)
-  }
-
-  Column {
-    grow: 1
-    gap: 0
-    padding: lib.sheetPad(env, top: 16, bottom: 0, side: 0)
-    background: palette.paper
-    Row {
-      padding: [8, 20]
-      gap: 8
-      align: .center
-      Text("目录") {
-        font: .title3
-        color: palette.ink
-        grow: 1
-      }
-      Button("") {
-        icon: Icons.close
-        variant: .glass
-        color: palette.ink
-        on press { dismiss() }
-      }
-    }
-    Segmented(["目录", "书签", "笔记"]) {
-      selected: tabIndex(tab)
-      padding: [0, 20, 8, 20]
-      on change(i) { tab = tabAt(i) }
-    }
-    if rows.isEmpty() {
-      Column {
-        grow: 1
-        justify: .center
-        align: .center
-        padding: [24, 40]
-        Text(emptyText) {
-          font: .footnote
-          color: palette.muted
-        }
-      }
-    } else {
-      List {
-        ref: list
-        grow: 1
-        appearance: .bare
-        for row in rows key row.id {
-          match row.kind {
-            .header => Row {
-              padding: [12, 20]
-              Text(row.title) {
-                font: .footnote
-                color: palette.muted
-              }
-            }
-            .bookmark => Menu {
-              longPress: true
-              actions: [.button(title: "删除", role: .destructive, run: () => { emit dropBookmark(row.id) })]
-              Row {
-                padding: [12, 20]
-                gap: 10
-                align: .center
-                on press {
-                  emit goBookmark(chapter: row.chapter, percent: row.percent, locator: row.locator)
-                  dismiss()
-                }
-                Text(row.title) {
-                  grow: 1
-                  lines: 1
-                  color: palette.ink
-                }
-              }
-            }
-            .note => Menu {
-              longPress: true
-              actions: [
-                .button(title: "编辑", run: () => {
-                  present(NoteEditor(quote: row.quote, draft: row.text, existing: true) {
-                    on save(text) {
-                      library.updateNote(row.id, text: text)
-                    }
-                    on remove { emit dropNote(row.id) }
-                  })
-                }),
-                .button(title: "删除", role: .destructive, run: () => { emit dropNote(row.id) }),
-              ]
-              Row {
-                padding: [12, 20]
-                gap: 10
-                align: .center
-                on press {
-                  emit goBookmark(chapter: row.chapter, percent: row.percent, locator: row.locator)
-                  dismiss()
-                }
-                Column {
-                  grow: 1
-                  gap: 3
-                  Text(row.title) {
-                    lines: 2
-                    color: palette.ink
-                  }
-                  if !row.text.isEmpty() {
-                    Text(row.text) {
-                      font: .footnote
-                      lines: 1
-                      color: palette.muted
-                    }
-                  }
-                }
-                Text("{(row.percent * 100).int()}%") {
-                  font: .caption
-                  color: palette.muted
-                }
-              }
-            }
-            .chapter => Row {
-              padding: [12, 20]
-              gap: 10
-              align: .center
-              on press {
-                emit pick(row.index)
-                dismiss()
-              }
-              Text(row.title) {
-                grow: 1
-                lines: 2
-                font: if row.chapter == at { .body.bold() } else { .body }
-                color: if row.chapter == at { .accent } else { palette.ink }
-              }
-              Text("{row.chapter + 1}") {
-                font: .caption
-                color: palette.muted
-              }
-            }
-            .image => Row {
-              padding: [12, 20]
-              gap: 10
-              align: .center
-              on press {
-                emit image(row.image)
-                dismiss()
-              }
-              Symbol(Icons.image) {
-                font: .body
-                color: palette.muted
-              }
-              Column {
-                grow: 1
-                gap: 2
-                Text(row.title) {
-                  lines: 1
-                  color: palette.ink
-                }
-                if !row.text.isEmpty() {
-                  Text(row.text) {
-                    font: .caption
-                    color: palette.muted
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
-/// A setting as the 0…1 a slider's track holds, and back. The slider's
-/// value reaches the platform before its min and max do, so a value outside
-/// the platform's default 0…1 is clamped where the track starts: settings
-/// use the whole track, and the sheet maps.
-fn norm(v: float, lo: float, hi: float) -> float {
-  if hi <= lo { return 0 }
-  var x = (v - lo) / (hi - lo)
-  if x < 0 { x = 0 }
-  if x > 1 { x = 1 }
-  return x
-}
-
-fn denorm(f: float, lo: float, hi: float) -> float = lo + f * (hi - lo)
-
-/// Type size, line spacing, the margins, the letter spacing, and the paper.
-/// Everything a page is laid out with, so nothing has to be guessed at.
-component Appearance(typeface: string, cacheBytes: int = 0) {
-  use library: Library
-  let env = environment()
-
-  let palette = lib.paletteFor(library.theme)
-  let papers = [
-    ["paper", "纸白"],
-    ["sepia", "米黄"],
-    ["night", "夜间"],
-  ]
-
-  /// 滑块的位置是 0…1，不是设置值本身：Slider 的 value 比 min/max 先
-  /// 到平台，落在默认的 0…1 之外就会被平台夹住，滑块停在最左（或最
-  /// 右），和旁边的数字对不上。0…1 的轨道永远不会被夹，位置也一样准。
-  state size = norm(peek(library.size), 14, 30)
-  state line = norm(peek(library.line), 0.8, 2.5)
-  state margins = norm(peek(library.margins), -0.1, 0.1)
-  state letter = norm(peek(library.letter), -0.1, 0.1)
-  state word = norm(peek(library.word), -0.2, 0.2)
-
-  Column {
-    grow: 1
-    padding: lib.sheetPad(env, top: 24, bottom: 24, side: 24)
-    gap: 16
-    background: palette.paper
-
-    Row {
-      gap: 8
-      align: .center
-      Text("阅读设置") {
-        font: .title3
-        color: palette.ink
-        grow: 1
-      }
-      Button("") {
-        icon: Icons.close
-        variant: .glass
-        color: palette.ink
-        on press { dismiss() }
-      }
-    }
-
-    Text("翻页方式") {
-      font: .headline
-      color: palette.ink
-    }
-    Segmented(["分页", "滚动"]) {
-      selected: if library.mode == "scroll" { 1 } else { 0 }
-      on change(i) { library.mode = if i == 1 { "scroll" } else { "page" } }
-    }
-
-    Row {
-      gap: 12
-      align: .center
-      Text("字号") {
-        font: .subheadline
-        color: palette.ink
-        width: 42
-      }
-      Slider {
-        value: size
-        min: 0
-        max: 1
-        grow: 1
-        on change(f) {
-          size = f
-          library.size = denorm(f, 14, 30)
-        }
-      }
-      Text("{denorm(size, 14, 30).rounded().int()} 点") {
-        font: .footnote
-        color: palette.muted
-        width: 44
-        textAlign: .end
-      }
-    }
-
-    Row {
-      gap: 12
-      align: .center
-      Text("行距") {
-        font: .subheadline
-        color: palette.ink
-        width: 42
-      }
-      Slider {
-        value: line
-        min: 0
-        max: 1
-        grow: 1
-        on change(f) {
-          line = f
-          library.line = denorm(f, 0.8, 2.5)
-        }
-      }
-      Text("{denorm(line, 0.8, 2.5).fixed(1)} 倍") {
-        font: .footnote
-        color: palette.muted
-        width: 44
-        textAlign: .end
-      }
-    }
-
-    // 0 is the default留白; the slider goes either way from it.
-    Row {
-      gap: 12
-      align: .center
-      Text("边距") {
-        font: .subheadline
-        color: palette.ink
-        width: 42
-      }
-      Slider {
-        value: margins
-        min: 0
-        max: 1
-        grow: 1
-        on change(f) {
-          margins = f
-          library.margins = denorm(f, -0.1, 0.1)
-        }
-      }
-      Text(signedPercent(denorm(margins, -0.1, 0.1))) {
-        font: .footnote
-        color: palette.muted
-        width: 44
-        textAlign: .end
-      }
-    }
-
-    Row {
-      gap: 12
-      align: .center
-      Text("字距") {
-        font: .subheadline
-        color: palette.ink
-        width: 42
-      }
-      Slider {
-        value: letter
-        min: 0
-        max: 1
-        grow: 1
-        on change(f) {
-          letter = f
-          library.letter = denorm(f, -0.1, 0.1)
-        }
-      }
-      Text(signedPercent(denorm(letter, -0.1, 0.1))) {
-        font: .footnote
-        color: palette.muted
-        width: 44
-        textAlign: .end
-      }
-    }
-
-    Row {
-      gap: 12
-      align: .center
-      Text("词距") {
-        font: .subheadline
-        color: palette.ink
-        width: 42
-      }
-      Slider {
-        value: word
-        min: 0
-        max: 1
-        grow: 1
-        on change(f) {
-          word = f
-          library.word = denorm(f, -0.2, 0.2)
-        }
-      }
-      Text(signedPercent(denorm(word, -0.2, 0.2))) {
-        font: .footnote
-        color: palette.muted
-        width: 44
-        textAlign: .end
-      }
-    }
-
-    Text("纸色") {
-      font: .headline
-      color: palette.ink
-    }
-    Segmented(papers.map(p => p[1])) {
-      selected: papers.index(p => p[0] == library.theme) ?? 0
-      on change(i) { library.theme = papers[i][0] }
-    }
-    if !typeface.isEmpty() {
-      Text("字体：{typeface}") {
-        font: .footnote
-        color: palette.muted
-      }
-    }
-    if cacheBytes > 0 {
-      Text("引擎缓存：{cacheText(cacheBytes)}") {
-        font: .footnote
-        color: palette.muted
-      }
-    }
-  }
-}
-
-/// A note being written: the quote it is about, above the words the reader
-/// has to say. A note already made can be taken off from here too.
-component NoteEditor(quote: string, draft: string, existing: bool) {
-  use library: Library
-  let env = environment()
-
-  let palette = lib.paletteFor(library.theme)
-  state text = draft
-
-  event save(text: string)
-  event remove
-
-  Column {
-    grow: 1
-    padding: lib.sheetPad(env, top: 20, bottom: 20, side: 20)
-    gap: 14
-    background: palette.paper
-
-    Text(if existing { "编辑笔记" } else { "笔记" }) {
-      font: .title3
-      color: palette.ink
-    }
-
-    Column {
-      padding: [10, 12]
-      gap: 4
-      radius: 10
-      background: palette.rule
-      Text(quote) {
-        font: .footnote
-        color: palette.muted
-        lines: 6
-      }
-    }
-
-    TextField {
-      bind text: text
-      plain: true
-      color: palette.ink
-      background: palette.rule
-      radius: 10
-      padding: [8, 10]
-      placeholder: "写下你的想法"
-    }
-
-    Row {
-      gap: 8
-      align: .center
-      if existing {
-        Button("删除") {
-          variant: .glass
-          on press {
-            emit remove
-            dismiss()
-          }
-        }
-      }
-      View { grow: 1 }
-      Button("取消") {
-        variant: .glass
-        on press { dismiss() }
-      }
-      Button("保存") {
-        on press {
-          emit save(text)
-          dismiss()
-        }
-      }
-    }
-  }
-}
-
-/// One picture of the chapter at its original resolution: the engine writes
-/// it as an EQP1 file, which is what BookPage already draws. The view keeps
-/// the image's own proportions; a tap anywhere or 关闭 puts it away. It is a
-/// layer of the reader, not a sheet: opening it from the contents sheet must
-/// not present a second sheet while that one is going away.
-component ImageViewer(path: string, pixelsW: int, pixelsH: int) {
-  let env = environment()
-  state frame = Frame()
-
-  event close
-
-  fn fitted() -> (float, float) {
-    let maxW = max(80.0, frame.width - env.safeLeft - env.safeRight - 24)
-    let maxH = max(80.0, frame.height - env.safeTop - env.safeBottom - 96)
-    if pixelsW <= 0 || pixelsH <= 0 { return (maxW, maxH) }
-    var w = maxW
-    var h = w * float(pixelsH) / float(pixelsW)
-    if h > maxH {
-      h = maxH
-      w = h * float(pixelsW) / float(pixelsH)
-    }
-    return (w, h)
-  }
-
-  let box = fitted()
-
-  View {
-    grow: 1
-    background: #101014
-    on layout(f) { frame = f }
-    Column {
-      grow: 1
-      align: .center
-      justify: .center
-      gap: 12
-      padding: [12, 0]
-      View {
-        width: box.0
-        height: box.1
-        clip: true
-        bookpage.BookPage(path: path) {
-          grow: 1
-          on press { emit close }
-        }
-      }
-      Button("关闭") {
-        variant: .glass
-        color: #f4efe6
-        on press { emit close }
-      }
-    }
-  }
-}
-
-/// 书内搜索：引擎按章建索引，命中带章名、前后文和稳定位置。窗口式阅读时
-/// 引擎里只有这一窗的章节，结果按 `loaded` 滤掉还没取到正文的占位章。
-component Find(id: engine.Engine?, windowed: bool = false, base: int = 0, loaded: [int] = [], initial: string = "") {
-  /// 选中一条：这次的全部命中、选的是第几条，以及搜的是什么词。阅读页
-  /// 把列表留下，翻到上一条、下一条或再打开结果时不用重搜。
-  event go(hits: [engine.FindHit], at: int, query: string)
-  use library: Library
-  let palette = lib.paletteFor(library.theme)
-  let env = environment()
-  let list = Ref()
-  let field = Ref()
-
-  state query = initial
-  state hits: [engine.FindHit] = []
-  state truncated = false
-  state ran = false
-  state busy = false
-  /// 这批结果是哪个词搜出来的：用户改了输入框但还没再搜时，结果和
-  /// 「第几条」仍属于旧词。
-  state ranQuery = ""
-
-  async fn run() {
-    let text = query.trim()
-    if text.isEmpty() || busy { return }
-    busy = true
-    // 搜索引擎是同步的：先让这一帧把「搜索中…」画出来，再开始扫。
-    await sleep(30ms)
-    // 窗口式书里还有占位章（「第 N 章的正文正在取…」）：多要一些再滤掉，
-    // 免得占位把真正的命中挤出上限。整本打开的书没有占位，够一百条就行。
-    let found = engine.search(id, text, if windowed { 1000 } else { 100 })
-    var kept: [engine.FindHit] = []
-    for hit in found.hits {
-      if windowed && !loaded.contains(base + hit.spine) { continue }
-      kept.push(hit)
-    }
-    var cut = found.truncated
-    if kept.count() > 100 {
-      kept = kept.slice(0, 100)
-      cut = true
-    }
-    hits = kept
-    truncated = cut
-    ran = true
-    ranQuery = text
-    busy = false
-    // 结果比输入框重要：收起键盘，让出列表的位置；新的一批从头看。
-    field.blur()
-    list.scrollTo(0, 0, animated: false)
-  }
-
-  // 从结果条再打开：带着上次的词，直接列出结果。
-  task {
-    if !initial.trim().isEmpty() { await run() }
-  }
-
-  fn clearQuery() {
-    query = ""
-    hits = []
-    truncated = false
-    ran = false
-    ranQuery = ""
-    field.focus()
-  }
-
-  fn nameOf(hit: engine.FindHit) -> string {
-    if !hit.chapter.isEmpty() { return hit.chapter }
-    return "第 {base + hit.spine + 1} 章"
-  }
-
-  /// 前后文里的命中本身画上底色，而不是靠一对「」：一眼看到的是词，
-  /// 不是标点。Span 的零字段（字号、颜色）跟着 RichText 的。
-  fn contextSpans(hit: engine.FindHit) -> [Span] {
-    let mark = if library.theme == "night" { #6ea8fe44 } else { #0a84ff26 }
-    var out: [Span] = []
-    if hit.ellipsisBefore { out.push(Span(text: "…", color: palette.muted)) }
-    if !hit.before.isEmpty() { out.push(Span(text: hit.before)) }
-    out.push(Span(text: hit.text, background: mark))
-    if !hit.after.isEmpty() { out.push(Span(text: hit.after)) }
-    if hit.ellipsisAfter { out.push(Span(text: "…", color: palette.muted)) }
-    return out
-  }
-
-  let summary = if busy {
-    "正在搜索…"
-  } else if hits.isEmpty() {
-    ""
-  } else if truncated {
-    "{hits.count()} 条结果（还有更多）"
-  } else {
-    "{hits.count()} 条结果"
-  }
-  let hint = if windowed { "这本书按窗加载：只搜索已经取到正文的章节" } else { "" }
-
-  Column {
-    grow: 1
-    gap: 12
-    padding: lib.sheetPad(env, top: 16, bottom: 0, side: 0)
-    background: palette.paper
-    Row {
-      padding: [8, 20]
-      gap: 8
-      align: .center
-      Text("书内搜索") {
-        font: .title3
-        color: palette.ink
-        grow: 1
-      }
-      Button("") {
-        icon: Icons.close
-        variant: .glass
-        color: palette.ink
-        label: "关闭"
-        tooltip: "关闭"
-        on press { dismiss() }
-      }
-    }
-    Row {
-      padding: [0, 20]
-      gap: 8
-      align: .center
-      // 一条搜索框该有的样子：圆角底、放大镜、清空；不是一条裸输入线。
-      Row {
-        grow: 1
-        gap: 6
-        align: .center
-        padding: [0, 10]
-        height: 38
-        radius: 10
-        background: palette.rule
-        Symbol(Icons.search) {
-          font: .footnote
-          color: palette.muted
-        }
-        TextField {
-          bind text: query
-          ref: field
-          placeholder: "搜索这本书的正文"
-          returnKey: .search
-          plain: true
-          // 重新打开结果时不用再弹一次键盘。
-          autofocus: initial.trim().isEmpty()
-          autocapitalize: .off
-          autocorrect: .no
-          grow: 1
-          on submit { await run() }
-        }
-        if !query.isEmpty() {
-          Button("") {
-            icon: Icons.close
-            variant: .plain
-            color: palette.muted
-            label: "清空搜索"
-            on press { clearQuery() }
-          }
-        }
-      }
-      Button("查找") {
-        disabled: busy || query.trim().isEmpty()
-        on press { await run() }
-      }
-    }
-    if !hint.isEmpty() {
-      Text(hint) {
-        padding: [0, 20]
-        font: .caption
-        color: palette.muted
-      }
-    }
-    if !summary.isEmpty() {
-      Text(summary) {
-        padding: [0, 20]
-        font: .caption
-        color: palette.muted
-      }
-    }
-    if hits.isEmpty() {
-      Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 10
-        padding: [24, 40]
-        if !ran && !busy {
-          Symbol(Icons.search) {
-            font: .title
-            color: palette.muted.opacity(0.35)
-          }
-        }
-        Text(if busy { "正在搜索…" } else if ran { "没有找到「{ranQuery}」" } else { "输入一个词，搜这本书的正文" }) {
-          font: .footnote
-          color: palette.muted
-          textAlign: .center
-        }
-      }
-    } else {
-      List {
-        ref: list
-        grow: 1
-        appearance: .bare
-        for (i, hit) in hits.enumerated() key "{hit.spine}:{hit.offset}" {
-          Column {
-            // 明确的细线，颜色跟着纸色走；系统分隔线在纸色上总是偏灰。
-            if i > 0 {
-              View {
-                height: 1
-                background: palette.rule
-                margin: [0, 20]
-              }
-            }
-            Row {
-              padding: [12, 20]
-              gap: 10
-              align: .center
-              on press {
-                emit go(hits, i, ranQuery)
-                dismiss()
-              }
-              Column {
-                grow: 1
-                gap: 4
-                Text(nameOf(hit)) {
-                  font: .footnote
-                  color: palette.muted
-                  lines: 1
-                }
-                RichText(contextSpans(hit)) {
-                  color: palette.ink
-                  lines: 3
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-}
-
 component Reader(book: lib.Book) {
   use library: Library
   use allSources: sources.Sources?
@@ -1200,6 +281,10 @@ component Reader(book: lib.Book) {
   state warning = ""
   state fontName = ""
   state opened = false
+  /// 出错后的「重试」：重开一次书（reopenTick 让排版 task 再跑一遍），
+  /// 或者重试换那个没打开的窗口。
+  state reopenTick = 0
+  state retryWindow = -1
   /// 在线书：本机的这一批章节从全书的第几章起，全书一共几章。本地书就是
   /// 整本，windowBase 永远是 0。
   state windowBase = 0
@@ -1438,6 +523,7 @@ component Reader(book: lib.Book) {
       engineId, spine, frame.width, frame.height,
       pageMargins,
       library.size / baseSize, library.line, library.letter * library.size, library.word * library.size,
+      align: library.align, rules: library.textRules(), profile: library.profile,
     )
     if pagesNow <= 0 { return }
     pages = pagesNow
@@ -1646,6 +732,7 @@ component Reader(book: lib.Book) {
     let count = engine.beginScroll(
       engineId, frame.width, frame.height, margins,
       fontScale, library.line, library.letter * library.size, library.word * library.size,
+      align: library.align, rules: library.textRules(), profile: library.profile,
     )
     scrollTile = tile
     scrollTopPad = pageMargins.top
@@ -2284,7 +1371,11 @@ component Reader(book: lib.Book) {
     let margin = (library.margins * 100).int()
     let letter = (library.letter * 1000).int()
     let word = (library.word * 1000).int()
-    return "s{size}-l{line}-m{margin}-k{letter}-w{word}"
+    // 文本政策和版式档案也在这串里：换一项就是另一批页，旧图不能再用。
+    let rules = library.textRules()
+    let align = library.align
+    let profile = library.profile
+    return "s{size}-l{line}-m{margin}-k{letter}-w{word}-a{align}-r{rules}-p{profile}"
   }
 
   /// The paper a page was drawn on, as its file name says it: the same lines on
@@ -2472,7 +1563,8 @@ component Reader(book: lib.Book) {
     do {
       try await buildWindow(base: windowBaseFor(target), target: target)
     } catch e {
-      error = e.message
+      error = lib.plain(e.message)
+      retryWindow = target
       windowTarget = -1
       return
     }
@@ -2505,6 +1597,7 @@ component Reader(book: lib.Book) {
     }
     windowEnd = false
     windowTarget = -1
+    retryWindow = -1
     show()
   }
 
@@ -2520,6 +1613,7 @@ component Reader(book: lib.Book) {
       let file = try await bookFileOf(book)
       if !fs.exists(file) {
         error = "找不到《{book.title}》的文件"
+        retryWindow = -1
         announceReady()
         return
       }
@@ -2534,6 +1628,7 @@ component Reader(book: lib.Book) {
     }
     if !engine.isOpen(id) {
       error = "打不开这本书：{engine.lastError()}"
+      retryWindow = -1
       announceReady()
       return
     }
@@ -2575,7 +1670,7 @@ component Reader(book: lib.Book) {
   // One pass for every change: the chapter, the page, the view's size, the
   // size of the type, the paper, the reading mode. The engine's layout is
   // idempotent, so this is only as expensive as the page it produces.
-  task("{spine}:{page}:{frame.width}:{frame.height}:{library.size}:{library.line}:{library.margins}:{library.letter}:{library.word}:{library.theme}:{library.mode}:{chapterRev}") {
+  task("{spine}:{page}:{frame.width}:{frame.height}:{library.size}:{library.line}:{library.margins}:{library.letter}:{library.word}:{library.theme}:{library.mode}:{chapterRev}:{reopenTick}") {
     if frame.width <= 32 { return }
     // A new paper is another picture of the column the reader is in, not
     // another layout: the band task follows the new tag by itself and the
@@ -2600,11 +1695,23 @@ component Reader(book: lib.Book) {
       try await openBook()
     } catch e {
       opened = false
-      error = e.message
+      error = lib.plain(e.message)
+      retryWindow = -1
       announceReady()
       return
     }
     show()
+  }
+
+  /// 出错之后再来一次：换窗失败的重试那个窗口，开书失败的重开一次。
+  fn retry() {
+    error = ""
+    if retryWindow >= 0 {
+      requestWindow(retryWindow)
+      return
+    }
+    opened = false
+    reopenTick += 1
   }
 
   // After a chapter or a mode change, put the Scroll where the reader was.
@@ -2794,8 +1901,13 @@ component Reader(book: lib.Book) {
         grow: 1
         justify: .center
         align: .center
+        gap: 14
         padding: 32
         Text(error) { color: palette.muted; textAlign: .center }
+        Button("重试") {
+          variant: .bordered
+          on press { retry() }
+        }
       }
     } else if library.mode == "scroll" {
       if !columnReady {

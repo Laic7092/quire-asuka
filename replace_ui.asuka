@@ -71,19 +71,12 @@ component ReplaceManager {
     }
 
     if rows.isEmpty() {
-      Column {
-        gap: 10
-        padding: [22, 0]
-        align: .center
-        Text("还没有净化规则") { font: .headline }
-        Text("导入 Legado 的替换净化规则后，读到的正文和标题会按它们处理；缓存里存的仍是原文。") {
-          font: .footnote
-          color: .secondaryLabel
-          textAlign: .center
-        }
-        Button("导入净化规则") {
-          on press { present(SourceImport()) }
-        }
+      EmptyState("还没有净化规则") {
+        fill: false
+        icon: Icons.appearance
+        note: "导入 Legado 的替换净化规则后，读到的正文和标题会按它们处理；缓存里存的仍是原文。"
+        action: "导入净化规则"
+        on act { present(SourceImport()) }
       }
     } else {
       List {

@@ -1,0 +1,444 @@
+// 阅读页的排版与图片：字号、行距、边距、字距和纸色，一条笔记的编辑框，
+// 以及按原分辨率看一张插图。滑块读的是 0…1 的轨道位置，norm / denorm
+// 把它换回设置自己的量。
+
+import bookpage
+
+import ./lib
+
+/// A setting as the 0…1 a slider's track holds, and back. The slider's
+/// value reaches the platform before its min and max do, so a value outside
+/// the platform's default 0…1 is clamped where the track starts: settings
+/// use the whole track, and the sheet maps.
+fn norm(v: float, lo: float, hi: float) -> float {
+  if hi <= lo { return 0 }
+  var x = (v - lo) / (hi - lo)
+  if x < 0 { x = 0 }
+  if x > 1 { x = 1 }
+  return x
+}
+
+fn denorm(f: float, lo: float, hi: float) -> float = lo + f * (hi - lo)
+
+/// Type size, line spacing, the margins, the letter spacing, and the paper.
+/// Everything a page is laid out with, so nothing has to be guessed at.
+component Appearance(typeface: string, cacheBytes: int = 0) {
+  use library: Library
+  let env = environment()
+
+  let palette = lib.paletteFor(library.theme)
+  let papers = [
+    ["paper", "纸白"],
+    ["sepia", "米黄"],
+    ["night", "夜间"],
+  ]
+
+  /// 滑块的位置是 0…1，不是设置值本身：Slider 的 value 比 min/max 先
+  /// 到平台，落在默认的 0…1 之外就会被平台夹住，滑块停在最左（或最
+  /// 右），和旁边的数字对不上。0…1 的轨道永远不会被夹，位置也一样准。
+  state size = norm(peek(library.size), 14, 30)
+  state line = norm(peek(library.line), 0.8, 2.5)
+  state margins = norm(peek(library.margins), -0.1, 0.1)
+  state letter = norm(peek(library.letter), -0.1, 0.1)
+  state word = norm(peek(library.word), -0.2, 0.2)
+
+  // 设置一多，小屏放不下：内容进 Scroll，标题和关闭按钮留在上面。
+  Column {
+    grow: 1
+    background: palette.paper
+
+    Scroll {
+      grow: 1
+
+      Column {
+        gap: 16
+        padding: lib.sheetPad(env, top: 24, bottom: 24, side: 24)
+
+        Row {
+          gap: 8
+          align: .center
+          Text("阅读设置") {
+            font: .title3
+            color: palette.ink
+            grow: 1
+          }
+          Button("") {
+            icon: Icons.close
+            variant: .glass
+            color: palette.ink
+            on press { dismiss() }
+          }
+        }
+
+        Text("翻页方式") {
+          font: .headline
+          color: palette.ink
+        }
+        Segmented(["分页", "滚动"]) {
+          selected: if library.mode == "scroll" { 1 } else { 0 }
+          on change(i) { library.mode = if i == 1 { "scroll" } else { "page" } }
+        }
+
+        Row {
+          gap: 12
+          align: .center
+          Text("字号") {
+            font: .subheadline
+            color: palette.ink
+            width: 42
+          }
+          Slider {
+            value: size
+            min: 0
+            max: 1
+            grow: 1
+            on change(f) {
+              size = f
+              library.size = denorm(f, 14, 30)
+            }
+          }
+          Text("{denorm(size, 14, 30).rounded().int()} 点") {
+            font: .footnote
+            color: palette.muted
+            width: 44
+            textAlign: .end
+          }
+        }
+
+        Row {
+          gap: 12
+          align: .center
+          Text("行距") {
+            font: .subheadline
+            color: palette.ink
+            width: 42
+          }
+          Slider {
+            value: line
+            min: 0
+            max: 1
+            grow: 1
+            on change(f) {
+              line = f
+              library.line = denorm(f, 0.8, 2.5)
+            }
+          }
+          Text("{denorm(line, 0.8, 2.5).fixed(1)} 倍") {
+            font: .footnote
+            color: palette.muted
+            width: 44
+            textAlign: .end
+          }
+        }
+
+        // 0 is the default留白; the slider goes either way from it.
+        Row {
+          gap: 12
+          align: .center
+          Text("边距") {
+            font: .subheadline
+            color: palette.ink
+            width: 42
+          }
+          Slider {
+            value: margins
+            min: 0
+            max: 1
+            grow: 1
+            on change(f) {
+              margins = f
+              library.margins = denorm(f, -0.1, 0.1)
+            }
+          }
+          Text(signedPercent(denorm(margins, -0.1, 0.1))) {
+            font: .footnote
+            color: palette.muted
+            width: 44
+            textAlign: .end
+          }
+        }
+
+        Row {
+          gap: 12
+          align: .center
+          Text("字距") {
+            font: .subheadline
+            color: palette.ink
+            width: 42
+          }
+          Slider {
+            value: letter
+            min: 0
+            max: 1
+            grow: 1
+            on change(f) {
+              letter = f
+              library.letter = denorm(f, -0.1, 0.1)
+            }
+          }
+          Text(signedPercent(denorm(letter, -0.1, 0.1))) {
+            font: .footnote
+            color: palette.muted
+            width: 44
+            textAlign: .end
+          }
+        }
+
+        Row {
+          gap: 12
+          align: .center
+          Text("词距") {
+            font: .subheadline
+            color: palette.ink
+            width: 42
+          }
+          Slider {
+            value: word
+            min: 0
+            max: 1
+            grow: 1
+            on change(f) {
+              word = f
+              library.word = denorm(f, -0.2, 0.2)
+            }
+          }
+          Text(signedPercent(denorm(word, -0.2, 0.2))) {
+            font: .footnote
+            color: palette.muted
+            width: 44
+            textAlign: .end
+          }
+        }
+
+        // 中文排版：默认跟在书里的 CSS 后面；TXT 书没有 CSS，所以三项
+        // 默认都是「跟随」= 关，想按纸书的规矩排就自己打开。
+        Text("中文排版") {
+          font: .headline
+          color: palette.ink
+        }
+        Text("挤压：引号、书名号各收半宽。悬挂：行末标点探出版心，不换行。间距：中文里夹西文、数字时留 1/4 em 气口。") {
+          font: .caption
+          color: palette.muted
+          lines: 3
+        }
+        Row {
+          gap: 12
+          align: .center
+          Text("版式") {
+            font: .subheadline
+            color: palette.ink
+            width: 42
+          }
+          Segmented(["跟随本书", "通用", "中文"]) {
+            selected: library.profile
+            grow: 1
+            on change(i) { library.profile = i }
+          }
+        }
+        Row {
+          gap: 12
+          align: .center
+          Text("挤压") {
+            font: .subheadline
+            color: palette.ink
+            width: 42
+          }
+          Segmented(["跟随", "开", "关"]) {
+            selected: library.ruleTrim
+            grow: 1
+            on change(i) { library.ruleTrim = i }
+          }
+        }
+        Row {
+          gap: 12
+          align: .center
+          Text("悬挂") {
+            font: .subheadline
+            color: palette.ink
+            width: 42
+          }
+          Segmented(["跟随", "开", "关"]) {
+            selected: library.ruleHang
+            grow: 1
+            on change(i) { library.ruleHang = i }
+          }
+        }
+        Row {
+          gap: 12
+          align: .center
+          Text("间距") {
+            font: .subheadline
+            color: palette.ink
+            width: 42
+          }
+          Segmented(["跟随", "开", "关"]) {
+            selected: library.ruleSpace
+            grow: 1
+            on change(i) { library.ruleSpace = i }
+          }
+        }
+        Row {
+          gap: 12
+          align: .center
+          Text("对齐") {
+            font: .subheadline
+            color: palette.ink
+            width: 42
+          }
+          Segmented(["原书", "左", "中", "右", "两端"]) {
+            selected: library.align
+            grow: 1
+            on change(i) { library.align = i }
+          }
+        }
+
+        Text("纸色") {
+          font: .headline
+          color: palette.ink
+        }
+        Segmented(papers.map(p => p[1])) {
+          selected: papers.index(p => p[0] == library.theme) ?? 0
+          on change(i) { library.theme = papers[i][0] }
+        }
+        if !typeface.isEmpty() {
+          Text("字体：{typeface}") {
+            font: .footnote
+            color: palette.muted
+          }
+        }
+        if cacheBytes > 0 {
+          Text("引擎缓存：{lib.sizeText(cacheBytes)}") {
+            font: .footnote
+            color: palette.muted
+          }
+        }
+      }
+    }
+  }
+}
+
+/// A note being written: the quote it is about, above the words the reader
+/// has to say. A note already made can be taken off from here too.
+component NoteEditor(quote: string, draft: string, existing: bool) {
+  use library: Library
+  let env = environment()
+
+  let palette = lib.paletteFor(library.theme)
+  state text = draft
+
+  event save(text: string)
+  event remove
+
+  Column {
+    grow: 1
+    padding: lib.sheetPad(env, top: 20, bottom: 20, side: 20)
+    gap: 14
+    background: palette.paper
+
+    Text(if existing { "编辑笔记" } else { "笔记" }) {
+      font: .title3
+      color: palette.ink
+    }
+
+    Column {
+      padding: [10, 12]
+      gap: 4
+      radius: 10
+      background: palette.rule
+      Text(quote) {
+        font: .footnote
+        color: palette.muted
+        lines: 6
+      }
+    }
+
+    TextField {
+      bind text: text
+      plain: true
+      color: palette.ink
+      background: palette.rule
+      radius: 10
+      padding: [8, 10]
+      placeholder: "写下你的想法"
+    }
+
+    Row {
+      gap: 8
+      align: .center
+      if existing {
+        Button("删除") {
+          variant: .glass
+          on press {
+            emit remove
+            dismiss()
+          }
+        }
+      }
+      View { grow: 1 }
+      Button("取消") {
+        variant: .glass
+        on press { dismiss() }
+      }
+      Button("保存") {
+        on press {
+          emit save(text)
+          dismiss()
+        }
+      }
+    }
+  }
+}
+
+/// One picture of the chapter at its original resolution: the engine writes
+/// it as an EQP1 file, which is what BookPage already draws. The view keeps
+/// the image's own proportions; a tap anywhere or 关闭 puts it away. It is a
+/// layer of the reader, not a sheet: opening it from the contents sheet must
+/// not present a second sheet while that one is going away.
+component ImageViewer(path: string, pixelsW: int, pixelsH: int) {
+  let env = environment()
+  state frame = Frame()
+
+  event close
+
+  fn fitted() -> (float, float) {
+    let maxW = max(80.0, frame.width - env.safeLeft - env.safeRight - 24)
+    let maxH = max(80.0, frame.height - env.safeTop - env.safeBottom - 96)
+    if pixelsW <= 0 || pixelsH <= 0 { return (maxW, maxH) }
+    var w = maxW
+    var h = w * float(pixelsH) / float(pixelsW)
+    if h > maxH {
+      h = maxH
+      w = h * float(pixelsW) / float(pixelsH)
+    }
+    return (w, h)
+  }
+
+  let box = fitted()
+
+  View {
+    grow: 1
+    background: #101014
+    on layout(f) { frame = f }
+    Column {
+      grow: 1
+      align: .center
+      justify: .center
+      gap: 12
+      padding: [12, 0]
+      View {
+        width: box.0
+        height: box.1
+        clip: true
+        bookpage.BookPage(path: path) {
+          grow: 1
+          on press { emit close }
+        }
+      }
+      Button("关闭") {
+        variant: .glass
+        color: #f4efe6
+        on press { emit close }
+      }
+    }
+  }
+}

@@ -270,14 +270,14 @@ test "the type and the paper are laid out again, into a new page file" {
   app.tap("散文選")
   await app.idle()
   // The default: 19 points, 160% line, 100% margins, no letter spacing.
-  let before = pagesMatching("s190-l16-m0-k0-w0-paper")
+  let before = pagesMatching("s190-l16-m0-k0-w0-a0-r0-p0-paper")
   expect(!before.isEmpty())
 
   // A different size is a different page: it can't be the file the native
   // view already shows, or the change would wait for a page turn.
   lib.size = 24
   await app.idle()
-  let after = pagesMatching("s240-l16-m0-k0-w0-paper")
+  let after = pagesMatching("s240-l16-m0-k0-w0-a0-r0-p0-paper")
   expect(!after.isEmpty())
   expect(before[0] != after[0])
   // The tests share the development store: put it back as it was found.
@@ -289,7 +289,7 @@ test "a page is drawn in the paper and the ink of its theme" {
   let app = mount(Harness(), provide: lib)
   app.tap("散文選")
   await app.idle()
-  let paper = pagesMatching("s190-l16-m0-k0-w0-paper")
+  let paper = pagesMatching("s190-l16-m0-k0-w0-a0-r0-p0-paper")
   expect(!paper.isEmpty())
   // 纸白: #fbfaf7, the background the engine fills the page with.
   let white = firstPixel(paper[paper.count() - 1])
@@ -300,7 +300,7 @@ test "a page is drawn in the paper and the ink of its theme" {
 
   lib.theme = "night"
   await app.idle()
-  let night = pagesMatching("s190-l16-m0-k0-w0-night")
+  let night = pagesMatching("s190-l16-m0-k0-w0-a0-r0-p0-night")
   expect(!night.isEmpty())
   // 夜间: #16161a behind text drawn in #d8d6cf — not the light page with the
   // surroundings turned dark.
@@ -318,8 +318,8 @@ test "the page cache goes when it outgrows its budget, and takes no other file" 
   let dir = fs.join([fs.appDir(), "pages"])
   try? fs.mkdirAll(dir)
   let keep = fs.join([dir, "keep-me.txt"])
-  let page = fs.join([dir, "测试书-0-scroll-0-512-390-v844-l24r24-20-s190-l16-m0-k0-w0-paper.eqp"])
-  let part = fs.join([dir, "测试书-0-scroll-0-512-390-v844-l24r24-20-s190-l16-m0-k0-w0-paper.eqp.part"])
+  let page = fs.join([dir, "测试书-0-scroll-0-512-390-v844-l24r24-20-s190-l16-m0-k0-w0-a0-r0-p0-paper.eqp"])
+  let part = fs.join([dir, "测试书-0-scroll-0-512-390-v844-l24r24-20-s190-l16-m0-k0-w0-a0-r0-p0-paper.eqp.part"])
   try? fs.writeText(keep, text: "not a page")
   try? fs.writeText(page, text: "EQP1, pretended")
   // A run that died mid-write leaves one of these: the engine renames into
@@ -374,6 +374,15 @@ test "the appearance sheet changes the type and the paper" {
   app.expect("字距")
   app.tap("夜间")
   expect(lib.theme == "night")
+  // 中文排版：版式档案和三个政策。默认全是「跟随」，读者选「中文」才换表。
+  app.expect("中文排版")
+  app.expect("挤压")
+  app.expect("悬挂")
+  app.expect("间距")
+  app.expect("对齐")
+  expect(lib.profile == 0)
+  app.tap("中文")
+  expect(lib.profile == 2)
 }
 
 test "the appearance sheet's sliders are where the settings are" {
@@ -903,6 +912,77 @@ test "配置好之后，同步页只留状态和动作，连接细节在二级�
   app.expect("立即同步")
 }
 
+test "同步页说清这次没做成的是哪一本，不只给一个数字" {
+  let library = Library()
+  library.nutAccount = "reader@example.com"
+  library.nutPassword = "app-password"
+  library.syncMessage = "已同步 · 1 项没有完成"
+  library.syncProblems = [SyncProblem(book: "背影", step: "上传正文", reason: "The request timed out.")]
+  let app = mount(Profile(), provide: library)
+  await app.idle()
+  app.tap("同步与备份")
+  await app.idle()
+  app.expect("这次没做成 1 项")
+  // 原因过一遍人话，书名和步骤留着。
+  app.expect("· 《背影》上传正文：等太久了，服务器没有回应。稍后再试")
+  library.syncProblems = []
+}
+
+test "没做成的事多的时候只列三条，剩下的能点开" {
+  let library = Library()
+  library.nutAccount = "reader@example.com"
+  library.nutPassword = "app-password"
+  var many: [SyncProblem] = []
+  for i in [1, 2, 3, 4, 5] {
+    many.push(SyncProblem(book: "书{i}", step: "上传正文", reason: "内容太大"))
+  }
+  library.syncProblems = many
+  let app = mount(Profile(), provide: library)
+  await app.idle()
+  app.tap("同步与备份")
+  await app.idle()
+  app.expect("这次没做成 5 项")
+  app.expect("· 《书1》上传正文：内容太大")
+  app.expectNo("· 《书4》上传正文：内容太大")
+  app.tap("还有 2 项")
+  await app.idle()
+  app.expect("· 《书4》上传正文：内容太大")
+  app.expect("· 《书5》上传正文：内容太大")
+  library.syncProblems = []
+}
+
+test "「我」页先说过没做成的事，再提上次同步的时间" {
+  let library = Library()
+  library.nutAccount = "reader@example.com"
+  library.nutPassword = "app-password"
+  library.syncLast = 1767225600
+  library.syncProblems = [SyncProblem(book: "", step: "同步", reason: "The request timed out.")]
+  let app = mount(Profile(), provide: library)
+  await app.idle()
+  app.expect("上次同步有 1 项没做成")
+  library.syncProblems = []
+}
+
+test "同步在搬文件时，页面上有进度和停止" {
+  let library = Library()
+  library.nutAccount = "reader@example.com"
+  library.nutPassword = "app-password"
+  library.syncBusy = true
+  library.syncDone = 2
+  library.syncTotal = 5
+  let app = mount(Profile(), provide: library)
+  await app.idle()
+  app.tap("同步与备份")
+  await app.idle()
+  app.expect("正在搬 2 / 5 个文件")
+  app.expect("停止")
+  library.stopSync()
+  await app.idle()
+  app.expect("正在停止…")
+  library.syncBusy = false
+  library.syncStopping = false
+}
+
 test "a password with no keychain is kept beside the app" {
   let library = Library()
   await library.loadCredentials()
@@ -1177,4 +1257,14 @@ test "search results can be stepped through without searching again" {
   await app.idle()
   app.expect("书内搜索")
   app.expect("3 条结果")
+}
+
+test "开书失败时说清原因，还留一个重试" {
+  let library = Library()
+  // 书架上有这一行，文件却不在：引擎打不开它，阅读页要说清楚，并且能再来一次。
+  let book = lib.Book(id: "没有这本书.txt", title: "没有这本书", author: "", chapters: [])
+  let app = mount(Reader(book), provide: library)
+  await app.idle()
+  app.expect("找不到《没有这本书》的文件")
+  app.expect("重试")
 }

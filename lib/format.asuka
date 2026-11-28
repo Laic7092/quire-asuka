@@ -1,0 +1,14 @@
+// 给读者看的数字：文件大小换成读得出来的单位。一处算，各页的口径才
+// 一样——书架、同步页和排版页说的是同一个 MB。
+
+/// 0 是 "0 MB"；不到 1 MB 用 KB；再大用 MB，过了 1024 MB 用 GB，一位小数。
+pub fn sizeText(bytes: int) -> string {
+  if bytes <= 0 { return "0 MB" }
+  if bytes < 1024 * 1024 { return "{bytes / 1024} KB" }
+  let mb = bytes / (1024 * 1024)
+  if mb < 1024 { return "{mb} MB" }
+  let gb = mb / 1024
+  let rest = mb % 1024
+  if rest == 0 { return "{gb} GB" }
+  return "{gb}.{(rest * 10) / 1024} GB"
+}

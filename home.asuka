@@ -80,27 +80,6 @@ component SectionHead(title: string) {
   }
 }
 
-component EmptyNote(text: string) {
-  prop icon = Icons.emptyBook
-
-  Row {
-    gap: 10
-    align: .center
-    padding: [14, 16]
-    radius: 14
-    background: .secondaryBackground
-    Symbol(icon) {
-      font: .subheadline
-      color: .tertiaryLabel
-    }
-    Text(text) {
-      font: .footnote
-      color: .secondaryLabel
-      grow: 1
-    }
-  }
-}
-
 /// 继续阅读: the one book to pick up again. A card rather than a list, so a
 /// reader with ten books open still sees the rest of the page; the shelf is
 /// where all of them are. The bar says how far, and is the only thing that
@@ -251,7 +230,7 @@ component About {
         on press { emit close }
       }
     }
-    AboutLine(title: "应用", value: "Quire 0.1")
+    AboutLine(title: "应用", value: "Quire {appVersion}")
     AboutLine(title: "排版引擎", value: if version.isEmpty() { "读取中…" } else { version })
     AboutLine(title: "C ABI", value: if abi == 0 {
       "读取中…"
@@ -295,6 +274,9 @@ component Profile {
 
   let syncNote = if !library.davConfigured() {
     "跨设备同步书架、进度与书签"
+  } else if !library.syncProblems.isEmpty() {
+    // 没做成的事比「上次同步的时间」更该被看见：进同步页有明细。
+    "上次同步有 {library.syncProblems.count()} 项没做成"
   } else if library.syncLast > 0 {
     "上次同步 {whenOf(library.syncLast)}"
   } else {
@@ -309,7 +291,7 @@ component Profile {
   let entries = [
     ProfileEntry(icon: Icons.cloud, title: "同步与备份", note: syncNote),
     ProfileEntry(icon: Icons.statistics, title: "阅读记录统计", note: readingNote),
-    ProfileEntry(icon: Icons.about, title: "关于 Quire", note: "版本 0.1"),
+    ProfileEntry(icon: Icons.about, title: "关于 Quire", note: "版本 {appVersion}"),
   ]
 
   if page == "stats" {

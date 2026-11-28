@@ -189,7 +189,7 @@ fn previewOf(text: string) -> SourcePreview {
     if let _ = try? json.parse(t) {
       return SourcePreview(count: 1, names: ["按内容识别"])
     }
-    return SourcePreview(error: e.message)
+    return SourcePreview(error: lib.plain(e.message))
   }
 }
 
@@ -324,7 +324,7 @@ component SourceManager {
       try await sources.saveVariables(def!, loginText)
       loginNote = "已保存，下一次请求会带上"
     } catch err {
-      loginNote = err.message
+      loginNote = lib.plain(err.message)
     }
     loginBusy = false
   }
@@ -356,7 +356,7 @@ component SourceManager {
       cookieText = ""
       cookieNote = "已替换这个书源的 Cookie，接下来的搜索和发现会带上它"
     } catch err {
-      cookieNote = err.message
+      cookieNote = lib.plain(err.message)
     }
     cookieBusy = false
   }
@@ -380,7 +380,7 @@ component SourceManager {
       cookieHave = false
       cookieNote = "已清除这个书源的 Cookie"
     } catch err {
-      cookieNote = err.message
+      cookieNote = lib.plain(err.message)
     }
     cookieBusy = false
   }
@@ -407,7 +407,7 @@ component SourceManager {
         cookieHave = true
         cookieText = ""
       } catch err {
-        loginNote = "Cookie 没存上：{err.message}"
+        loginNote = "Cookie 没存上：{lib.plain(err.message)}"
         verifying = false
         return
       }
@@ -420,7 +420,7 @@ component SourceManager {
         cookieHave = false
         loginNote = "已清掉旧 Cookie，正在用变量里的账号重登…"
       } catch err {
-        loginNote = "旧 Cookie 清不掉：{err.message}"
+        loginNote = "旧 Cookie 清不掉：{lib.plain(err.message)}"
         verifying = false
         return
       }
@@ -436,7 +436,7 @@ component SourceManager {
       loginNote = if captchaOn {
         "这个站点要图形验证码：到「验证码」页取图登录"
       } else {
-        "还不行：{err.message}"
+        "还不行：{lib.plain(err.message)}"
       }
     }
     verifying = false
@@ -469,7 +469,7 @@ component SourceManager {
       captchaPath = file.path
       captchaNote = "读图上的字，填好再登录；看不清就换一张"
     } catch err {
-      captchaNote = err.message
+      captchaNote = lib.plain(err.message)
     }
     captchaBusy = false
   }
@@ -513,7 +513,7 @@ component SourceManager {
         captchaNote = answer.trim()
       }
     } catch err {
-      captchaNote = err.message
+      captchaNote = lib.plain(err.message)
     }
     captchaBusy = false
   }
@@ -662,19 +662,12 @@ component SourceManager {
     }
 
     if all.isEmpty() {
-      Column {
-        gap: 10
-        padding: [20, 0]
-        align: .center
-        Text("还没有书源") { font: .headline }
-        Text("导入一份阅读3.0（Legado）的书源 JSON，就能在这里搜书。") {
-          font: .footnote
-          color: .secondaryLabel
-          textAlign: .center
-        }
-        Button("导入书源") {
-          on press { present(SourceImport()) }
-        }
+      EmptyState("还没有书源") {
+        fill: false
+        icon: Icons.globe
+        note: "导入一份阅读3.0（Legado）的书源 JSON，就能在这里搜书。"
+        action: "导入书源"
+        on act { present(SourceImport()) }
       }
     } else {
       Row {
@@ -736,25 +729,18 @@ component SourceManager {
       }
 
       if shown.isEmpty() {
-        Column {
-          gap: 10
-          padding: [30, 0]
-          align: .center
-          Text("没有找到书源") { font: .headline }
-          Text(if query.trim().isEmpty() {
+        EmptyState("没有找到书源") {
+          fill: false
+          icon: Icons.search
+          note: if query.trim().isEmpty() {
             "这个分组里没有书源。"
           } else {
             "名字、地址和分组里都没有「{query.trim()}」。"
-          }) {
-            font: .footnote
-            color: .secondaryLabel
-            textAlign: .center
           }
-          Button("清除搜索与分组") {
-            on press {
-              query = ""
-              filter = ""
-            }
+          action: "清除搜索与分组"
+          on act {
+            query = ""
+            filter = ""
           }
         }
       } else {

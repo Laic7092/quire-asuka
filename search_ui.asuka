@@ -226,7 +226,7 @@ screen SearchBook(hit: Hit) {
       note = "已加入书架，正文按章取"
       emit open(book)
     } catch e {
-      note = e.message
+      note = lib.plain(e.message)
     }
     adding = false
   }
@@ -263,7 +263,7 @@ screen SearchBook(hit: Hit) {
         try? fs.remove(path)
       }
     } catch e {
-      note = e.message
+      note = lib.plain(e.message)
       try? fs.remove(path)
     }
     downloading = ""
@@ -272,31 +272,10 @@ screen SearchBook(hit: Hit) {
   SafeArea {
     grow: 1
     match detail {
-      .pending => Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 12
-        ProgressRing {}
-        Text("正在读《{hit.book.name}》的详情…") {
-          font: .footnote
-          color: .secondaryLabel
-        }
-      }
-      .failed(e) => Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 12
-        Text("没能打开这本书") { font: .headline }
-        Text(e.message) {
-          font: .footnote
-          color: .secondaryLabel
-          textAlign: .center
-        }
-        Button("重试") {
-          on press { detail.reload() }
-        }
+      .pending => LoadingNote("正在读《{hit.book.name}》的详情…")
+      .failed(e) => LoadFailed("没能打开这本书") {
+        message: lib.plain(e.message)
+        on retry { detail.reload() }
       }
       .ready(d) => Column {
         grow: 1
@@ -392,21 +371,12 @@ screen SearchBook(hit: Hit) {
           }
         }
         if d.chapters.isEmpty() {
-          Column {
-            grow: 1
-            justify: .center
-            align: .center
-            gap: 8
-            padding: [24, 30]
-            Text(if d.files.isEmpty() {
-              "这个书源没有给出章节，也没有给出下载地址。"
-            } else {
-              "文件型书源没有章节：下载下来就是一本本地书，按 TXT 的章节读。"
-            }) {
-              font: .footnote
-              color: .secondaryLabel
-              textAlign: .center
-            }
+          EmptyNote(if d.files.isEmpty() {
+            "这个书源没有给出章节，也没有给出下载地址。"
+          } else {
+            "文件型书源没有章节：下载下来就是一本本地书，按 TXT 的章节读。"
+          }) {
+            icon: Icons.globe
           }
         } else {
           List {
@@ -466,31 +436,10 @@ screen SearchChapter(hit: Hit, chapter: sources.Chapter) {
     grow: 1
     background: .background
     match body {
-      .pending => Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 12
-        ProgressRing {}
-        Text("正在取这一章…") {
-          font: .footnote
-          color: .secondaryLabel
-        }
-      }
-      .failed(e) => Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 12
-        Text("这一章没有取到") { font: .headline }
-        Text(e.message) {
-          font: .footnote
-          color: .secondaryLabel
-          textAlign: .center
-        }
-        Button("重试") {
-          on press { body.reload() }
-        }
+      .pending => LoadingNote("正在取这一章…")
+      .failed(e) => LoadFailed("这一章没有取到") {
+        message: lib.plain(e.message)
+        on retry { body.reload() }
       }
       .ready(text) => ChapterBody(text)
     }
@@ -649,8 +598,8 @@ screen Search {
     } catch err {
       if request.token != run { return Outcome() }
       searched += 1
-      failures.push("{e.name}：{err.message}")
-      return Outcome(failed: "{e.name}：{err.message}")
+      failures.push("{e.name}：{lib.plain(err.message)}")
+      return Outcome(failed: "{e.name}：{lib.plain(err.message)}")
     }
   }
 
@@ -728,57 +677,29 @@ screen Search {
     padding: [0, env.safeLeft, 0, env.safeRight]
 
     if allSources.isEmpty() {
-      Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 14
-        padding: [24, 40, env.safeBottom + 24, 40]
-        Symbol(Icons.contents) {
-          font: .title
-          color: .tertiaryLabel
-        }
-        Text("还没有书源") {
-          font: .title3
-        }
-        Text("书源告诉 Quire 去哪里搜、怎么读一本书。去发现页导入一份阅读3.0（Legado）的书源 JSON 就可以开始。") {
-          font: .footnote
-          color: .secondaryLabel
-          textAlign: .center
-        }
-        Button("返回发现页") {
-          on press { pop() }
-        }
+      EmptyState("还没有书源") {
+        icon: Icons.contents
+        note: "书源告诉 Quire 去哪里搜、怎么读一本书。去发现页导入一份阅读3.0（Legado）的书源 JSON 就可以开始。"
+        action: "返回发现页"
+        on act { pop() }
       }
+    } else if busy && shown.isEmpty() {
+      LoadingNote("正在 {allSources.enabledCount()} 个书源里找…（{searched}/{allSources.enabledCount()}）")
     } else if shown.isEmpty() {
-      Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 10
-        padding: [24, 40, env.safeBottom + 24, 40]
-        if busy {
-          ProgressRing {}
-          Text("正在 {allSources.enabledCount()} 个书源里找…（{searched}/{allSources.enabledCount()}）") {
-            font: .footnote
-            color: .secondaryLabel
-          }
+      // 搜完没结果、筛完没结果、还没开始搜：都是页面中间的一块，只是说的
+      // 话不同。失败的那几句是完整的话，放在说明里，标题只点题。
+      if !note.isEmpty() {
+        EmptyState("没有找到书") {
+          icon: Icons.search
+          note: note
+        }
+      } else {
+        EmptyState(if !results.isEmpty() {
+          "没有符合「{scopeName(scope)}」这范围的书"
         } else {
-          Symbol(Icons.search) {
-            font: .title
-            color: .tertiaryLabel
-          }
-          Text(if !note.isEmpty() {
-            note
-          } else if !results.isEmpty() {
-            "没有符合「{scopeName(scope)}」这范围的书"
-          } else {
-            "在 {allSources.enabledCount()} 个书源里搜一本书"
-          }) {
-            font: .footnote
-            color: .secondaryLabel
-            textAlign: .center
-          }
+          "在 {allSources.enabledCount()} 个书源里搜一本书"
+        }) {
+          icon: Icons.search
         }
       }
     } else {

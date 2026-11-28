@@ -15,18 +15,6 @@ fn syncWhen(at: int) -> string {
   return time.unix(seconds: at).format("M月d日 HH:mm")
 }
 
-/// 本地缓存的人话大小。
-fn sizeText(bytes: int) -> string {
-  if bytes <= 0 { return "0 MB" }
-  if bytes < 1024 * 1024 { return "{bytes / 1024} KB" }
-  let mb = bytes / (1024 * 1024)
-  if mb < 1024 { return "{mb} MB" }
-  let gb = mb / 1024
-  let rest = mb % 1024
-  if rest == 0 { return "{gb} GB" }
-  return "{gb}.{(rest * 10) / 1024} GB"
-}
-
 /// 连接细节：选服务、填账号、测试连接。这里不出现同步动作和缓存设置。
 component SyncConnection {
   use library: Library
@@ -71,7 +59,7 @@ component SyncConnection {
     do {
       note = try await library.testDav()
     } catch e {
-      note = e.message
+      note = lib.plain(e.message)
     }
     busy = ""
   }
@@ -273,6 +261,32 @@ component SyncConnection {
   }
 }
 
+/// 一次同步要搬的文件数：搬正文时它是唯一看得见的进度。
+component SyncProgress(done: int, total: int) {
+  let ratio = if total > 0 { float(done) / float(total) } else { 0.0 }
+
+  Column {
+    gap: 6
+    Text(if total > 0 { "正在搬 {done} / {total} 个文件" } else { "正在同步…" }) {
+      font: .caption2
+      color: .secondaryLabel
+    }
+    if total > 0 {
+      View {
+        height: 4
+        radius: 2
+        background: .separator
+        View {
+          width: 100% * ratio
+          height: 4
+          radius: 2
+          background: .accent
+        }
+      }
+    }
+  }
+}
+
 component SyncSettings {
   use library: Library
   use allSources: sources.Sources?
@@ -291,6 +305,9 @@ component SyncSettings {
   state busy = ""
   /// What this page just did, outranking the store's older message.
   state note = ""
+  /// 没做成的事项默认只列三条：卡片不该被一屏错误占满，但「全部」
+  /// 要能点开。
+  state moreProblems = false
 
   // std/http is each platform's own client; Android's allows only the
   // standard methods, and a browser makes a WebDAV server's answer CORS's.
@@ -319,6 +336,9 @@ component SyncSettings {
   let detail = if !message.isEmpty() && library.syncLast > 0 { "上次成功 {last}" } else { "" }
   let statusOk = status.hasPrefix("已同步") || status.hasPrefix("已备份")
   let statusBad = status.hasPrefix("同步失败") || status.hasPrefix("备份失败")
+  let problems = library.syncProblems
+  let shownProblems = if moreProblems || problems.count() <= 3 { problems } else { problems.slice(0, 3) }
+  let hiddenProblems = problems.count() - shownProblems.count()
 
   async fn syncNow() {
     if running { return }
@@ -330,7 +350,7 @@ component SyncSettings {
       if let s = allSources { s.applySync(merged) }
       note = message
     } catch e {
-      note = e.message
+      note = lib.plain(e.message)
     }
     busy = ""
   }
@@ -345,7 +365,7 @@ component SyncSettings {
       if let s = allSources { s.applySync(merged) }
       note = message
     } catch e {
-      note = e.message
+      note = lib.plain(e.message)
     }
     busy = ""
   }
@@ -414,13 +434,30 @@ component SyncSettings {
               disabled: running || pending == 0
               on press { await backupAll() }
             }
+            if library.syncBusy {
+              Button(if library.syncStopping { "正在停止…" } else { "停止" }) {
+                variant: .bordered
+                disabled: library.syncStopping
+                on press { library.stopSync() }
+              }
+            }
+          }
+
+          if library.syncBusy {
+            SyncProgress(done: library.syncDone, total: library.syncTotal)
+          } else if !note.isEmpty() {
+            // 备份完就留在这页：结果写在这里，不用再去主页面看。
+            Text(note) {
+              font: .footnote
+              color: if statusBad { .red } else { .secondaryLabel }
+            }
           }
 
           Text("本地缓存") {
             font: .headline
           }
 
-          Text("已用 {sizeText(used)} / {cacheLimit}") {
+          Text("已用 {lib.sizeText(used)} / {cacheLimit}") {
             font: .footnote
           }
 
@@ -491,6 +528,49 @@ component SyncSettings {
                 color: .secondaryLabel
               }
             }
+            if library.syncBusy {
+              SyncProgress(done: library.syncDone, total: library.syncTotal)
+            }
+          }
+
+          // 同步正在跑时先不列上一次的旧账：跑完会把这次的换上。
+          if !library.syncBusy && !library.syncProblems.isEmpty() {
+            Column {
+              gap: 6
+              padding: 14
+              radius: 14
+              background: .secondaryBackground
+              Row {
+                gap: 8
+                align: .center
+                Symbol(Icons.syncFailed) {
+                  font: .footnote
+                  color: .orange
+                }
+                Text("这次没做成 {problems.count()} 项") {
+                  font: .footnote
+                  grow: 1
+                }
+              }
+              for p in shownProblems key p.line() {
+                Text("· {p.line()}") {
+                  font: .caption2
+                  color: .secondaryLabel
+                  lines: 2
+                }
+              }
+              if hiddenProblems > 0 {
+                Button("还有 {hiddenProblems} 项") {
+                  variant: .plain
+                  on press { moreProblems = true }
+                }
+              } else if moreProblems && problems.count() > 3 {
+                Button("收起") {
+                  variant: .plain
+                  on press { moreProblems = false }
+                }
+              }
+            }
           }
 
           Row {
@@ -499,6 +579,13 @@ component SyncSettings {
               variant: .tinted
               disabled: running
               on press { await syncNow() }
+            }
+            if library.syncBusy {
+              Button(if library.syncStopping { "正在停止…" } else { "停止" }) {
+                variant: .bordered
+                disabled: library.syncStopping
+                on press { library.stopSync() }
+              }
             }
           }
 
@@ -579,7 +666,7 @@ component SyncSettings {
               Text("存储") {
                 font: .body
               }
-              Text("{localCount} 本 · 已用 {sizeText(used)}") {
+              Text("{localCount} 本 · 已用 {lib.sizeText(used)}") {
                 font: .caption2
                 color: .secondaryLabel
                 lines: 1

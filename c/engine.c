@@ -140,11 +140,50 @@ void quire_selection_free(EbSelection *selection) {
     eb_plain_selection_free(selection);
 }
 
-static void layout_options(EbLayoutOptions *options, uint32_t spine, uint32_t scroll,
-                           float width, float height, float top, float right,
-                           float bottom, float left, float font_scale,
-                           float line_scale, float letter_px, float word_px,
-                           uint32_t align) {
+// 0.7.0（ABI 4）在 EbLayoutOptions 尾部加了两个字段。ABI 3 的库按它自己
+// 那份结构的 size 校验，也按旧偏移读滚动切片里 y 之后的字段——所以老库必须
+// 拿到老结构，不能只是「多传两个数」。两份结构在这里各写一遍，靠
+// eb_abi_version()（两个版本都导出了）选：老库上排版照旧，只是读者选的文本
+// 政策和版式档案不生效，启动时那条 ABI 不匹配的提示会说这件事。
+typedef struct {
+    uint32_t size;
+    uint32_t version;
+    uint32_t spine;
+    uint32_t scroll;
+    float width;
+    float height;
+    float top;
+    float right;
+    float bottom;
+    float left;
+    float font_scale;
+    float line_scale;
+    float letter_px;
+    float word_px;
+    uint32_t align;
+} QuireLayoutOptionsV3;
+
+typedef struct {
+    uint32_t size;
+    uint32_t version;
+    QuireLayoutOptionsV3 layout;
+    float y;
+    float slice_height;
+    float scale;
+    uint32_t ink;
+    uint32_t paper;
+    bool bold;
+} QuireScrollSliceV3;
+
+static int layout_has_rules(void) {
+    return eb_abi_version() >= 4;
+}
+
+static void layout_options_v3(QuireLayoutOptionsV3 *options, uint32_t spine,
+                              uint32_t scroll, float width, float height,
+                              float top, float right, float bottom, float left,
+                              float font_scale, float line_scale,
+                              float letter_px, float word_px, uint32_t align) {
     memset(options, 0, sizeof(*options));
     options->size = (uint32_t)sizeof(*options);
     options->version = EB_LAYOUT_OPTIONS_VERSION;
@@ -163,15 +202,49 @@ static void layout_options(EbLayoutOptions *options, uint32_t spine, uint32_t sc
     options->align = align;
 }
 
+static void layout_options(EbLayoutOptions *options, uint32_t spine, uint32_t scroll,
+                           float width, float height, float top, float right,
+                           float bottom, float left, float font_scale,
+                           float line_scale, float letter_px, float word_px,
+                           uint32_t align, uint32_t rules, uint32_t profile) {
+    memset(options, 0, sizeof(*options));
+    options->size = (uint32_t)sizeof(*options);
+    options->version = EB_LAYOUT_OPTIONS_VERSION;
+    options->spine = spine;
+    options->scroll = scroll;
+    options->width = width;
+    options->height = height;
+    options->top = top;
+    options->right = right;
+    options->bottom = bottom;
+    options->left = left;
+    options->font_scale = font_scale;
+    options->line_scale = line_scale;
+    options->letter_px = letter_px;
+    options->word_px = word_px;
+    options->align = align;
+    // 三个文本政策的三态位，和版式档案的选择：0 全是「跟随原书 / 跟随本书」。
+    options->text_rules = rules;
+    options->profile = profile;
+}
+
 // Lays a chapter out; `scroll` picks the page flow or the chapter's column.
 int32_t quire_layout(EbEngine *engine, uint32_t spine, uint32_t scroll,
                      float width, float height, float top, float right,
                      float bottom, float left, float font_scale,
                      float line_scale, float letter_px, float word_px,
-                     uint32_t align) {
+                     uint32_t align, uint32_t rules, uint32_t profile) {
+    if (!layout_has_rules()) {
+        QuireLayoutOptionsV3 legacy;
+        layout_options_v3(&legacy, spine, scroll, width, height, top, right,
+                          bottom, left, font_scale, line_scale, letter_px,
+                          word_px, align);
+        return eb_plain_layout(engine, (const EbLayoutOptions *)&legacy);
+    }
     EbLayoutOptions options;
     layout_options(&options, spine, scroll, width, height, top, right, bottom,
-                   left, font_scale, line_scale, letter_px, word_px, align);
+                   left, font_scale, line_scale, letter_px, word_px, align,
+                   rules, profile);
     return eb_plain_layout(engine, &options);
 }
 
@@ -179,10 +252,18 @@ int32_t quire_layout(EbEngine *engine, uint32_t spine, uint32_t scroll,
 int32_t quire_scroll_begin(EbEngine *engine, float width, float height,
                            float top, float right, float bottom, float left,
                            float font_scale, float line_scale, float letter_px,
-                           float word_px, uint32_t align) {
+                           float word_px, uint32_t align, uint32_t rules,
+                           uint32_t profile) {
+    if (!layout_has_rules()) {
+        QuireLayoutOptionsV3 legacy;
+        layout_options_v3(&legacy, 0, 0, width, height, top, right, bottom, left,
+                          font_scale, line_scale, letter_px, word_px, align);
+        return eb_plain_scroll_begin(engine, (const EbLayoutOptions *)&legacy);
+    }
     EbLayoutOptions options;
     layout_options(&options, 0, 0, width, height, top, right, bottom, left,
-                   font_scale, line_scale, letter_px, word_px, align);
+                   font_scale, line_scale, letter_px, word_px, align, rules,
+                   profile);
     return eb_plain_scroll_begin(engine, &options);
 }
 
@@ -191,14 +272,34 @@ int32_t quire_scroll_slice(EbEngine *engine, uint32_t spine, float width,
                            float height, float top, float right, float bottom,
                            float left, float font_scale, float line_scale,
                            float letter_px, float word_px, uint32_t align,
-                           float y, float slice_height, float scale, uint32_t ink,
+                           uint32_t rules, uint32_t profile, float y,
+                           float slice_height, float scale, uint32_t ink,
                            uint32_t paper, bool bold, const char *path) {
+    if (!layout_has_rules()) {
+        QuireScrollSliceV3 legacy;
+        memset(&legacy, 0, sizeof(legacy));
+        legacy.size = (uint32_t)sizeof(legacy);
+        legacy.version = EB_SCROLL_SLICE_OPTIONS_VERSION;
+        layout_options_v3(&legacy.layout, spine, 1, width, height, top, right,
+                          bottom, left, font_scale, line_scale, letter_px,
+                          word_px, align);
+        legacy.y = y;
+        legacy.slice_height = slice_height;
+        legacy.scale = scale;
+        legacy.ink = ink;
+        legacy.paper = paper;
+        legacy.bold = bold;
+        return eb_plain_scroll_slice_raw(engine,
+                                         (const EbScrollSliceOptions *)&legacy,
+                                         path);
+    }
     EbScrollSliceOptions options;
     memset(&options, 0, sizeof(options));
     options.size = (uint32_t)sizeof(options);
     options.version = EB_SCROLL_SLICE_OPTIONS_VERSION;
     layout_options(&options.layout, spine, 1, width, height, top, right, bottom,
-                   left, font_scale, line_scale, letter_px, word_px, align);
+                   left, font_scale, line_scale, letter_px, word_px, align,
+                   rules, profile);
     options.y = y;
     options.slice_height = slice_height;
     options.scale = scale;

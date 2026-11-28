@@ -48,6 +48,23 @@ pub struct ImportReport {
   /// 引擎认不出的对象个数：非零时提示“部分导入”，不假装全都进来了。
   unknown: int = 0
 
+  /// 两份结果相加：一次导入几份合集时，最后说一句总的，而不是一份
+  /// 一句、后一句盖掉前一句。
+  pub fn plus(other: ImportReport) -> ImportReport {
+    return ImportReport(
+      added: added + other.added,
+      skipped: skipped + other.skipped,
+      failed: failed + other.failed,
+      names: names + other.names,
+      ids: ids + other.ids,
+      rssAdded: rssAdded + other.rssAdded,
+      rssSkipped: rssSkipped + other.rssSkipped,
+      replaceAdded: replaceAdded + other.replaceAdded,
+      replaceSkipped: replaceSkipped + other.replaceSkipped,
+      unknown: unknown + other.unknown,
+    )
+  }
+
   pub fn text() -> string {
     var parts: [string] = []
     if added > 0 { parts.push("导入 {added} 个书源") }

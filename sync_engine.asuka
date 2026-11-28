@@ -1,0 +1,310 @@
+// 同步的引擎：一次同步把书架、进度、书文件、封面和 sidecar 在云端对齐。
+//
+// 它读写的是 Library 的状态，所以拿 library 当参数传进来，而不是做成
+// Library 的方法——store 不能 extend。分出来是因为一次同步的流程长，和
+// 书架的日常操作不是一回事；调用方是 library.asuka 的 syncNow。
+//
+// 顺序有讲究：先看云端，算清这次要搬几个文件（进度条得提前知道总数），
+// 再删、再传、最后才写回自己的记录——中途失败时，云端不会比本机更旧。
+
+import std/fs
+import std/time
+import ./lib
+import ./sources
+
+/// 云端来的排版档位：认不出的（手改过的 catalog、别的版本）当「跟随原书」，
+/// 别让分段控件拿到不存在的下标。
+fn choice(v: int) -> int = if v < 0 || v > 2 { 0 } else { v }
+
+/// 对齐也是：0…4 之外的一律「保留原书」。
+fn alignment(v: int) -> int = if v < 0 || v > 4 { 0 } else { v }
+
+/// 一次完整的双向同步：先文件，再是给这些文件命名的状态。message 和
+/// 抛出的错误都由调用方（store）接住，这里只管搬。
+async fn performSync(library: Library, cfg: DavConfig, sourceState: sources.SyncState) throws -> (SyncReport, sources.SyncState) {
+  try await davEnsure(cfg)
+  await library.fillHashes()
+
+  let serverText = try await davReadText(cfg, "catalog.json")
+  var server = SyncSnapshot()
+  if let text = serverText {
+    server = (try? syncDecode(text)) ?? SyncSnapshot()
+  }
+
+  var serverShelf: [lib.Shelf] = []
+  for row in server.shelf {
+    var kept = row
+    kept.path = safeName(row.path)
+    kept.cover = safeName(row.cover)
+    serverShelf.push(kept)
+  }
+
+  let sourceSync = syncSources(sourceState, server.sources, server.sourceRemoved)
+  let allSources = sourceSync.entries
+  let removed = mergedRemoved(library.removedIds, server.removed)
+  let (nextShelf, added) = mergedShelf(library.shelf, serverShelf, removed)
+  let live = prunedRemoved(nextShelf, removed)
+  let (_, places) = mergedReadings(library.readings, server.readings, live)
+
+  // 云端已有的正文和封面。正文按 hash 判断，不按文件名：同一本书
+  // 从另一台设备传上来时文件名可能不同，内容却相同。
+  let blobEntries = try await davList(cfg, "blobs/")
+  let coverEntries = try await davList(cfg, "covers/")
+  var serverHashes: [string] = []
+  var serverBlobNames: Set<string> = []
+  for entry in blobEntries {
+    if entry.isDir { continue }
+    serverBlobNames.insert(entry.name)
+    if entry.name.count() >= 64 {
+      let hash = entry.name.slice(0, 64)
+      if !serverHashes.contains(hash) { serverHashes.push(hash) }
+    }
+  }
+  var serverCovers: Set<string> = []
+  for entry in coverEntries {
+    if !entry.isDir { serverCovers.insert(entry.name) }
+  }
+
+  var report = SyncReport(added: added, places: places)
+
+  // 这次要搬几个文件。账要提前算：进度条上写的是「还剩多少」，
+  // 搬一个数一个就写不出来了。
+  let coversDir = fs.join([fs.appDir(), "covers"])
+  let uploadWanted = library.uploadAll || library.backupNew
+  var planned = 0
+  for row in nextShelf {
+    if uploadWanted && !row.path.isEmpty() && !row.hash.isEmpty() && fs.exists(fileOf(row.path)) && !serverBlobNames.contains(blobName(row.hash, row.path, row.id)) {
+      planned += 1
+    }
+    if !row.cover.isEmpty() {
+      let here = fs.exists(fileOf(row.cover))
+      let name = lib.fileName(row.cover)
+      if here && !serverCovers.contains(name) { planned += 1 }
+      if !here && serverCovers.contains(name) { planned += 1 }
+    }
+  }
+  library.syncTotal = planned
+  library.syncDone = 0
+
+  // 取下的书：正文、封面和 sidecar 都删；内容可能被另一行共享，先看
+  // 是否还有活着的书用它。
+  for row in serverShelf {
+    if library.syncStopping { break }
+    if live.get(row.id) == none { continue }
+    if nextShelf.any(kept => kept.id == row.id) { continue }
+    do {
+      if !row.hash.isEmpty() && !nextShelf.any(k => !k.hash.isEmpty() && k.hash == row.hash) {
+        try await davRemove(cfg, blobPathOf(row.hash, row.path, row.id))
+        report.deleted += 1
+      }
+      if !row.cover.isEmpty() && !nextShelf.any(k => k.cover == row.cover) {
+        try await davRemove(cfg, row.cover)
+        report.deleted += 1
+      }
+      try await davRemove(cfg, docPath(row.id))
+      report.deleted += 1
+    } catch e {
+      report.problems.push(SyncProblem(book: row.title, step: "清理云端文件", reason: lib.clipped(e.message, 300)))
+    }
+    library.docKnown.remove(row.id)
+    library.docRemote.remove(row.id)
+    library.docDirty.remove(row.id)
+  }
+
+  // 点了停止就在两个文件之间收手：正在传的那一本传完为止，已经传上去
+  // 的不回滚，下一次同步看到的云端就是它。
+  for row in nextShelf {
+    if library.syncStopping { break }
+    if !row.path.isEmpty() {
+      let local = fileOf(row.path)
+      let here = fs.exists(local)
+      let cloudName = blobName(row.hash, row.path, row.id)
+      if here && uploadWanted && !cloudName.isEmpty() && !serverBlobNames.contains(cloudName) {
+        do {
+          try await davPutFile(cfg, blobPathOf(row.hash, row.path, row.id), local)
+          report.uploaded += 1
+          serverBlobNames.insert(cloudName)
+          if !serverHashes.contains(row.hash) { serverHashes.push(row.hash) }
+        } catch e {
+          report.problems.push(SyncProblem(book: row.title, step: "上传正文", reason: lib.clipped(e.message, 300)))
+        }
+        library.syncDone += 1
+      }
+    }
+    // 封面始终走：它小，新设备一同步就能看到书架本来的样子。
+    if !row.cover.isEmpty() {
+      let local = fileOf(row.cover)
+      let here = fs.exists(local)
+      let name = lib.fileName(row.cover)
+      if here && !serverCovers.contains(name) {
+        do {
+          try await spawn { try fs.mkdirAll(coversDir) }
+          try await davPutFile(cfg, row.cover, local)
+          report.uploaded += 1
+          serverCovers.insert(name)
+        } catch e {
+          report.problems.push(SyncProblem(book: row.title, step: "上传封面", reason: lib.clipped(e.message, 300)))
+        }
+        library.syncDone += 1
+      } else if !here && serverCovers.contains(name) {
+        do {
+          try await spawn { try fs.mkdirAll(coversDir) }
+          try await davDownload(cfg, row.cover, into: local)
+          report.downloaded += 1
+        } catch e {
+          report.problems.push(SyncProblem(book: row.title, step: "下载封面", reason: lib.clipped(e.message, 300)))
+        }
+        library.syncDone += 1
+      }
+    }
+  }
+
+  // sidecar：只拉版本变了的，只推本地改过的。书签/统计量的合并
+  // 和以前一样按书、按天、按位置，不整包覆盖。
+  var docs = server.docs
+  var known = library.docKnown
+  var nextDays = library.readingDays
+  var nextMarks = library.bookmarks
+  var nextNotes = library.notes
+  for row in nextShelf {
+    let id = row.id
+    let remoteRev = docs.get(id) ?? 0
+    let knownRev = known.get(id) ?? 0
+    let dirtyAt = library.docDirty.get(id) ?? 0
+    let dirty = dirtyAt > knownRev
+    // 正文在本机的书才提前拉 sidecar；云端书库里的其它书等到打开
+    // 或进统计页时再拉，书多的时候不拿几千个小文件换一个书架。
+    let here = !row.path.isEmpty() && fs.exists(fileOf(row.path))
+    if remoteRev > knownRev && (here || dirty) {
+      do {
+        let text = try await davReadText(cfg, docPath(id))
+        if let text = text {
+          if let doc = try? bookDocDecode(text) {
+            let (days, _) = mergedDays(nextDays, doc.days, live)
+            let (marks, _) = mergedBookmarks(nextMarks, doc.bookmarks, live)
+            let (scribbles, _) = mergedNotes(nextNotes, doc.notes, live)
+            nextDays = days
+            nextMarks = marks
+            nextNotes = scribbles
+            if doc.updated > knownRev { known[id] = doc.updated }
+            if doc.updated > (docs.get(id) ?? 0) { docs[id] = doc.updated }
+          }
+        } else {
+          // catalog 说有，文件却没了：不要每次同步都重试同一个 404。
+          known[id] = remoteRev
+        }
+      } catch e {
+        report.problems.push(SyncProblem(book: row.title, step: "读取云端记录", reason: lib.clipped(e.message, 300)))
+      }
+    }
+    if dirty {
+      var at = dirtyAt
+      if let r = docs.get(id) { if at <= r { at = r + 1 } }
+      if let k = known.get(id) { if at <= k { at = k + 1 } }
+      let now = time.now().unix()
+      if at < now { at = now }
+      let doc = BookDoc(
+        updated: at,
+        id: id,
+        bookmarks: nextMarks.filter(m => m.book == id),
+        days: nextDays.filter(d => d.book == id),
+        notes: nextNotes.filter(n => n.book == id),
+      )
+      do {
+        try await davPutText(cfg, docPath(id), bookDocEncode(doc))
+        known[id] = at
+        docs[id] = at
+        report.docs += 1
+        if library.docDirty.get(id) == dirtyAt { library.docDirty.remove(id) }
+      } catch e {
+        report.problems.push(SyncProblem(book: row.title, step: "写回云端记录", reason: lib.clipped(e.message, 300)))
+      }
+    }
+  }
+
+  report.stopped = library.syncStopping
+
+  // 同步过程中可能又翻了一页、加了一个书签：最后以本机现在的状态
+  // 为准再合并一次，网络读到的旧快照不会把它盖掉。
+  let finalRemoved = mergedRemoved(library.removedIds, server.removed)
+  let (finalShelf, finalAdded) = mergedShelf(library.shelf, serverShelf, finalRemoved)
+  let finalLive = prunedRemoved(finalShelf, finalRemoved)
+  let (finalReadings, finalPlaces) = mergedReadings(library.readings, server.readings, finalLive)
+  let finalDays = lib.merge(library.readingDays, nextDays)
+  let (finalMarks, _) = mergedBookmarks(library.bookmarks, nextMarks, finalLive)
+  let (finalNotes, _) = mergedNotes(library.notes, nextNotes, finalLive)
+  let beforeMarks = library.bookmarks.count()
+  let beforeNotes = notesOfAny(library.notes)
+
+  library.shelf = finalShelf
+  library.readings = finalReadings
+  library.readingDays = finalDays
+  library.bookmarks = finalMarks
+  library.notes = finalNotes
+  library.removedIds = finalLive
+  report.added = finalAdded
+  report.places = finalPlaces
+  report.bookmarks = if finalMarks.count() > beforeMarks { finalMarks.count() - beforeMarks } else { 0 }
+  let afterNotes = notesOfAny(finalNotes)
+  report.notes = if afterNotes > beforeNotes { afterNotes - beforeNotes } else { 0 }
+
+  var finalKnown: [string: int] = [:]
+  var finalRemote: [string: int] = [:]
+  var finalDirty: [string: int] = [:]
+  for row in finalShelf {
+    if let at = known.get(row.id) { finalKnown[row.id] = at }
+    if let at = docs.get(row.id) { finalRemote[row.id] = at }
+    if let at = library.docDirty.get(row.id) { finalDirty[row.id] = at }
+  }
+  library.docKnown = finalKnown
+  library.docRemote = finalRemote
+  library.docDirty = finalDirty
+  library.cloudHashes = serverHashes
+
+  // A setting still at its default takes the server's, so a new device
+  // gets the old one's type on its first sync. A changed one stays.
+  if library.syncLast == 0 && server.updated > 0 {
+    if library.theme == "paper" { library.theme = server.theme }
+    if library.size == 19.0 { library.size = server.size }
+    if library.line == 1.6 { library.line = server.line }
+    if library.margins == 0.0 { library.margins = server.margins }
+    if library.letter == 0.0 { library.letter = server.letter }
+    if library.word == 0.0 { library.word = server.word }
+    if library.mode == "page" { library.mode = server.mode }
+    if library.goal == 12 { library.goal = server.goal }
+    // 排版的三个政策和档案：0 是「跟随原书」，也是没设置过的样子。
+    if library.ruleTrim == 0 { library.ruleTrim = choice(server.ruleTrim) }
+    if library.ruleHang == 0 { library.ruleHang = choice(server.ruleHang) }
+    if library.ruleSpace == 0 { library.ruleSpace = choice(server.ruleSpace) }
+    if library.profile == 0 { library.profile = choice(server.profile) }
+    if library.align == 0 { library.align = alignment(server.align) }
+  }
+  library.keep()
+  library.assetsTick += 1
+  library.evictCache()
+
+  let written = SyncSnapshot(
+    updated: time.now().unix(),
+    shelf: library.shelf,
+    readings: library.readings,
+    removed: library.removedIds,
+    docs: finalRemote,
+    sources: allSources,
+    sourceRemoved: sourceSync.removed,
+    theme: library.theme,
+    size: library.size,
+    line: library.line,
+    margins: library.margins,
+    letter: library.letter,
+    word: library.word,
+    mode: library.mode,
+    goal: library.goal,
+    ruleTrim: library.ruleTrim,
+    ruleHang: library.ruleHang,
+    ruleSpace: library.ruleSpace,
+    profile: library.profile,
+    align: library.align,
+  )
+  try await davPutText(cfg, "catalog.json", syncEncode(written))
+  return (report, sourceSync)
+}

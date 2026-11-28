@@ -125,53 +125,15 @@ screen Discover {
     grow: 1
     padding: [0, env.safeLeft, 0, env.safeRight]
     match rows {
-      .pending => Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 12
-        padding: [24, 40]
-        ProgressRing {}
-        Text("正在读取书源的发现页…") {
-          font: .footnote
-          color: .secondaryLabel
-        }
-      }
-      .failed(e) => Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 12
-        padding: [24, 40]
-        Text("发现页没有读出来") { font: .headline }
-        Text(e.message) {
-          font: .footnote
-          color: .secondaryLabel
-          textAlign: .center
-        }
-        Button("重试") {
-          on press { rows.reload() }
-        }
+      .pending => LoadingNote("正在读取书源的发现页…")
+      .failed(e) => LoadFailed("发现页没有读出来") {
+        message: lib.plain(e.message)
+        on retry { rows.reload() }
       }
       .ready(list) => if list.isEmpty() {
-        Column {
-          grow: 1
-          justify: .center
-          align: .center
-          gap: 12
-          padding: [24, 40]
-          Symbol(Icons.globe) {
-            font: .title
-            color: .tertiaryLabel
-          }
-          Text("没有带发现页的书源") {
-            font: .headline
-          }
-          Text("这个书源的 exploreUrl 是空的，或者还没有启用。导入或管理书源在右上角。") {
-            font: .footnote
-            color: .secondaryLabel
-            textAlign: .center
-          }
+        EmptyState("没有带发现页的书源") {
+          icon: Icons.globe
+          note: "这个书源的 exploreUrl 是空的，或者还没有启用。导入或管理书源在右上角。"
         }
       } else {
         // 整页只有一个 List：顶部 inset、状态栏和导航栏都交给它。
@@ -320,7 +282,7 @@ screen DiscoverList(row: ExploreHit) {
       // 之后引擎不会再重试：下一次点按不用排在那 45 秒后面。
       let stopped = stopping || sources.nativeCancelled()
       sources.nativeCancel()
-      moreNote = if stopped { "已停止" } else { e.message }
+      moreNote = if stopped { "已停止" } else { lib.plain(e.message) }
     }
     loadingMore = false
     stopping = false
@@ -329,61 +291,18 @@ screen DiscoverList(row: ExploreHit) {
   View {
     grow: 1
     match books {
-      .pending => Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 12
-        padding: [24, 40]
-        ProgressRing {}
-        Text("正在打开「{row.category.title}」…") {
-          font: .footnote
-          color: .secondaryLabel
-        }
-        Text(target) {
-          font: .caption2
-          color: .tertiaryLabel
-          textAlign: .center
-          lines: 2
-        }
+      .pending => LoadingNote("正在打开「{row.category.title}」…") {
+        detail: target
       }
-      .failed(e) => Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 12
-        padding: [24, 40]
-        Text("这个分类没有打开") { font: .headline }
-        Text(e.message) {
-          font: .footnote
-          color: .secondaryLabel
-          textAlign: .center
-        }
-        Text(target) {
-          font: .caption2
-          color: .tertiaryLabel
-          textAlign: .center
-          lines: 2
-        }
-        Button("重试") {
-          on press { books.reload() }
-        }
+      .failed(e) => LoadFailed("这个分类没有打开") {
+        message: lib.plain(e.message)
+        detail: target
+        on retry { books.reload() }
       }
       .ready(list) => if list.isEmpty() && extra.isEmpty() {
-        Column {
-          grow: 1
-          justify: .center
-          align: .center
-          gap: 10
-          padding: [24, 40]
-          Symbol(Icons.globe) {
-            font: .title
-            color: .tertiaryLabel
-          }
-          Text("这个分类里没有书") {
-            font: .footnote
-            color: .secondaryLabel
-          }
+        EmptyState("这个分类里没有书") {
+          icon: Icons.globe
+          note: "换一个分类，或者到「搜索」里按书名找。"
         }
       } else {
         List {

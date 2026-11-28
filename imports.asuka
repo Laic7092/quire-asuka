@@ -1,0 +1,48 @@
+// 把一批书导入书架：书架的「导入」和 Files / Mail 的「用 Quire 打开」走
+// 同一条路，也就同一套进度和汇总。一次一本时照旧说「已加入《…》」；
+// 一次好几本时先说正在导第几本，最后说一共成了几本——一本一句的话，
+// 后一条 snackbar 会把前一条盖掉。
+
+import ./lib
+
+/// 一次导入的结果：新进来的、已经在书架上的、没成功的。
+pub struct ImportTally {
+  added: int = 0
+  skipped: int = 0
+  failed: int = 0
+
+  /// 一句汇总，多本导入结束时说。
+  pub fn text() -> string {
+    var parts: [string] = []
+    if added > 0 { parts.push("{added} 本已加入") }
+    if skipped > 0 { parts.push("{skipped} 本已在书架") }
+    if failed > 0 { parts.push("{failed} 本没成功") }
+    if parts.isEmpty() { parts.push("没有可导入的书") }
+    return parts.joined(separator: "，")
+  }
+}
+
+/// 一本一本导入（其中一本失败不挡后面的）。结果的汇总由调用方决定用
+/// 不用得上：多本时这里已经说过了。
+pub async fn bringBooks(library: Library, paths: [string]) {
+  let many = paths.count() > 1
+  var tally = ImportTally()
+  for (i, p) in paths.enumerated() {
+    let title = lib.titleOf(lib.fileName(p))
+    if many { snackbar("正在导入 {i + 1}/{paths.count()}：《{title}》") }
+    do {
+      // 同一本书（同样的字节，不管文件叫什么）只报一次，不再加一行。
+      if try await library.importFile(p) {
+        tally.added += 1
+        if !many { snackbar("已加入《{title}》") }
+      } else {
+        tally.skipped += 1
+        if !many { snackbar("《{title}》已经在书架上了") }
+      }
+    } catch e {
+      tally.failed += 1
+      snackbar(if many { "《{title}》：{lib.plain(e.message)}" } else { lib.plain(e.message) })
+    }
+  }
+  if many { snackbar(tally.text()) }
+}

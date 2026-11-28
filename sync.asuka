@@ -27,6 +27,21 @@ pub enum SyncError: Error {
   }
 }
 
+/// 一次同步里没做成的一件小事：哪本书、哪一步、服务端的原话。同步页
+/// 把它们列出来，读者知道缺了什么、下次要不要再试；原因在显示时才过
+/// 一遍 lib.plain，存的是原文，排查时还看得见。
+pub struct SyncProblem {
+  book: string
+  step: string
+  reason: string
+
+  pub fn line() -> string {
+    let why = lib.plain(reason)
+    if book.isEmpty() { return "{step}：{why}" }
+    return "《{book}》{step}：{why}"
+  }
+}
+
 /// catalog.json, as the server keeps it: the shelf, progress, settings and
 /// the revision of each book's sidecar. The defaults are what a device that
 /// has never synced has, so a first sync can tell "the reader changed this"
@@ -56,6 +71,13 @@ pub struct SyncSnapshot {
   word: float = 0.0
   mode: string = "page"
   goal: int = 12
+  /// 中文排版：三个政策（0 跟随原书、1 开、2 关）与版式档案、对齐。这些是
+  /// 阅读偏好，和字号一样跟着走；缺字段的旧 catalog 按 0 读。
+  ruleTrim: int = 0
+  ruleHang: int = 0
+  ruleSpace: int = 0
+  profile: int = 0
+  align: int = 0
 }
 
 /// What one sync did, for the sheet that asked for it.
@@ -76,12 +98,14 @@ pub struct SyncReport {
   notes: int = 0
   /// 每本书的 sidecar 写回了几份（书签/统计有变化时）。
   docs: int = 0
-  /// Files that couldn't be moved this time: the sync goes on, the count
-  /// says it wasn't all of it.
-  failed: int = 0
+  /// 这一次没做成的每一件事，不只是个数：同步页列出来，读者知道是哪
+  /// 本书、哪一步。同步本身继续往下走，能做的都做。
+  problems: [SyncProblem] = []
+  /// 读者点了停止：已经做完的都留下了，没轮到的不再开始。
+  stopped: bool = false
 
   pub fn text() -> string {
-    if uploaded == 0 && downloaded == 0 && deleted == 0 && added == 0 && places == 0 && bookmarks == 0 && notes == 0 && docs == 0 && failed == 0 {
+    if uploaded == 0 && downloaded == 0 && deleted == 0 && added == 0 && places == 0 && bookmarks == 0 && notes == 0 && docs == 0 && problems.isEmpty() && !stopped {
       return "已同步 · 没有要改的"
     }
     var parts: [string] = []
@@ -93,8 +117,9 @@ pub struct SyncReport {
     if bookmarks > 0 { parts.push("新增 {bookmarks} 个书签") }
     if notes > 0 { parts.push("新增 {notes} 条笔记") }
     if docs > 0 { parts.push("更新 {docs} 本书的记录") }
-    if failed > 0 { parts.push("{failed} 个文件失败") }
-    return "已同步 · " + parts.joined(separator: " · ")
+    if !problems.isEmpty() { parts.push("{problems.count()} 项没有完成") }
+    let head = if stopped { "已停止（做完了这些）" } else { "已同步" }
+    return head + " · " + parts.joined(separator: " · ")
   }
 }
 

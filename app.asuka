@@ -7,6 +7,10 @@ import ./lib
 import ./sources
 import ./engine
 
+/// 版本号：asuka.toml 的 `version`，「我」和「关于」都读这一处，改版本
+/// 只改这里和 asuka.toml 两行。
+let appVersion = "0.1"
+
 /// The app's own root: the shelf and the book it opened, as two views, not a
 /// modal presented over the shelf. The reading page is a full-window layer,
 /// so the paper reaches the status bar too and the shelf's own bar is under
@@ -47,7 +51,7 @@ component Quire {
       readingShown = false
       readingMounted = true
     } catch e {
-      snackbar(e.message)
+      snackbar(lib.plain(e.message))
     }
   }
 
@@ -74,43 +78,53 @@ component Quire {
     incomingLink = ""
   }
 
-  /// 文件按后缀分派：.json 是书源合集，.txt/.epub 是书。
+  /// 文件按后缀分派：.json 是书源合集，.txt/.epub 是书。书走书架「导入」
+  /// 同一条路（进度、去重与汇总）；几份书源合集也先报进度，最后把
+  /// 各自的计数加起来说一句。
   async fn receiveFiles(paths: [string]) {
+    var collections: [string] = []
+    var books: [string] = []
     for p in paths {
+      if lib.fileName(p).lower().hasSuffix(".json") {
+        collections.push(p)
+      } else {
+        books.push(p)
+      }
+    }
+
+    let manyCollections = collections.count() > 1
+    var total: sources.ImportReport? = none
+    for (i, p) in collections.enumerated() {
       let name = lib.fileName(p)
-      if name.lower().hasSuffix(".json") {
-        await importSourceFile(p, name)
-      } else {
-        await importBookFile(p, name)
+      if manyCollections { snackbar("正在导入书源 {i + 1}/{collections.count()}：{name}") }
+      if let report = await importSourceFile(p, name, quiet: manyCollections) {
+        total = if let t = total { t.plus(report) } else { report }
       }
     }
-  }
-
-  async fn importBookFile(p: string, name: string) {
-    let title = lib.titleOf(name)
-    do {
-      if try await library.importFile(p) {
-        snackbar("已加入《{title}》")
-      } else {
-        snackbar("《{title}》已经在书架上了")
-      }
-    } catch e {
-      snackbar(e.message)
+    if manyCollections {
+      if let t = total { snackbar(t.text()) }
     }
+
+    await bringBooks(library, books)
   }
 
-  async fn importSourceFile(p: string, name: string) {
+  /// 一份书源合集（或别的从文件递进来的东西）：交给引擎分类，读出来的
+  /// 书源补上变量。结果交给调用方（多份时要汇总），这里只在单份时说话。
+  async fn importSourceFile(p: string, name: string, quiet: bool = false) -> sources.ImportReport? {
     if let store = allSources {
       do {
         let text = try await spawn { try fs.readText(p) }
         let report = try await store.importAny(text)
-        snackbar(report.text())
+        if !quiet { snackbar(report.text()) }
         await store.seedVariables(report.ids)
+        return report
       } catch e {
-        snackbar(e.message)
+        if !quiet { snackbar(lib.plain(e.message)) }
+        return none
       }
     } else {
-      snackbar("这个平台还没有书源引擎，打不开 {name}")
+      if !quiet { snackbar("这个平台还没有书源引擎，打不开 {name}") }
+      return none
     }
   }
 
@@ -123,7 +137,7 @@ component Quire {
         snackbar(report.text())
         await store.seedVariables(report.ids)
       } catch e {
-        snackbar(e.message)
+        snackbar(lib.plain(e.message))
       }
     } else {
       snackbar("这个平台还没有书源引擎（legado-engine）")

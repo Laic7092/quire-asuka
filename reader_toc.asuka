@@ -1,0 +1,332 @@
+// 阅读页的目录抽屉：这本书的目录、这一章的书签、笔记和高亮，以及本章的
+// 图片。三样东西排成同一张表，行从哪里来由 tocRows / bookmarkRows /
+// noteRows 决定；阅读页只负责打开它和接住选择。
+
+import ./lib
+import ./engine
+
+/// A bookmark's row: its chapter's title from the table of contents (a chapter
+/// can be missing from it), and how far into the book it is.
+fn markTitle(mark: lib.Bookmark, items: [engine.TocItem]) -> string {
+  let item = items.find(i => i.spine == mark.chapter)
+  let name = item?.title ?? "第 {mark.chapter + 1} 章"
+  return "{name} · {(mark.percent * 100).int()}%"
+}
+
+/// What a row of the contents sheet is: a section's name, a place the reader
+/// kept, a chapter, or one of this chapter's pictures.
+enum ContentsRowKind {
+  header
+  bookmark
+  note
+  chapter
+  image
+}
+
+/// The chapter's picture with this engine id; none when it isn't there.
+fn imageOf(images: [engine.ImageInfo], id: int) -> engine.ImageInfo? {
+  for image in images {
+    if image.id == id { return image }
+  }
+  return none
+}
+
+/// One row of the contents sheet, all three kinds: a List's rows come from a
+/// `for`, so the sections are rows like any other.
+struct ContentsRow {
+  kind: ContentsRowKind
+  title: string
+  chapter: int
+  percent: float
+  index: int
+  id: string
+  /// A note row's quote and what the reader wrote; "" for other rows.
+  quote: string = ""
+  text: string = ""
+  /// The place as the engine names it, when it could be asked: what puts a
+  /// bookmark back on its own paragraph after the type has been resized.
+  locator: string = ""
+  /// An image row's place in the chapter's list.
+  image: int = -1
+}
+
+/// The contents sheet's tabs: the table of contents, the places kept, and the
+/// notes (highlights are notes without words).
+enum ContentsTab {
+  toc
+  bookmarks
+  notes
+}
+
+fn tabIndex(tab: ContentsTab) -> int = match tab {
+  .toc => 0
+  .bookmarks => 1
+  .notes => 2
+}
+
+fn tabAt(index: int) -> ContentsTab = if index == 1 {
+  .bookmarks
+} else if index == 2 {
+  .notes
+} else {
+  .toc
+}
+
+/// The 目录 tab: this chapter's pictures (when the book has them), then the
+/// book's own table of contents.
+fn tocRows(items: [engine.TocItem], images: [engine.ImageInfo]) -> [ContentsRow] {
+  var rows: [ContentsRow] = []
+  if !images.isEmpty() {
+    rows.push(ContentsRow(kind: .header, title: "本章图片", chapter: 0, percent: 0, index: 0, id: "h.images"))
+    for (i, image) in images.enumerated() {
+      let name = if image.alt.isEmpty() { lib.fileName(image.src) } else { image.alt }
+      rows.push(ContentsRow(
+        kind: .image, title: name, chapter: 0, percent: 0, index: i, id: "i.{i}",
+        text: if image.width > 0 { "{image.width} × {image.height}" } else { "" },
+        image: image.id,
+      ))
+    }
+  }
+  if !items.isEmpty() {
+    if !images.isEmpty() {
+      rows.push(ContentsRow(kind: .header, title: "目录", chapter: 0, percent: 0, index: 0, id: "h.toc"))
+    }
+    for (i, item) in items.enumerated() {
+      rows.push(ContentsRow(
+        kind: .chapter, title: item.title, chapter: item.spine, percent: 0, index: i,
+        id: "c.{i}",
+      ))
+    }
+  }
+  return rows
+}
+
+/// The 书签 tab: the places the reader kept, in the order they were made.
+fn bookmarkRows(marks: [lib.Bookmark], items: [engine.TocItem]) -> [ContentsRow] {
+  var rows: [ContentsRow] = []
+  for mark in marks {
+    rows.push(ContentsRow(
+      kind: .bookmark, title: markTitle(mark, items),
+      chapter: mark.chapter, percent: mark.percent, index: 0, id: mark.id,
+      locator: mark.locator,
+    ))
+  }
+  return rows
+}
+
+/// The 笔记 tab: notes and highlights together, in the order they were made.
+fn noteRows(notes: [lib.Note]) -> [ContentsRow] {
+  var rows: [ContentsRow] = []
+  for note in notes {
+    rows.push(ContentsRow(
+      kind: .note, title: note.preview(), chapter: note.chapter, percent: note.percent,
+      index: 0, id: note.id, quote: note.quote, text: note.text, locator: note.locator,
+    ))
+  }
+  return rows
+}
+
+component Contents(items: [engine.TocItem], at: int, book: string, images: [engine.ImageInfo] = []) {
+  event pick(index: int)
+  event goBookmark(chapter: int, percent: float, locator: string)
+  event dropBookmark(id: string)
+  event dropNote(id: string)
+  event image(index: int)
+  use library: Library
+  let env = environment()
+
+  state tab = ContentsTab.toc
+  let marks = library.bookmarksOf(book)
+  let notes = library.notesOf(book)
+  let rows = match tab {
+    .toc => tocRows(items, images)
+    .bookmarks => bookmarkRows(marks, items)
+    .notes => noteRows(notes)
+  }
+  let emptyText = match tab {
+    .toc => "这本书没有目录"
+    .bookmarks => "还没有书签"
+    .notes => "还没有笔记或高亮"
+  }
+  let list = Ref()
+  let palette = lib.paletteFor(library.theme)
+
+  // The row for the chapter being read: a spine may be missing from the TOC,
+  // and nested entries mean the row isn't the spine.
+  let here = if tab == .toc {
+    rows.index(r => r.kind == .chapter && r.chapter == at) ?? 0
+  } else {
+    0
+  }
+
+  // Open where the reader is, not at the first chapter. Coming back to 目录
+  // scrolls there again; the other tabs keep their own list.
+  task("{tabIndex(tab)}") {
+    if tab != .toc { return }
+    await sleep(30ms)
+    list.scrollToItem(here, animated: false)
+  }
+
+  Column {
+    grow: 1
+    gap: 0
+    padding: lib.sheetPad(env, top: 16, bottom: 0, side: 0)
+    background: palette.paper
+    Row {
+      padding: [8, 20]
+      gap: 8
+      align: .center
+      Text("目录") {
+        font: .title3
+        color: palette.ink
+        grow: 1
+      }
+      Button("") {
+        icon: Icons.close
+        variant: .glass
+        color: palette.ink
+        on press { dismiss() }
+      }
+    }
+    Segmented(["目录", "书签", "笔记"]) {
+      selected: tabIndex(tab)
+      padding: [0, 20, 8, 20]
+      on change(i) { tab = tabAt(i) }
+    }
+    if rows.isEmpty() {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        padding: [24, 40]
+        Text(emptyText) {
+          font: .footnote
+          color: palette.muted
+        }
+      }
+    } else {
+      List {
+        ref: list
+        grow: 1
+        appearance: .bare
+        for row in rows key row.id {
+          match row.kind {
+            .header => Row {
+              padding: [12, 20]
+              Text(row.title) {
+                font: .footnote
+                color: palette.muted
+              }
+            }
+            .bookmark => Menu {
+              longPress: true
+              actions: [.button(title: "删除", role: .destructive, run: () => { emit dropBookmark(row.id) })]
+              Row {
+                padding: [12, 20]
+                gap: 10
+                align: .center
+                on press {
+                  emit goBookmark(chapter: row.chapter, percent: row.percent, locator: row.locator)
+                  dismiss()
+                }
+                Text(row.title) {
+                  grow: 1
+                  lines: 1
+                  color: palette.ink
+                }
+              }
+            }
+            .note => Menu {
+              longPress: true
+              actions: [
+                .button(title: "编辑", run: () => {
+                  present(NoteEditor(quote: row.quote, draft: row.text, existing: true) {
+                    on save(text) {
+                      library.updateNote(row.id, text: text)
+                    }
+                    on remove { emit dropNote(row.id) }
+                  })
+                }),
+                .button(title: "删除", role: .destructive, run: () => { emit dropNote(row.id) }),
+              ]
+              Row {
+                padding: [12, 20]
+                gap: 10
+                align: .center
+                on press {
+                  emit goBookmark(chapter: row.chapter, percent: row.percent, locator: row.locator)
+                  dismiss()
+                }
+                Column {
+                  grow: 1
+                  gap: 3
+                  Text(row.title) {
+                    lines: 2
+                    color: palette.ink
+                  }
+                  if !row.text.isEmpty() {
+                    Text(row.text) {
+                      font: .footnote
+                      lines: 1
+                      color: palette.muted
+                    }
+                  }
+                }
+                Text("{(row.percent * 100).int()}%") {
+                  font: .caption
+                  color: palette.muted
+                }
+              }
+            }
+            .chapter => Row {
+              padding: [12, 20]
+              gap: 10
+              align: .center
+              on press {
+                emit pick(row.index)
+                dismiss()
+              }
+              Text(row.title) {
+                grow: 1
+                lines: 2
+                font: if row.chapter == at { .body.bold() } else { .body }
+                color: if row.chapter == at { .accent } else { palette.ink }
+              }
+              Text("{row.chapter + 1}") {
+                font: .caption
+                color: palette.muted
+              }
+            }
+            .image => Row {
+              padding: [12, 20]
+              gap: 10
+              align: .center
+              on press {
+                emit image(row.image)
+                dismiss()
+              }
+              Symbol(Icons.image) {
+                font: .body
+                color: palette.muted
+              }
+              Column {
+                grow: 1
+                gap: 2
+                Text(row.title) {
+                  lines: 1
+                  color: palette.ink
+                }
+                if !row.text.isEmpty() {
+                  Text(row.text) {
+                    font: .caption
+                    color: palette.muted
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

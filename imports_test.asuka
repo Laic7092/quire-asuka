@@ -1,0 +1,26 @@
+import std/fs
+
+// 一次导入好几本：结果是三种情况的汇总，不是一句「完成」。
+
+test "导入结果的汇总说得清三种情况" {
+  expect(ImportTally(added: 2).text() == "2 本已加入")
+  expect(ImportTally(added: 1, skipped: 1).text() == "1 本已加入，1 本已在书架")
+  expect(ImportTally(failed: 2).text() == "2 本没成功")
+  expect(ImportTally().text() == "没有可导入的书")
+}
+
+test "同一批里的重复不重复上架，最后一句把它们算进「已在书架」" {
+  let dir = fs.tempDir()
+  let a = "{dir}/quire-many-a.txt"
+  let b = "{dir}/quire-many-b.txt"
+  try await spawn { try fs.writeText(a, text: "第1章 甲\n\n一段。\n") }
+  try await spawn { try fs.writeText(b, text: "第1章 乙\n\n一段。\n") }
+  let library = Library()
+  let app = mount(Quire(), provide: library)
+  await app.idle()
+  await bringBooks(library, [a, b, a])
+  await app.idle()
+  expect(library.shelf.count(where: s => s.id == "quire-many-a.txt") == 1)
+  expect(library.shelf.count(where: s => s.id == "quire-many-b.txt") == 1)
+  app.expect("2 本已加入，1 本已在书架")
+}

@@ -130,3 +130,17 @@ test "the captcha login knows where the code image is" {
   let plain = try sources.decodeSource(try sources.parseList(other)[0])
   expect(sources.captchaLoginOf(plain).isEmpty())
 }
+
+test "几份合集的结果加在一起，最后只说一句" {
+  let a = sources.ImportReport(added: 1, skipped: 1, rssAdded: 1, names: ["甲"], ids: ["a"])
+  let b = sources.ImportReport(added: 2, failed: 1, unknown: 1, names: ["乙", "丙"])
+  let total = a.plus(b)
+  expect(total.added == 3)
+  expect(total.skipped == 1)
+  expect(total.failed == 1)
+  expect(total.rssAdded == 1)
+  expect(total.unknown == 1)
+  expect(total.names == ["甲", "乙", "丙"])
+  expect(total.text().contains("导入 3 个书源"))
+  expect(total.text().contains("1 个读不出来"))
+}

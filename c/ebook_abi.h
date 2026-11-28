@@ -53,7 +53,7 @@ extern "C" {
  *     if (eb_abi_version() != EB_ABI_VERSION) { 拒绝加载 }
  *
  * 只新增函数不算破坏性变更。 */
-#define EB_ABI_VERSION 3
+#define EB_ABI_VERSION 4
 
 /* `eb_struct_size` 的 kind。宿主可用它做二次校验（头文件与库同源）。 */
 #define EB_STRUCT_PAGE_INFO 1
@@ -232,6 +232,14 @@ typedef struct EbLayoutOptions {
   float letter_px;
   float word_px;
   uint32_t align;
+  /* 三个文本政策的三态位，每个两位：0 跟随原书、1 开、2 关。
+   * 位 0-1 标点挤压（text-spacing-trim），位 2-3 行末标点悬挂
+   * （hanging-punctuation），位 4-5 中西文自动间距（text-autospace）。
+   * 0 = 全跟随原书：书里的 CSS 说什么就是什么，没写就是关。 */
+  uint32_t text_rules;
+  /* 版式档案：0 跟随本书（按 dc:language / 猜出来的语言），1 通用，
+   * 2 简体中文。选档案不动书的 lang，`locl` 之类的字形选择仍随书。 */
+  uint32_t profile;
 } EbLayoutOptions;
 
 #define EB_LAYOUT_OPTIONS_VERSION 1
