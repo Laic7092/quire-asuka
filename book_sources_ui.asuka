@@ -199,15 +199,27 @@ component SourceManager {
   use allSources: sources.Sources
   let env = environment()
 
-  /// 装在「内容源」的分段标签里时不画自己的标题和关闭按钮。
+  /// 装在「内容源」的分段标签里时不画自己的标题和关闭按钮；导入和
+  /// 「多选」在内容源页的导航栏里。
   prop embedded = false
+  /// 是否在多选。内容源页把它绑给自己的工具栏按钮，这样按钮在右上角，
+  /// 列表不用先让出一整行。
+  prop selecting = false
+  event selectingChange(selecting: bool)
 
-  state selecting = false
   state selected: [string] = []
   state filter = ""
   state query = ""
   state moving = false
   state groupText = ""
+
+  // 内容源页的「完成」把 selecting 置 false：把上一轮的选择一起收掉。
+  task(selecting) {
+    if !selecting {
+      selected = []
+      moving = false
+    }
+  }
 
   let all = allSources.list()
   let filters = sourceGroupNames(all)
@@ -584,17 +596,13 @@ component SourceManager {
     gap: 12
     padding: lib.sheetPad(env, top: if embedded { 4 } else { 22 }, bottom: 26, side: 22)
 
-    if !embedded || !all.isEmpty() {
+    if !embedded {
       Row {
         gap: 8
         align: .center
-        if !embedded {
-          Text("书源") {
-            font: .title3
-            grow: 1
-          }
-        } else {
-          View { grow: 1 }
+        Text("书源") {
+          font: .title3
+          grow: 1
         }
         if !all.isEmpty() {
           // 导入从这里也能进，不必先关掉这一页。
@@ -615,12 +623,10 @@ component SourceManager {
             }
           }
         }
-        if !embedded {
-          Button("") {
-            icon: Icons.close
-            variant: .glass
-            on press { dismiss() }
-          }
+        Button("") {
+          icon: Icons.close
+          variant: .glass
+          on press { dismiss() }
         }
       }
     }
@@ -1059,13 +1065,6 @@ component SourceManager {
         Row {
           gap: 10
           align: .center
-          Button("完成") {
-            on press {
-              selecting = false
-              selected = []
-              moving = false
-            }
-          }
           Button(if allSelected { "全不选" } else { "全选" }) {
             on press { toggleAll() }
           }

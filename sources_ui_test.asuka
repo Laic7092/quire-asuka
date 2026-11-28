@@ -119,3 +119,22 @@ test "tapping a source opens its own detail" {
   app.expect("这是说明")
   app.expect("删除书源")
 }
+
+component ContentHarness(store: sources.Sources) {
+  provide store
+  ContentSources()
+}
+
+test "the content-source toolbar toggles the source list's multi-select" {
+  let app = mount(ContentHarness(demoStore()))
+  await app.idle()
+  app.expect("多选")
+  app.tap("多选")
+  await app.idle()
+  app.expect("完成")
+  app.expect("已选 0")
+  app.tap("完成")
+  await app.idle()
+  app.expect("多选")
+  app.expectNo("已选 0")
+}

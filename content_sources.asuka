@@ -5,8 +5,31 @@
 
 screen ContentSources {
   state tab = 0
+  /// 书源页的「多选」：按钮在导航栏右上角，状态绑给书源列表。
+  state selecting = false
 
   title: "内容源"
+
+  toolbar {
+    Button("") {
+      icon: Icons.add
+      variant: .glass
+      tooltip: if tab == 0 {
+        "导入书源"
+      } else if tab == 1 {
+        "导入订阅源"
+      } else {
+        "导入净化规则"
+      }
+      on press { present(SourceImport()) }
+    }
+    if tab == 0 {
+      Button(if selecting { "完成" } else { "多选" }) {
+        variant: if selecting { .tinted } else { .glass }
+        on press { selecting = !selecting }
+      }
+    }
+  }
 
   // 这一页顶上没有 List 帮它让开导航栏：不套 SafeArea 的话，分段控件会
   // 顶到状态栏底下。
@@ -21,15 +44,24 @@ screen ContentSources {
         padding: [12, 22, 6, 22]
         Segmented(["书源", "订阅源", "净化规则"]) {
           selected: tab
-          on change(i) { tab = i }
+          on change(i) {
+            tab = i
+            selecting = false
+          }
         }
       }
 
       match tab {
-        0 => SourceManager() { embedded: true }
+        0 => SourceManager() {
+          embedded: true
+          bind selecting: selecting
+        }
         1 => RssManager() { embedded: true }
         2 => ReplaceManager() { embedded: true }
-        _ => SourceManager() { embedded: true }
+        _ => SourceManager() {
+          embedded: true
+          bind selecting: selecting
+        }
       }
     }
   }

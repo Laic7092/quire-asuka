@@ -43,24 +43,20 @@ component RssManager {
     gap: 12
     padding: lib.sheetPad(env, top: if embedded { 4 } else { 22 }, bottom: 26, side: 22)
 
-    Row {
-      gap: 8
-      align: .center
-      if !embedded {
+    if !embedded {
+      Row {
+        gap: 8
+        align: .center
         Text("订阅源") {
           font: .title3
           grow: 1
         }
-      } else {
-        View { grow: 1 }
-      }
-      Button("") {
-        icon: Icons.add
-        variant: .glass
-        tooltip: "导入订阅源"
-        on press { present(SourceImport()) }
-      }
-      if !embedded {
+        Button("") {
+          icon: Icons.add
+          variant: .glass
+          tooltip: "导入订阅源"
+          on press { present(SourceImport()) }
+        }
         Button("") {
           icon: Icons.close
           variant: .glass
