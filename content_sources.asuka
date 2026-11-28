@@ -4,29 +4,33 @@
 // 订阅列表和规则列表不挤在同一个工具栏里。
 
 screen ContentSources {
-  let env = environment()
-
   state tab = 0
 
   title: "内容源"
 
-  Column {
+  // 这一页顶上没有 List 帮它让开导航栏：不套 SafeArea 的话，分段控件会
+  // 顶到状态栏底下。
+  SafeArea {
     grow: 1
-    gap: 0
 
     Column {
-      padding: [12, 22, 6, 22]
-      Segmented(["书源", "订阅源", "净化规则"]) {
-        selected: tab
-        on change(i) { tab = i }
-      }
-    }
+      grow: 1
+      gap: 0
 
-    match tab {
-      0 => SourceManager() { embedded: true }
-      1 => RssManager() { embedded: true }
-      2 => ReplaceManager() { embedded: true }
-      _ => SourceManager() { embedded: true }
+      Column {
+        padding: [12, 22, 6, 22]
+        Segmented(["书源", "订阅源", "净化规则"]) {
+          selected: tab
+          on change(i) { tab = i }
+        }
+      }
+
+      match tab {
+        0 => SourceManager() { embedded: true }
+        1 => RssManager() { embedded: true }
+        2 => ReplaceManager() { embedded: true }
+        _ => SourceManager() { embedded: true }
+      }
     }
   }
 }

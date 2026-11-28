@@ -211,112 +211,116 @@ screen RssFeed(entry: sources.RssEntry) {
     }
   }
 
-  Column {
+  SafeArea {
     grow: 1
-    gap: 12
-    padding: [14, lib.pageKeyline, 24, lib.pageKeyline]
 
-    Text(entry.url) {
-      font: .caption
-      color: .tertiaryLabel
-      lines: 1
-    }
+    Column {
+      grow: 1
+      gap: 12
+      padding: [14, lib.pageKeyline, 24, lib.pageKeyline]
 
-    if busy {
-      Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 12
-        ProgressRing {}
-        Text("正在取文章…") {
-          font: .footnote
-          color: .secondaryLabel
-        }
+      Text(entry.url) {
+        font: .caption
+        color: .tertiaryLabel
+        lines: 1
       }
-    } else if articles.isEmpty() && !error.isEmpty() {
-      Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 12
-        Text("文章没有取回来") { font: .headline }
-        Text(error) {
-          font: .footnote
-          color: .secondaryLabel
-          textAlign: .center
+
+      if busy {
+        Column {
+          grow: 1
+          justify: .center
+          align: .center
+          gap: 12
+          ProgressRing {}
+          Text("正在取文章…") {
+            font: .footnote
+            color: .secondaryLabel
+          }
         }
-        Button("重试") {
-          on press { await reload() }
+      } else if articles.isEmpty() && !error.isEmpty() {
+        Column {
+          grow: 1
+          justify: .center
+          align: .center
+          gap: 12
+          Text("文章没有取回来") { font: .headline }
+          Text(error) {
+            font: .footnote
+            color: .secondaryLabel
+            textAlign: .center
+          }
+          Button("重试") {
+            on press { await reload() }
+          }
         }
-      }
-    } else if articles.isEmpty() {
-      Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 10
-        Text("这个订阅源还没有文章") { font: .headline }
-        Text("可能是订阅地址或规则不对；也可以刷新再试。") {
-          font: .footnote
-          color: .secondaryLabel
-          textAlign: .center
+      } else if articles.isEmpty() {
+        Column {
+          grow: 1
+          justify: .center
+          align: .center
+          gap: 10
+          Text("这个订阅源还没有文章") { font: .headline }
+          Text("可能是订阅地址或规则不对；也可以刷新再试。") {
+            font: .footnote
+            color: .secondaryLabel
+            textAlign: .center
+          }
+          Button("刷新") {
+            on press { await reload() }
+          }
         }
-        Button("刷新") {
-          on press { await reload() }
-        }
-      }
-    } else {
-      List {
-        grow: 1
-        appearance: .plain
-        for (i, a) in articles.enumerated() key i {
-          Column {
-            gap: 4
-            padding: [10, 0]
-            on press { push(RssArticle(entry, a)) }
-            Text(a.title) {
-              font: .body
-              lines: 2
-            }
-            if !a.summary.isEmpty() {
-              Text(a.summary) {
-                font: .caption
-                color: .secondaryLabel
+      } else {
+        List {
+          grow: 1
+          appearance: .plain
+          for (i, a) in articles.enumerated() key i {
+            Column {
+              gap: 4
+              padding: [10, 0]
+              on press { push(RssArticle(entry, a)) }
+              Text(a.title) {
+                font: .body
                 lines: 2
               }
-            }
-            Row {
-              gap: 8
-              if !a.date.isEmpty() {
-                Text(a.date) {
+              if !a.summary.isEmpty() {
+                Text(a.summary) {
                   font: .caption
-                  color: .tertiaryLabel
-                  lines: 1
+                  color: .secondaryLabel
+                  lines: 2
                 }
               }
-              if !a.origin.isEmpty() {
-                Text(a.origin) {
-                  font: .caption
-                  color: .tertiaryLabel
-                  lines: 1
+              Row {
+                gap: 8
+                if !a.date.isEmpty() {
+                  Text(a.date) {
+                    font: .caption
+                    color: .tertiaryLabel
+                    lines: 1
+                  }
+                }
+                if !a.origin.isEmpty() {
+                  Text(a.origin) {
+                    font: .caption
+                    color: .tertiaryLabel
+                    lines: 1
+                  }
                 }
               }
             }
           }
         }
-      }
 
-      if !error.isEmpty() {
-        Text(error) {
-          font: .footnote
-          color: .orange
+        if !error.isEmpty() {
+          Text(error) {
+            font: .footnote
+            color: .orange
+          }
         }
-      }
-      if !nextUrl.isEmpty() {
-        Button(if moreBusy { "加载中…" } else { "加载更多" }) {
-          on press { await loadMore() }
-          disabled: moreBusy
+        if !nextUrl.isEmpty() {
+          Button(if moreBusy { "加载中…" } else { "加载更多" }) {
+            on press { await loadMore() }
+            disabled: moreBusy
+          }
         }
       }
     }
@@ -346,52 +350,56 @@ screen RssArticle(entry: sources.RssEntry, article: sources.RssArticle) {
     busy = false
   }
 
-  Column {
+  SafeArea {
     grow: 1
-    gap: 0
-    padding: [14, lib.pageKeyline, 24, lib.pageKeyline]
 
-    if !article.date.isEmpty() {
-      Text(article.date) {
-        font: .caption
-        color: .tertiaryLabel
-        padding: [4, 0, 10, 0]
-      }
-    }
+    Column {
+      grow: 1
+      gap: 0
+      padding: [14, lib.pageKeyline, 24, lib.pageKeyline]
 
-    if busy {
-      Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 12
-        ProgressRing {}
-        Text("正在取正文…") {
-          font: .footnote
-          color: .secondaryLabel
+      if !article.date.isEmpty() {
+        Text(article.date) {
+          font: .caption
+          color: .tertiaryLabel
+          padding: [4, 0, 10, 0]
         }
       }
-    } else if !error.isEmpty() {
-      Column {
-        grow: 1
-        justify: .center
-        align: .center
-        gap: 12
-        Text("正文没有取回来") { font: .headline }
-        Text(error) {
-          font: .footnote
-          color: .secondaryLabel
-          textAlign: .center
-        }
-        Button("重试") {
-          on press {
-            busy = true
-            await load()
+
+      if busy {
+        Column {
+          grow: 1
+          justify: .center
+          align: .center
+          gap: 12
+          ProgressRing {}
+          Text("正在取正文…") {
+            font: .footnote
+            color: .secondaryLabel
           }
         }
+      } else if !error.isEmpty() {
+        Column {
+          grow: 1
+          justify: .center
+          align: .center
+          gap: 12
+          Text("正文没有取回来") { font: .headline }
+          Text(error) {
+            font: .footnote
+            color: .secondaryLabel
+            textAlign: .center
+          }
+          Button("重试") {
+            on press {
+              busy = true
+              await load()
+            }
+          }
+        }
+      } else {
+        ChapterBody(body)
       }
-    } else {
-      ChapterBody(body)
     }
   }
 }
