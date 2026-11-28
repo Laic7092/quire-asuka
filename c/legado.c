@@ -10,10 +10,10 @@
 // needs its HTTP client); replace, RSS source parsing and the cancel call work
 // without one, and read their error from the engine's per-thread record.
 //
-// A platform with the engine's static library built (Linux, macOS, an iPhone)
-// compiles the calls below; one without it (the iOS simulator, Windows for
-// now, Android, the web) compiles the same functions as answers saying so, so
-// the app still builds and says book sources aren't available there.
+// A platform with the engine's static library built (Linux, macOS, an iPhone,
+// Android, Windows) compiles the calls below; one without it (the iOS
+// simulator, the web) compiles the same functions as answers saying so, so the
+// app still builds and says book sources aren't available there.
 //
 // The `const char *` answers are copies in a buffer of the calling thread:
 // legado-engine's own pointer is only valid until its next call, and another
@@ -28,18 +28,30 @@
 #include <TargetConditionals.h>
 #endif
 
-#if (defined(__linux__) && !defined(__ANDROID__)) || \
+#if defined(__linux__) || defined(_WIN32) || \
     (defined(__APPLE__) && !TARGET_OS_SIMULATOR)
 #define QUIRE_HAS_LEGADO 1
 #endif
 
 #ifdef QUIRE_HAS_LEGADO
 
+#if defined(_WIN32)
+#include <windows.h>
+#else
 #include <pthread.h>
+#endif
 
 #include "legado.h"
 
-static pthread_mutex_t legado_lock = PTHREAD_MUTEX_INITIALIZER;
+#if defined(_WIN32)
+static SRWLOCK legado_mutex = SRWLOCK_INIT;
+#define legado_lock() AcquireSRWLockExclusive(&legado_mutex)
+#define legado_unlock() ReleaseSRWLockExclusive(&legado_mutex)
+#else
+static pthread_mutex_t legado_mutex = PTHREAD_MUTEX_INITIALIZER;
+#define legado_lock() pthread_mutex_lock(&legado_mutex)
+#define legado_unlock() pthread_mutex_unlock(&legado_mutex)
+#endif
 static LegadoEngine *legado_handle = NULL;
 
 /// The calling thread's copy of the last answer, and its last error. Kept
@@ -123,7 +135,7 @@ const char *quire_legado_version(void) { return legado_version(); }
 int32_t quire_legado_available(void) { return 1; }
 
 int32_t quire_legado_open(const char *storage_dir) {
-  pthread_mutex_lock(&legado_lock);
+  legado_lock();
   int ok = 1;
   if (legado_handle == NULL) {
     if (storage_dir != NULL && storage_dir[0] != '\0') {
@@ -143,17 +155,17 @@ int32_t quire_legado_open(const char *storage_dir) {
       ok = 0;
     }
   }
-  pthread_mutex_unlock(&legado_lock);
+  legado_unlock();
   return ok;
 }
 
 void quire_legado_close(void) {
-  pthread_mutex_lock(&legado_lock);
+  legado_lock();
   if (legado_handle != NULL) {
     legado_close(legado_handle);
     legado_handle = NULL;
   }
-  pthread_mutex_unlock(&legado_lock);
+  legado_unlock();
 }
 
 const char *quire_legado_error(void) { return failure; }
@@ -170,9 +182,9 @@ int32_t quire_legado_cancelled(void) {
 /// once (the cancel isn't sticky). Opening is not part of it: a cancel before
 /// the first call does nothing.
 void quire_legado_cancel(void) {
-  pthread_mutex_lock(&legado_lock);
+  legado_lock();
   if (legado_handle != NULL) legado_cancel(legado_handle);
-  pthread_mutex_unlock(&legado_lock);
+  legado_unlock();
 }
 
 /// 0.2.0 made the ABI's answer and error per calling thread, so one handle
@@ -200,15 +212,15 @@ static int can_run_parallel(void) {
 static LegadoEngine *begin_call(int *locked) {
   *locked = 0;
   if (can_run_parallel()) {
-    pthread_mutex_lock(&legado_lock);
+    legado_lock();
     int ok = open_locked();
     LegadoEngine *engine = ok ? legado_handle : NULL;
-    pthread_mutex_unlock(&legado_lock);
+    legado_unlock();
     return engine;
   }
-  pthread_mutex_lock(&legado_lock);
+  legado_lock();
   if (!open_locked()) {
-    pthread_mutex_unlock(&legado_lock);
+    legado_unlock();
     return NULL;
   }
   *locked = 1;
@@ -216,7 +228,7 @@ static LegadoEngine *begin_call(int *locked) {
 }
 
 static void end_call(int locked) {
-  if (locked) pthread_mutex_unlock(&legado_lock);
+  if (locked) legado_unlock();
 }
 
 const char *quire_legado_search(const char *source, const char *key, int32_t page) {

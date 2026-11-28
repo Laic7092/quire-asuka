@@ -62,8 +62,10 @@ jobs:
         run: bash .github/scripts/fetch-font.sh
 
       # The target's library, not this runner's: it's the Windows app.
-      - name: Fetch the engine
-        run: bash .github/scripts/fetch-engine.sh windows-x64
+      - name: Fetch the engines
+        run: |
+          bash .github/scripts/fetch-engine.sh windows-x64
+          bash .github/scripts/fetch-legado.sh windows-x64
 
       - name: Build the asuka CLI
         run: |

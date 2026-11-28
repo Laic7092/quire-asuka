@@ -49,8 +49,10 @@ jobs:
       # The target's libraries, not this runner's: it's the Android app, for
       # the ABIs asuka builds (arm64-v8a and x86_64 for emulators, armeabi-v7a
       # for older phones).
-      - name: Fetch the engine
-        run: bash .github/scripts/fetch-engine.sh android-arm android-arm64 android-x64
+      - name: Fetch the engines
+        run: |
+          bash .github/scripts/fetch-engine.sh android-arm android-arm64 android-x64
+          bash .github/scripts/fetch-legado.sh android-arm android-arm64 android-x64
 
       - name: Install the asuka CLI
         run: |

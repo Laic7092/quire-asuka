@@ -6,7 +6,7 @@
 // （分享链接、base64、gzip、混合合集）、净化（`legado_replace`）、订阅源、
 // 发现页翻页与取消。
 //
-// 没有这个库的平台（iOS 模拟器、Windows、Android、网页）由 C 一侧编译成
+// 没有这个库的平台（iOS 模拟器、网页）由 C 一侧编译成
 // “不可用”，engine.asuka 于是直接说这个平台暂时不能搜索书源。
 
 import std/json

@@ -37,7 +37,14 @@ fetch() {
 }
 
 for target in "$@"; do
-  file="legado-engine-$target.tar.gz"
+  # Windows' asuka build links mingw, so the asset is the target's `-gnu`
+  # library; `android-arm` is asuka's name for the release's `android-armv7`.
+  asset="$target"
+  case "$target" in
+    windows-*) asset="$target-gnu" ;;
+    android-arm) asset="android-armv7" ;;
+  esac
+  file="legado-engine-$asset.tar.gz"
   echo "fetch-legado: $target"
   fetch "$base/$file" "$tmp/$file"
 
@@ -45,7 +52,7 @@ for target in "$@"; do
   # The archive is one directory named after the target: its library, and the
   # header and licenses beside it. Only the library is the app's (the header
   # is c/legado.h, which this repository carries).
-  tar -xzf "$tmp/$file" -C "$app_dir/lib/$target" --strip-components=1 "$target/liblegado_engine.a"
+  tar -xzf "$tmp/$file" -C "$app_dir/lib/$target" --strip-components=1 "$asset/liblegado_engine.a"
 
   if [ ! -f "$app_dir/lib/$target/liblegado_engine.a" ]; then
     echo "fetch-legado: $file has no liblegado_engine.a" >&2

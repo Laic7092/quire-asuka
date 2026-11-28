@@ -3,7 +3,7 @@
 // Legado 的规则、QuickJS、cookie 和书源变量都在它那里。这个应用只把书源的
 // JSON、书和章节的字段递过去，再把回来的 JSON 变成界面用的结构。
 //
-// 没有这个库的平台（iOS 模拟器、Windows、Android、网页）由 c/legado.c
+// 没有这个库的平台（iOS 模拟器、网页）由 c/legado.c
 // 编译成“不可用”；下面每个入口说清楚，而不是偷偷换成另一套规则实现。
 
 import std/json

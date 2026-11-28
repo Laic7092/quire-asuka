@@ -51,25 +51,25 @@ sources = ["c/*.c"]
 
 [c.prebuilt]
 # legado-engine (the online book sources' rules and JavaScript) is the second
-# library where it's built. The iOS simulator, Windows, Android and the web
-# have no build of it here: c/legado.c then compiles its calls as answers
-# saying so, and book sources say they aren't available on that platform.
+# library where it's built. The iOS simulator and the web have no build of it
+# here: c/legado.c then compiles its calls as answers saying so, and book
+# sources say they aren't available on that platform.
 linux-x64 = ["lib/linux-x64/libebook_abi.a", "lib/linux-x64/liblegado_engine.a"]
 macos-arm64 = ["lib/macos-arm64/libebook_abi.a", "lib/macos-arm64/liblegado_engine.a"]
 macos-x64 = ["lib/macos-x64/libebook_abi.a", "lib/macos-x64/liblegado_engine.a"]
 ios-arm64 = ["lib/ios-arm64/libebook_abi.a", "lib/ios-arm64/liblegado_engine.a"]
 ios-simulator-arm64 = "lib/ios-simulator-arm64/libebook_abi.a"
 ios-simulator-x64 = "lib/ios-simulator-x64/libebook_abi.a"
-android-arm = "lib/android-arm/libebook_abi.a"
-android-arm64 = "lib/android-arm64/libebook_abi.a"
-android-x64 = "lib/android-x64/libebook_abi.a"
+android-arm = ["lib/android-arm/libebook_abi.a", "lib/android-arm/liblegado_engine.a"]
+android-arm64 = ["lib/android-arm64/libebook_abi.a", "lib/android-arm64/liblegado_engine.a"]
+android-x64 = ["lib/android-x64/libebook_abi.a", "lib/android-x64/liblegado_engine.a"]
 # The web's is wasm32 (wasi), built from the same release with
 # .github/scripts/build-engine.sh web ../ebook-engine; bookpage/web/bookpage.js
 # draws the pages it writes.
 web = "lib/web/libebook_abi.a"
-# Built for mingw (x86_64-pc-windows-gnu), the target asuka's Windows
-# build links with (see the note below); the release's is MSVC's .lib.
-windows-x64 = "lib/windows-x64/libebook_abi.a"
+# Built for mingw (x86_64-pc-windows-gnu), the target asuka's Windows build
+# links with (see the note below); both releases' MSVC .lib is unused there.
+windows-x64 = ["lib/windows-x64/libebook_abi.a", "lib/windows-x64/liblegado_engine.a"]
 
 # legado-engine's time zone comes from CoreFoundation on Apple (chrono's
 # iana-time-zone), so the app links it on both Apple targets.
@@ -89,6 +89,7 @@ libraries = ["pthread", "dl", "m"]
 # and the host prints wide with swprintf, which here is the UCRT's.
 [c.windows]
 libraries = [
+  "advapi32",
   "bcrypt",
   "ntdll",
   "userenv",
