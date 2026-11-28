@@ -21,7 +21,7 @@ env:
   # The engine release to build against: github.com/Laic7092/ebook-engine.
   # Pinned: the app is written against this one's C ABI (see README). The
   # Windows library is the release's `windows-x64-gnu` (mingw) one.
-  ENGINE_VERSION: v0.5.2
+  ENGINE_VERSION: v0.6.0
   # The CLI is built from asuka's source: a release's Windows link doesn't set
   # the subsystem (v0.2.13 passes -mwindows, which Zig drops), and the fix is
   # in `main`. Pinned to the commit it was verified against.

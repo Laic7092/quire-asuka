@@ -93,3 +93,29 @@ test "the captcha login script carries the account and the code" {
   expect(user == "reader")
   expect(pass == "p&q")
 }
+
+test "tapping a source opens its own detail" {
+  let store = sources.Sources()
+  store.entries = [
+    sources.Entry(
+      id: "detail",
+      name: "详细源",
+      group: "甲, 乙",
+      url: "https://detail.test",
+      json: r#"{"bookSourceName":"详细源","bookSourceUrl":"https://detail.test","bookSourceGroup":"甲, 乙","bookSourceComment":"这是说明","loginUrl":"https://detail.test/login","variable":"{\"user\":\"\",\"pass\":\"\"}","variableComment":"要登录","searchUrl":"/search?q={{key}}","exploreUrl":"[{\"title\":\"甲\",\"url\":\"/a\"},{\"title\":\"乙\",\"url\":\"/b\"},{\"title\":\"丙\",\"url\":\"/c\"}]","ruleSearch":{"bookList":".book","name":"a@text"},"ruleBookInfo":{"init":"body"},"ruleToc":{"chapterList":".ch"},"ruleContent":{"content":".body"}}"#,
+    ),
+  ]
+  let app = mount(ManagerHarness(store))
+  await app.idle()
+  app.tap("详细源")
+  await app.idle()
+  app.expect("地址")
+  app.expect("https://detail.test")
+  app.expect("甲、乙")
+  app.expect("搜索 · 发现 · 详情 · 目录 · 正文")
+  app.expect("3 个分类")
+  app.expect("https://detail.test/login")
+  app.expect("user、pass")
+  app.expect("这是说明")
+  app.expect("删除书源")
+}

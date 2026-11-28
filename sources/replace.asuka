@@ -1,0 +1,182 @@
+// 替换净化（Legado 的 ReplaceRule）：一段正则或脚本作用在正文/标题上。
+//
+// 规则由 legado-engine 执行（`legado_replace`）：它按 `order` 排序，按
+// `scope` / `scopeTitle` / `scopeContent` / `isEnabled` 挑规则，Java 正则
+// 交给它自己的实现，报告 `applied` / `skipped` / `errors`。这个文件只把导入
+// 的原始 JSON 存下来，再把正文递过去。
+//
+// 净化发生在读的时候：缓存和同步里存的仍是原文，改规则后重跑一次就生效。
+
+import std/crypto
+import std/json
+import std/store
+
+pub struct ReplaceEntry {
+  /// 规则的指纹：同一个 pattern / replacement / scope 只存一份。
+  id: string
+  name: string
+  enabled: bool = true
+  order: int = 0
+  /// 作用在标题上（`scopeTitle`）。目录只在有这种规则时才逐章净化。
+  title: bool = false
+  /// 导入时那段原文：引擎要的字段（timeoutMillisecond、group…）一个也不丢。
+  json: string
+  added: int = 0
+}
+
+pub struct ReplaceImport {
+  added: int = 0
+  skipped: int = 0
+}
+
+fn fieldString(v: json.Value, key: string) -> string {
+  if let found = v.get(key) {
+    return match found {
+      .string(s) => s
+      _ => ""
+    }
+  }
+  return ""
+}
+
+fn fieldBool(v: json.Value, key: string, fallback: bool) -> bool {
+  if let found = v.get(key) {
+    return match found {
+      .bool(b) => b
+      .int(n) => n != 0
+      _ => fallback
+    }
+  }
+  return fallback
+}
+
+fn fieldInt(v: json.Value, key: string, fallback: int) -> int {
+  if let found = v.get(key) {
+    return match found {
+      .int(n) => n
+      .float(f) => f.int()
+      _ => fallback
+    }
+  }
+  return fallback
+}
+
+/// 规则的身份：同样三条字段就是同一条规则，重导入算跳过。
+fn identityOf(v: json.Value) -> string {
+  let key = "{fieldString(v, "pattern")}\n{fieldString(v, "replacement")}\n{fieldString(v, "scope")}"
+  return crypto.sha256(key.bytes()).hex()
+}
+
+pub store ReplaceRules {
+  pub state entries: [ReplaceEntry] = store.read("replace.entries", [])
+
+  effect { store.write("replace.entries", entries) }
+
+  pub fn list() -> [ReplaceEntry] = entries
+
+  pub fn count() -> int = entries.count()
+
+  pub fn isEmpty() -> bool = entries.isEmpty()
+
+  /// 列表里给人看的那一面：从导入时留下的 JSON 里读，不改原文。
+  pub fn patternOf(e: ReplaceEntry) -> string {
+    if let v = try? json.parse(e.json) { return fieldString(v, "pattern") }
+    return ""
+  }
+
+  pub fn replacementOf(e: ReplaceEntry) -> string {
+    if let v = try? json.parse(e.json) { return fieldString(v, "replacement") }
+    return ""
+  }
+
+  pub fn scopeOf(e: ReplaceEntry) -> string {
+    if let v = try? json.parse(e.json) {
+      if fieldBool(v, "scopeTitle", false) { return "标题" }
+      if fieldBool(v, "scopeContent", false) { return "正文" }
+      let scope = fieldString(v, "scope").trim()
+      if scope.isEmpty() { return "正文" }
+      return scope
+    }
+    return "正文"
+  }
+
+  pub fn enabledCount() -> int = entries.count(where: e => e.enabled)
+
+  /// 引擎要的规则数组：启用的那些，按 `order` 排。原文直接拼，免得把一个
+  /// 这个应用不认识的字段重写掉。
+  pub fn rulesJSON() -> string {
+    if entries.isEmpty() { return "[]" }
+    let raw = entries
+      .filter(e => e.enabled)
+      .sorted(key: e => e.order)
+      .map(e => e.json)
+    return "[" + raw.joined(separator: ",") + "]"
+  }
+
+  /// 这批规则里有没有作用在标题上的（`scopeTitle`）。没有时目录不必每章
+  /// 跑一次净化。
+  pub fn wantsTitles() -> bool = entries.any(e => e.enabled && e.title)
+
+  pub fn importValues(values: [json.Value]) -> ReplaceImport {
+    var report = ReplaceImport()
+    var next = entries
+    for v in values {
+      let pattern = fieldString(v, "pattern")
+      if pattern.isEmpty() {
+        report.skipped += 1
+        continue
+      }
+      let id = identityOf(v)
+      if next.any(e => e.id == id) {
+        report.skipped += 1
+        continue
+      }
+      let name = fieldString(v, "name").trim()
+      next.push(ReplaceEntry(
+        id: id,
+        name: if name.isEmpty() { "净化规则 {next.count() + 1}" } else { name },
+        enabled: fieldBool(v, "isEnabled", true),
+        order: fieldInt(v, "order", 0),
+        title: fieldBool(v, "scopeTitle", false),
+        json: "{v}",
+        added: 0,
+      ))
+      report.added += 1
+    }
+    if report.added > 0 { entries = next }
+    return report
+  }
+
+  pub fn setEnabled(id: string, on: bool) {
+    var next: [ReplaceEntry] = []
+    for e in entries {
+      var row = e
+      if row.id == id { row.enabled = on }
+      next.push(row)
+    }
+    entries = next
+  }
+
+  pub fn remove(id: string) {
+    entries = entries.filter(e => e.id != id)
+  }
+
+  pub fn clear() {
+    entries = []
+  }
+
+  /// 把规则作用到一段文字。没有规则、没有引擎，或引擎报错时原样返回：
+  /// 净化不该让一章读不出来。
+  pub async fn applyTo(text: string, bookName: string, bookUrl: string, sourceUrl: string, target: string = "content") -> string {
+    if entries.isEmpty() || !nativeAvailable() { return text }
+    let context = json.encode(["bookName": bookName, "bookUrl": bookUrl, "sourceUrl": sourceUrl])
+    let done = try? await nativeReplace(rulesJSON(), text, context: context, target: target)
+    if let out = done { return out.text }
+    return text
+  }
+}
+
+/// 应用里唯一的一份：导入写进来的规则，章节读完之后立刻用得上。放在文件
+/// 顶层（应用级 state）是因为 `engine.asuka` 的正文/目录函数没有组件可以
+/// `use`；管理界面（根包的 `rss_ui.asuka`）也直接读写这一份。
+pub state replaceRules = ReplaceRules()

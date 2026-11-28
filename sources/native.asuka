@@ -2,7 +2,9 @@
 // QuickJS、cookie 与书源变量。C 一侧（c/legado.c）拿着唯一的 handle；
 // 0.2.0 起同一个 handle 可以并发调用，这里只把字符串递过去，再在
 // `spawn` 的线程上等它。0.3.0 加了 `legado_download`（书源的文件）和
-// `legado_eval`（书源变量，以及书源自己的登录脚本）。
+// `legado_eval`（书源变量，以及书源自己的登录脚本）；0.4.0 加了导入
+// （分享链接、base64、gzip、混合合集）、净化（`legado_replace`）、订阅源、
+// 发现页翻页与取消。
 //
 // 没有这个库的平台（iOS 模拟器、Windows、Android、网页）由 C 一侧编译成
 // “不可用”，engine.asuka 于是直接说这个平台暂时不能搜索书源。
@@ -46,6 +48,67 @@ struct NativeChapter {
   isVolume: bool = false
 }
 
+/// 一次导入的结果（0.4.0 的 `legado_import`）：按内容形状分好的三组原始
+/// JSON 对象。`unknown` 是认不出的对象个数；非零要告诉用户“部分导入”。
+struct NativeImport {
+  declaredKind: string? = none
+  /// 下载到内容后的最终地址，跟随过跳转。
+  url: string? = none
+  origin: string = ""
+  bookSources: [json.Value] = []
+  rssSources: [json.Value] = []
+  replaceRules: [json.Value] = []
+  unknown: int = 0
+}
+
+/// `legado_replace` 的一条执行记录：`changed` 区分“跑了但没匹配上”和
+/// “真的改了字”。
+struct NativeReplaceApplied {
+  id: int = 0
+  name: string = ""
+  changed: bool = false
+}
+
+struct NativeReplaceSkipped {
+  id: int = 0
+  name: string = ""
+  reason: string = ""
+}
+
+struct NativeReplaceError {
+  id: int = 0
+  name: string = ""
+  error: string = ""
+}
+
+struct NativeReplace {
+  text: string = ""
+  applied: [NativeReplaceApplied] = []
+  skipped: [NativeReplaceSkipped] = []
+  errors: [NativeReplaceError] = []
+}
+
+/// 订阅源列表的一页（`legado_rss_articles`）：文章，和下一页的地址。
+struct NativeRssPage {
+  articles: [NativeRssArticle] = []
+  nextUrl: string = ""
+}
+
+/// 一篇文章（`RssArticle`），同样是 Legado 的字段名。
+struct NativeRssArticle {
+  origin: string = ""
+  sort: string = ""
+  title: string = ""
+  order: int = 0
+  link: string = ""
+  pubDate: string? = none
+  description: string? = none
+  content: string? = none
+  image: string? = none
+  read: bool? = none
+  variable: string? = none
+}
+
 extern fn quire_legado_available() -> Int32
 extern fn quire_legado_open(storage: CString) -> Int32
 extern fn quire_legado_close()
@@ -53,6 +116,7 @@ extern fn quire_legado_version() -> CString
 
 extern fn quire_legado_search(source: CString, key: CString, page: Int32) -> CString?
 extern fn quire_legado_explore(source: CString, url: CString) -> CString?
+extern fn quire_legado_explore_page(source: CString, url: CString, key: CString?, page: Int32) -> CString?
 extern fn quire_legado_info(source: CString, bookUrl: CString) -> CString?
 extern fn quire_legado_toc(source: CString, bookJson: CString) -> CString?
 extern fn quire_legado_content(source: CString, bookJson: CString, chapterJson: CString) -> CString?
@@ -61,6 +125,13 @@ extern fn quire_legado_eval(source: CString, script: CString, input: CString, ba
 extern fn quire_legado_set_cookie(source: CString, url: CString, cookie: CString) -> CString?
 extern fn quire_legado_cookie_header(source: CString, url: CString) -> CString?
 extern fn quire_legado_eval_rule(source: CString, rule: CString, body: CString, baseUrl: CString) -> CString?
+extern fn quire_legado_import(text: CString) -> CString?
+extern fn quire_legado_replace(rules: CString, text: CString, context: CString?, target: CString?) -> CString?
+extern fn quire_legado_rss_sources(json: CString) -> CString?
+extern fn quire_legado_rss_articles(source: CString, sortUrl: CString?) -> CString?
+extern fn quire_legado_rss_content(source: CString, article: CString) -> CString?
+extern fn quire_legado_cancel()
+extern fn quire_legado_cancelled() -> Int32
 extern fn quire_legado_error() -> CString
 
 pub fn nativeAvailable() -> bool = quire_legado_available() != 0
@@ -90,6 +161,16 @@ pub async fn nativeSearch(source: string, key: string, page: int) throws -> stri
 pub async fn nativeExplore(source: string, url: string) throws -> string {
   return try await spawn {
     if let text = quire_legado_explore(source, url) { return text }
+    throw Error(quire_legado_error())
+  }
+}
+
+/// 发现页的一页：`url` 是分类自己的地址，`{{key}}` / `{{page}}` 由引擎填
+/// （`<1,2,3>`、`@js:` 也都是它的）。`key` 可以为空。
+pub async fn nativeExplorePage(source: string, url: string, key: string, page: int) throws -> string {
+  let at = i32(page)
+  return try await spawn {
+    if let text = quire_legado_explore_page(source, url, key, at) { return text }
     throw Error(quire_legado_error())
   }
 }
@@ -165,3 +246,62 @@ pub async fn nativeEvalRuleAsync(source: string, rule: string, body: string, bas
     throw Error(quire_legado_error())
   }
 }
+
+/// 一段分享链接、地址、base64、gzip 或裸 JSON：引擎按内容形状分成书源、
+/// 订阅源和净化规则三组，原对象的字段（包括这个应用不认识的）都保留。
+/// `src` 指向网络时会用 handle 的 HTTP 客户端下载，所以放在 `spawn` 上。
+pub async fn nativeImport(text: string) throws -> NativeImport {
+  let answer = try await spawn {
+    if let text = quire_legado_import(text) { return text }
+    throw Error(quire_legado_error())
+  }
+  return try json.decode(answer)
+}
+
+/// 净化：把一段替换规则作用到正文（或标题）上。不发请求，也不需要书源
+/// 状态；缓存里存的仍是原文，改规则后可以再跑一次。
+pub async fn nativeReplace(rules: string, text: string, context: string = "", target: string = "content") throws -> NativeReplace {
+  let answer = try await spawn {
+    if let out = quire_legado_replace(rules, text, context, target) { return out }
+    throw Error(quire_legado_error())
+  }
+  let result: NativeReplace = try json.decode(answer)
+  return result
+}
+
+/// 订阅源列表的摘要；`sortUrl` 是分类 JSON，和 `exploreUrl` 一样由这边解析。
+pub fn nativeRssSources(sourceJson: string) throws -> [json.Value] {
+  if let text = quire_legado_rss_sources(sourceJson) {
+    return try json.decode<[json.Value]>(text)
+  }
+  throw Error(quire_legado_error())
+}
+
+/// 订阅源的一页文章；`sortUrl` 为空时用订阅源自己的 `sourceUrl`。
+pub async fn nativeRssArticles(source: string, sortUrl: string = "") throws -> NativeRssPage {
+  return try await spawn {
+    if let text = quire_legado_rss_articles(source, sortUrl) {
+      let page: NativeRssPage = try json.decode(text)
+      return page
+    }
+    throw Error(quire_legado_error())
+  }
+}
+
+/// 一篇文章的正文，跟着 `ruleNextPage` 翻页。
+pub async fn nativeRssContent(source: string, article: string) throws -> string {
+  return try await spawn {
+    if let text = quire_legado_rss_content(source, article) { return text }
+    throw Error(quire_legado_error())
+  }
+}
+
+/// 叫停这个 handle 上正在跑的调用（搜索、正文、下载都算）。取消之后
+/// handle 照常用，取消不粘手。
+pub fn nativeCancel() {
+  quire_legado_cancel()
+}
+
+/// 上一次失败是不是被 `nativeCancel` 叫停的。紧跟上一次失败问才准：
+/// 下一次失败会换掉记录。
+pub fn nativeCancelled() -> bool = quire_legado_cancelled() != 0

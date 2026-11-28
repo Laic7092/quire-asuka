@@ -18,7 +18,9 @@ Quire 是跨平台的本地阅读器，使用 [Asuka](https://asuka.egoist.dev) 
 - 格式：`.txt`、`.epub`。大 TXT（超过 8 MB 的 UTF-8）按章从文件里读，不整本进内存。
 - 同步：书架、进度、书签、笔记和排版设置随同步走；云端正文按内容 hash 存放，打开云端的书时才下载那一本。云端默认是坚果云，也可选其他 WebDAV 服务器。入口在书架右上角的云图标与「我 → 同步与备份」，可开启启动时自动同步、自动备份书籍，或手动「备份全部」；本地缓存可设上限并按最久未读清理。
   云端布局：`catalog.json` 放书架、进度和设置，`meta/<key>.json` 放每本书的书签、笔记与阅读统计，`blobs/<hash>` 放正文；只有打开某本书时才下载它的正文。
-- 搜索与书源：导入阅读3.0（Legado）书源 JSON（粘贴、链接或文件），在书源里搜书；详情、目录和正文都留在应用里。加入书架的是「在线书」：书架只记书源和书页，目录存一份，正文读到哪取到哪（文件型书源除外，见下）——引擎里是一本流式书，目录的每一章先占好位置，读到哪一章才取哪一章的正文替换进去（一窗 40 章，读完一窗换下一窗，引擎和字体不重开）；书架上一枚小地球标出它。书源规则和 JavaScript 由 legado-engine 执行：CSS、XPath、JSONPath、正则、`##` 替换、`{{…}}` 模板和 `@js:` / `<js>` 脚本，连同 cookie 与书源变量，都是 Legado 那一套。没有这个库的平台（iOS 模拟器、Windows、Android、网页）暂时没有书源搜索；等引擎支持这些目标，接入同一份 C ABI 就能用。带 `exploreUrl` 的书源会出现在「发现」里，按书源自己的分类浏览，不必先搜一个关键词。书源多的时候顶部一排书源横着挑，每个书源的分类是标签，一行排好几个，不再一个分类占一整行；分类地址里带 `{{page}}` / `{page}`（或 `<js>` 脚本自己在拼 `page`）的，列表末尾有「加载更多」，翻到没有新书为止。书源管理里能按名字、地址或分组搜索，批量开关 / 分组 / 删除；一条书源只列一次，名字下面用标签标出它属于哪些分组，顶部的分组按钮只筛不重复列。单条删除会先确认，停用的书源在列表里变淡。导入前先说是几个书源、叫什么（或哪里读不出来），也可以直接读剪贴板；导入后列出这次新进来的名字。
+- 搜索与书源：导入阅读3.0（Legado）书源 JSON（粘贴、链接或文件），在书源里搜书；详情、目录和正文都留在应用里。加入书架的是「在线书」：书架只记书源和书页，目录存一份，正文读到哪取到哪（文件型书源除外，见下）——引擎里是一本流式书，目录的每一章先占好位置，读到哪一章才取哪一章的正文替换进去（一窗 40 章，读完一窗换下一窗，引擎和字体不重开）；书架上一枚小地球标出它。书源规则和 JavaScript 由 legado-engine 执行：CSS、XPath、JSONPath、正则、`##` 替换、`{{…}}` 模板和 `@js:` / `<js>` 脚本，连同 cookie 与书源变量，都是 Legado 那一套。没有这个库的平台（iOS 模拟器、Windows、Android、网页）暂时没有书源搜索；等引擎支持这些目标，接入同一份 C ABI 就能用。带 `exploreUrl` 的书源会出现在「发现」里，按书源自己的分类浏览，不必先搜一个关键词。书源多的时候顶部一排书源横着挑，每个书源的分类是标签，一行排好几个，不再一个分类占一整行；分类地址里带 `{{page}}` / `{page}`（或 `<js>` 脚本自己在拼 `page`）的，列表末尾有「加载更多」，翻到没有新书为止。书源管理里能按名字、地址或分组搜索，批量开关 / 分组 / 删除；一条书源只列一次，名字下面用标签标出它属于哪些分组，顶部的分组按钮只筛不重复列。单条删除会先确认，停用的书源在列表里变淡。点一条书源进它的详情：地址、分组、类型、开关、搜索 / 发现 / 详情 / 目录 / 正文这几组规则有没有、请求头、登录页、变量名、并发和说明都在一页里，删除也在那里。导入前先说是几个书源、叫什么（或哪里读不出来），也可以直接读剪贴板；导入后列出这次新进来的名字。
+
+导入与净化：书源导入现在先交给引擎的 `legado_import`，所以除了裸 JSON，还认 `legado://import/…` 分享链接、放在文案里的链接、裸地址、`base64:` / data URL 和 gzip；一份合集里混着书源、订阅源和净化规则时按内容形状分开，认不出的对象会计数并提示。订阅源在「内容源 → 订阅源」里列出、开关和删除，点进去按订阅源自己的规则取文章列表，点一篇读正文（HTML 交给引擎取文字，翻页跟 `ruleNextPage`）。净化规则在「内容源 → 净化规则」里开关和删除，正文和标题读到之后作用一遍（`legado_replace`），缓存里仍是原文，改规则重跑即可。发现页只留「搜索」和「内容源」两个入口：看分类在发现，导入和管理都在内容源。搜索的「停止」除了取消界面上的 task，也会 `legado_cancel` 叫停引擎里还在等网络的调用。
 
 文件型书源（`bookSourceType: 3`，如知轩藏书）没有章节：详情页列出 `ruleBookInfo.downloadUrls` 里的每个文件，点「下载并导入」由引擎用书源自己的 header / cookie / 代理把文件取下来（`legado_download`，先写 `.part` 再改名，字节不动）。文件原样落盘，引擎打开 TXT 时按自己嗅出的 `charset` 读（GBK / Big5 都认）。判断一个地址是不是压缩包只看路径的扩展名，不看域名：`download.zxcs.zip` 是知轩的下载站，文件本身是 `.txt`。
 
@@ -65,7 +67,7 @@ WebDAV 同步走 `std/http`：iOS / macOS 的 URLSession、Linux 的 libsoup 与
 
 ```text
 Asuka 应用
-  ├─ Tabs：首页 / 书架 / 发现；搜索在发现页的导航栏右上角
+  ├─ Tabs：首页 / 书架 / 发现；发现页右上角是搜索和内容源
   ├─ Shelf → Reader（根层覆盖页）
   ├─ 搜索 / 书源（sources/）
   │      │ C ABI：quire_legado_*
@@ -92,7 +94,7 @@ BookPage（原生位图视图）
 
 - 阅读页是应用的根层覆盖视图，不是系统 sheet；纸张覆盖状态栏区域。
 
-引擎按 ebook-engine **0.5.1** 的 C ABI 构建（`[c.prebuilt]` 的库里要有
+引擎按 ebook-engine **0.6.0** 的 C ABI 构建（`[c.prebuilt]` 的库里要有
 `eb_plain_metadata` / `eb_plain_selection_*` / `eb_plain_locator_*` /
 `eb_plain_new_book` / `eb_plain_scroll_index_*`，以及 postcard 面的
 `eb_request`）。0.4.0 把句柄改成了不透明
@@ -101,7 +103,10 @@ BookPage（原生位图视图）
 交给 Asuka 的一层薄垫片。0.5.0 加了全文搜索（`Request::Search` →
 `Response::Search`，只在 postcard 面上），`c/engine.c` 于是也写那一小段
 postcard 请求，并把答案拆成 Asuka 能一个字段一个字段读的句柄；0.5.1 修了行
-锚点的字节偏移，折行段落里的命中用 `locate` 落回真正的那一行。0.4.0 起它
+锚点的字节偏移，折行段落里的命中用 `locate` 落回真正的那一行。0.6.0 加了中文
+版式（版式档案、页级/行级动态规划、孤字与孤行修复、页底齐平），ABI 仍是 3：
+档案按书自己的 `lang` 选，TXT 入口会嗅成 `zh`，EPUB 读 `dc:language`，这个
+应用不用多传一个参数。0.4.0 起它
 给了三件这个应用正需要的东西：
 
 - **稳定位置**：`Anchor`（章 + 段 + 段内字节）从 IR 里的东西变成 C ABI 的
@@ -139,9 +144,17 @@ postcard 请求，并把答案拆成 Asuka 能一个字段一个字段读的句�
 | `shelf.asuka` | 书架、封面、导入、删除、显示方式与排序 |
 | `reader.asuka` | 阅读器、翻页/滚动、目录、书签、选中与笔记、排版设置、书内搜索 |
 | `library.asuka` | 书架与阅读状态的持久化 store，以及按需下载、备份和缓存清理 |
-| `home.asuka` / `search.asuka` | 首页；发现与搜索：书源管理、导入、结果、详情与章节阅读 |
+| `home.asuka` | 首页：继续阅读、今年、之前读过 |
+| `discover.asuka` | 发现：按书源和分类浏览，分类里的书列表 |
+| `search_ui.asuka` | 搜索、在线书详情、试读章节 |
+| `content_sources.asuka` | 「内容源」：书源 / 订阅源 / 净化规则三段 |
+| `book_sources_ui.asuka` | 书源列表、分组、多选，以及变量 / Cookie / 验证码登录 |
+| `source_import.asuka` | 书源、订阅源与净化规则的导入 |
+| `source_detail.asuka` | 单条书源的详情：地址、分组、规则形状、登录、变量与删除 |
+| `rss_ui.asuka` | 订阅源列表、文章列表和正文 |
+| `replace_ui.asuka` | 净化规则的开关、删除与清除 |
 | `remote/` | 在线书的本机部分：目录、按章正文缓存、给引擎的三章窗口 |
-| `sources/` | 书源：Legado 书源格式、导入与保存，以及 legado-engine 的 C 绑定与搜索/详情/目录/正文调用 |
+| `sources/` | 书源/订阅源格式、导入与保存、净化规则，以及 legado-engine 的 C 绑定与搜索/发现/目录/正文/订阅调用 |
 | `stats.asuka` | 阅读统计页：总体数据、最近七天、每本书的记录 |
 | `search_test.asuka` | 全文搜索：命中、章名与上下文、截断、流式章节换正文后的索引、命中位置的往返 |
 | `sync.asuka` | 同步的文件格式与合并规则：catalog、每本书的 sidecar、删除记录 |
@@ -191,8 +204,8 @@ legado-engine 负责在线书源的规则、JavaScript、cookie 与变量。
 .github/scripts/fetch-legado.sh linux-x64
 
 # 固定版本
-ENGINE_VERSION=v0.5.1 .github/scripts/fetch-engine.sh linux-x64
-LEGADO_VERSION=v0.3.0 .github/scripts/fetch-legado.sh linux-x64
+ENGINE_VERSION=v0.6.0 .github/scripts/fetch-engine.sh linux-x64
+LEGADO_VERSION=v0.4.0 .github/scripts/fetch-legado.sh linux-x64
 ```
 
 ebook-engine 的下载会校验 Release 中的 `SHA256SUMS`。需要从源码构建时：
@@ -202,11 +215,14 @@ ebook-engine 的下载会校验 Release 中的 `SHA256SUMS`。需要从源码构
 .github/scripts/build-legado.sh linux-x64 ../legado-engine
 ```
 
-CI 通过 `ENGINE_VERSION` / `LEGADO_VERSION` 选择版本，现在钉在 `v0.5.1` / `v0.3.0`：
+CI 通过 `ENGINE_VERSION` / `LEGADO_VERSION` 选择版本，现在钉在 `v0.6.0` / `v0.4.0`：
 这本书的应用按 ebook-engine 的 C ABI 写（稳定位置、流式章节、高度索引、全文搜索），
 legado-engine 则提供 `legado_open` / `legado_search` / `legado_info` / `legado_toc` / `legado_content`
 这几个调用，0.3.0 又加了 `legado_download`（书源的文件，原样落盘）和 `legado_eval`
-（书源变量与书源自己的登录脚本）。换版本得先确认这些还在。
+（书源变量与书源自己的登录脚本）。0.4.0 再追加 `legado_explore_page`（发现页翻页）、
+`legado_import`（分享链接 / base64 / gzip / 混合合集）、`legado_replace`（净化）、
+`legado_rss_*`（订阅源）和 `legado_cancel`（叫停进行中的调用）；新增函数都是追加，
+旧调用不变。换版本得先确认这些还在。
 
 `asuka.toml` 的 `[c.prebuilt]` 里，`linux-x64`、`macos-arm64`、`macos-x64` 和
 `ios-arm64` 同时列出 `libebook_abi.a` 与 `liblegado_engine.a`；`ios-simulator-*` 和
@@ -253,7 +269,7 @@ profile = "Quire Distribution"
 | `tests` | `mac_mini_m2`（Xcode 26.6） | 获取 `macos-arm64` 的两个引擎，运行 `asuka check`、`asuka test`、`asuka test lib` |
 | `ios-ipa` | 同上 | 获取 `ios-arm64` 的两个引擎，构建未签名设备 IPA，`dist/*-unsigned.ipa` 作为 build 的 artifact 下载 |
 
-接入步骤：在 Codemagic 里添加本仓库，它会读到 `codemagic.yaml`；自动构建还需在应用的 Webhooks 设置里建一个 webhook。只有 `.md` 改动的提交由 `when.changeset` 跳过。固定 Xcode 版本改 `definitions` 里的 `xcode`，固定引擎版本把 `ENGINE_VERSION` 写成 tag（如 `v0.5.1`）。
+接入步骤：在 Codemagic 里添加本仓库，它会读到 `codemagic.yaml`；自动构建还需在应用的 Webhooks 设置里建一个 webhook。只有 `.md` 改动的提交由 `when.changeset` 跳过。固定 Xcode 版本改 `definitions` 里的 `xcode`，固定引擎版本把 `ENGINE_VERSION` 写成 tag（如 `v0.6.0`）。
 
 安装方式：
 

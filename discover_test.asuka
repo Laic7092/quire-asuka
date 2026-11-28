@@ -42,3 +42,15 @@ test "a source picked above leaves the other sources' categories out" {
   await app.idle()
   app.expect("乙二")
 }
+
+test "the discover toolbar opens content sources with three tabs" {
+  let app = mount(DiscoverHarness(demoSources()), provide: Library())
+  await app.idle()
+  app.tap("发现")
+  await app.idle()
+  app.tap("内容源")
+  await app.idle()
+  app.expect("书源")
+  app.expect("订阅源")
+  app.expect("净化规则")
+}

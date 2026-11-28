@@ -1,0 +1,801 @@
+// 搜索：在导入的书源里找书，看在线书的详情，试读一章。
+
+import std/fs
+
+import ./lib
+import ./remote
+import ./sources
+
+/// 一条搜索结果：哪本书，是哪个书源给的。
+struct Hit {
+  sourceId: string
+  sourceName: string
+  book: sources.Book
+}
+
+/// 一个书源的搜索：找到的书，或者它为什么没找成。
+struct Outcome {
+  hits: [Hit] = []
+  failed: string = ""
+}
+
+/// 书名变成文件名：路径里不能有的字符换成下划线。
+fn fileTitle(title: string) -> string {
+  var out = ""
+  for c in title {
+    if c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' {
+      out += "_"
+    } else {
+      out += c
+    }
+  }
+  let t = out.trim()
+  return if t.isEmpty() { "网络小说" } else { t }
+}
+
+/// 地址里路径的那一段：去掉 `?` 后的查询和 `#` 后的片段。
+/// `https://download.zxcs.zip/书名.txt` 里的 `.zip` 是域名，不是扩展名。
+fn urlPathOf(url: string) -> string {
+  var path = url.trim()
+  if let at = path.find("?") { path = path.byteSlice(0, at) }
+  if let at = path.find("#") { path = path.byteSlice(0, at) }
+  return path
+}
+
+/// 查询串里的一个参数（`type=txt` 的 `type`），没有时是空。
+fn urlQueryValue(url: string, key: string) -> string {
+  let at = url.find("?") ?? -1
+  if at < 0 { return "" }
+  var query = url.byteSlice(at + 1, url.byteCount())
+  if let hash = query.find("#") { query = query.byteSlice(0, hash) }
+  for part in query.split("&") {
+    if let eq = part.find("=") {
+      if part.byteSlice(0, eq).trim().lower() == key {
+        return part.byteSlice(eq + 1, part.byteCount()).trim().lower()
+      }
+    }
+  }
+  return ""
+}
+
+/// 路径最后一段的扩展名，小写；没有点是空。域名不在这里面。
+fn fileExtensionOf(path: string) -> string {
+  let lower = path.lower()
+  let slash = lower.findLast("/") ?? -1
+  let name = if slash >= 0 { lower.byteSlice(slash + 1, lower.byteCount()) } else { lower }
+  let dot = name.findLast(".") ?? -1
+  if dot < 0 || dot + 1 >= name.byteCount() { return "" }
+  return name.byteSlice(dot + 1, name.byteCount())
+}
+
+/// 下载下来的文件名：书名，加上书源给的名字（有多个文件时）。扩展名先看
+/// 路径，再看 `?type=txt` 这类查询，最后才看选项名字。
+fn downloadNameFor(title: string, option: sources.DownloadOption, count: int) -> string {
+  let ext = fileExtensionOf(urlPathOf(option.url))
+  let type = urlQueryValue(option.url, "type")
+  let format = urlQueryValue(option.url, "format")
+  let kind = "{type} {format}".lower()
+  let chosen = if ext == "epub" { ".epub" } else if ext == "txt" {
+    ".txt"
+  } else if kind.contains("epub") {
+    ".epub"
+  } else if kind.contains("txt") || kind.contains("utf8") || kind.contains("utf-8") {
+    ".txt"
+  } else if option.name.lower().contains("epub") {
+    ".epub"
+  } else {
+    ".txt"
+  }
+  var base = fileTitle(title)
+  if count > 1 { base = "{base}-{fileTitle(option.name)}" }
+  return "{base}{chosen}"
+}
+
+/// 压缩包、PDF 之类，下载下来阅读器也打不开：在点下去之前说清楚。
+/// 只看路径的扩展名和 `type`/`format` 参数，不看域名：`zxcs.zip` 是
+/// 知轩的域名，下载的却是一个 .txt。
+fn downloadUnsupported(url: string) -> bool {
+  let blocked = ["zip", "rar", "7z", "pdf", "mobi", "azw3"]
+  let ext = fileExtensionOf(urlPathOf(url))
+  if blocked.contains(ext) { return true }
+  let kind = urlQueryValue(url, "type")
+  if blocked.contains(kind) { return true }
+  let format = urlQueryValue(url, "format")
+  return blocked.contains(format)
+}
+
+/// 搜索结果里的一条：封面、书名、作者，和它来自哪个书源。
+component ResultRow(hit: Hit) {
+  /// 合并重复书时，这个书名+作者还在另外几个书源里。
+  prop also = 0
+  event open
+
+  Row {
+    gap: 12
+    align: .center
+    padding: [10, lib.pageKeyline]
+    on press { emit open }
+    RemoteCover(url: hit.book.coverUrl) {
+      width: 46
+      height: 64
+    }
+    Column {
+      grow: 1
+      // 标题再长也不挤封面：这一列从零开始拿剩下的宽。
+      shrink: 1
+      basis: 0
+      minWidth: 0
+      gap: 4
+      Text(hit.book.name) {
+        font: .headline
+        lines: 2
+      }
+      if !hit.book.author.isEmpty() {
+        Text(hit.book.author) {
+          font: .subheadline
+          color: .secondaryLabel
+          lines: 1
+        }
+      }
+      Text(if also > 0 { "{hit.sourceName} · 还有 {also} 个书源" } else { hit.sourceName }) {
+        font: .caption
+        color: .tertiaryLabel
+        lines: 1
+      }
+    }
+  }
+}
+
+/// 网络上的封面：没有地址时不占位，等它的图到了才画。
+component RemoteCover(url: string) {
+  prop width = 76
+  prop height = 108
+
+  View {
+    width: width
+    height: height
+    // 封面是固定尺寸：标题再长也不该把它挤窄。
+    shrink: 0
+    radius: 7
+    clip: true
+    background: .secondaryBackground
+    if !url.isEmpty() {
+      Image(source: url) {
+        grow: 1
+        mode: .fill
+      }
+    }
+  }
+}
+
+/// 书源里的书详情：一本书的封面、简介，和它的目录。加入书架只存目录。
+screen SearchBook(hit: Hit) {
+  use allSources: sources.Sources
+  use library: Library
+
+  event open(book: lib.Book)
+
+  title: hit.book.name
+
+  state adding = false
+  state note = ""
+  /// 正在下的文件地址（空的是没有下载）：按钮跟着它说。
+  state downloading = ""
+
+  let detail = load detailOf(hit)
+
+  fn definition() -> sources.BookSource? {
+    for e in allSources.list() {
+      if e.id == hit.sourceId {
+        return allSources.definition(e)
+      }
+    }
+    return none
+  }
+
+  async fn detailOf(the: Hit) throws -> sources.Detail {
+    let def = definition()
+    if def == none { throw Error("这个书源已经不在列表里了") }
+    return try await sources.detailOf(def!, the.book)
+  }
+
+  async fn addToShelf(d: sources.Detail) {
+    if adding { return }
+    let def = definition()
+    if def == none {
+      note = "这个书源已经不在列表里了"
+      return
+    }
+    adding = true
+    note = "正在记下目录…"
+    do {
+      let meta = remote.buildMeta(d, sourceId: def!.bookSourceUrl)
+      let id = onlineId(meta.sourceId, bookUrl: meta.bookUrl)
+      remote.writeMeta(id, meta)
+      // 封面小，随目录一起取；取不到就画书脊。
+      var cover = ""
+      if !meta.coverUrl.isEmpty() {
+        let target = fs.join([fs.appDir(), "covers", "{id}.img"])
+        if (try? await remote.fetchCover(def!, url: meta.coverUrl, into: target)) == true {
+          cover = "covers/{id}.img"
+        }
+      }
+      // 第一章顺手取回来：书架的字数、第一次打开都立刻有东西。
+      try? await remote.chapterText(def!, id: id, meta: meta, at: 0)
+      let book = library.addOnline(meta, cover: cover)
+      note = "已加入书架，正文按章取"
+      emit open(book)
+    } catch e {
+      note = e.message
+    }
+    adding = false
+  }
+
+  /// 文件型书源的书：引擎用自己的 header/cookie/代理把文件取下来，原样
+  /// 落到 books/，再走和「从文件导入」同一条路——之后它就是一本本地书。
+  async fn downloadAndOpen(d: sources.Detail, f: sources.DownloadOption) {
+    if !downloading.isEmpty() { return }
+    let def = definition()
+    if def == none {
+      note = "这个书源已经不在列表里了"
+      return
+    }
+    if downloadUnsupported(f.url) {
+      note = "这个文件不是 TXT 或 EPUB：{f.url}"
+      return
+    }
+    let name = downloadNameFor(d.info.book.name, f, d.files.count())
+    let dir = fs.join([fs.appDir(), "books"])
+    let path = fs.join([dir, name])
+    downloading = f.url
+    note = "正在下载 {f.name}…"
+    do {
+      try await spawn { try fs.mkdirAll(dir) }
+      let file = try await sources.downloadOf(def!, url: f.url, into: path)
+      let kb = file.size / 1024
+      note = "已下载 {kb} KB（{file.charset}），正在导入…"
+      let added = try await library.importFile(path)
+      if let row = library.shelf.find(s => s.path == "books/{name}") {
+        note = if added { "已加入书架：{row.title}" } else { "书架上已经有这本书" }
+        emit open(row.book())
+      } else {
+        note = "下载好了，但书架上没有找到它"
+        try? fs.remove(path)
+      }
+    } catch e {
+      note = e.message
+      try? fs.remove(path)
+    }
+    downloading = ""
+  }
+
+  SafeArea {
+    grow: 1
+    match detail {
+      .pending => Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        ProgressRing {}
+        Text("正在读《{hit.book.name}》的详情…") {
+          font: .footnote
+          color: .secondaryLabel
+        }
+      }
+      .failed(e) => Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        Text("没能打开这本书") { font: .headline }
+        Text(e.message) {
+          font: .footnote
+          color: .secondaryLabel
+          textAlign: .center
+        }
+        Button("重试") {
+          on press { detail.reload() }
+        }
+      }
+      .ready(d) => Column {
+        grow: 1
+        Column {
+          gap: 12
+          padding: [14, lib.pageKeyline, 10, lib.pageKeyline]
+          Row {
+            gap: 14
+            align: .start
+            RemoteCover(url: d.info.book.coverUrl) {
+              width: 78
+              height: 110
+            }
+            Column {
+              grow: 1
+              // 标题再长也不挤封面：这一列从零开始拿剩下的宽。
+              shrink: 1
+              basis: 0
+              minWidth: 0
+              gap: 5
+              Text(d.info.book.name) {
+                font: .title3.bold()
+                lines: 3
+              }
+              if !d.info.book.author.isEmpty() {
+                Text(d.info.book.author) {
+                  font: .subheadline
+                  color: .secondaryLabel
+                }
+              }
+              Text(if d.chapters.isEmpty() {
+                if d.files.isEmpty() { "{hit.sourceName} · 没有章节" } else { "{hit.sourceName} · {d.files.count()} 个文件" }
+              } else {
+                "{hit.sourceName} · {d.chapters.count()} 章"
+              }) {
+                font: .caption
+                color: .tertiaryLabel
+              }
+              if !d.info.book.lastChapter.isEmpty() {
+                Text("最新：{d.info.book.lastChapter}") {
+                  font: .caption
+                  color: .secondaryLabel
+                  lines: 1
+                }
+              }
+            }
+          }
+          if !d.info.book.intro.isEmpty() {
+            Text(d.info.book.intro) {
+              font: .footnote
+              color: .secondaryLabel
+              lines: 7
+            }
+          }
+          if !d.files.isEmpty() {
+            Column {
+              gap: 8
+              Text(if d.chapters.isEmpty() { "下载后加入书架" } else { "也可以下载整本" }) {
+                font: .caption.bold()
+                color: .secondaryLabel
+              }
+              for f in d.files key f.url {
+                Row {
+                  gap: 10
+                  align: .center
+                  Text(f.name) {
+                    font: .footnote
+                    grow: 1
+                    lines: 1
+                  }
+                  Button(if downloading == f.url { "下载中…" } else { "下载并导入" }) {
+                    on press { await downloadAndOpen(d, f) }
+                    disabled: !downloading.isEmpty()
+                  }
+                }
+              }
+            }
+          }
+          if !note.isEmpty() {
+            Text(note) {
+              font: .footnote
+              color: .tertiaryLabel
+            }
+          }
+          if !d.chapters.isEmpty() {
+            Row {
+              gap: 10
+              Button(if adding { "正在加入…" } else { "加入书架" }) {
+                on press { await addToShelf(d) }
+                disabled: adding
+              }
+            }
+          }
+        }
+        if d.chapters.isEmpty() {
+          Column {
+            grow: 1
+            justify: .center
+            align: .center
+            gap: 8
+            padding: [24, 30]
+            Text(if d.files.isEmpty() {
+              "这个书源没有给出章节，也没有给出下载地址。"
+            } else {
+              "文件型书源没有章节：下载下来就是一本本地书，按 TXT 的章节读。"
+            }) {
+              font: .footnote
+              color: .secondaryLabel
+              textAlign: .center
+            }
+          }
+        } else {
+          List {
+            appearance: .plain
+            grow: 1
+            for (i, c) in d.chapters.enumerated() key i {
+              Row {
+                gap: 10
+                align: .center
+                padding: [11, lib.pageKeyline]
+                on press { push(SearchChapter(hit, c)) }
+                Text("{i + 1}") {
+                  font: .caption
+                  color: .tertiaryLabel
+                  width: 34
+                }
+                Text(c.title) {
+                  font: .body
+                  grow: 1
+                  lines: 1
+                }
+                Symbol(Icons.disclosure) {
+                  font: .caption
+                  color: .tertiaryLabel
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// 一章的正文：按段落排，长按可以选中复制。
+screen SearchChapter(hit: Hit, chapter: sources.Chapter) {
+  use allSources: sources.Sources
+
+  title: chapter.title
+
+  let body = load textOf(hit, chapter)
+
+  async fn textOf(the: Hit, c: sources.Chapter) throws -> string {
+    for e in allSources.list() {
+      if e.id == the.sourceId {
+        if let def = allSources.definition(e) {
+          let raw = try await sources.contentOf(def, the.book, c)
+          return await sources.applyReplaceRules(raw, book: the.book, source: def)
+        }
+        break
+      }
+    }
+    throw Error("这个书源已经不在列表里了")
+  }
+
+  SafeArea {
+    grow: 1
+    background: .background
+    match body {
+      .pending => Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        ProgressRing {}
+        Text("正在取这一章…") {
+          font: .footnote
+          color: .secondaryLabel
+        }
+      }
+      .failed(e) => Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        Text("这一章没有取到") { font: .headline }
+        Text(e.message) {
+          font: .footnote
+          color: .secondaryLabel
+          textAlign: .center
+        }
+        Button("重试") {
+          on press { body.reload() }
+        }
+      }
+      .ready(text) => ChapterBody(text)
+    }
+  }
+}
+
+/// 一段正文的文字：一行一段。
+component ChapterBody(text: string) {
+  let paragraphs = text.split("\n").map(p => p.trim()).filter(p => !p.isEmpty())
+
+  Scroll {
+    Column {
+      gap: 14
+      padding: [20, lib.pageKeyline, 44, lib.pageKeyline]
+      for (i, p) in paragraphs.enumerated() key i {
+        Text(p) {
+          font: Font(size: 17)
+          color: .label
+        }
+      }
+    }
+  }
+}
+
+/// 搜索结果的范围：全部（引擎怎么匹配就怎么算）、书名、作者，或精确
+/// 匹配。Legado 的搜索接口只有一个关键词，所以这些是在结果回来后筛。
+fn hitMatches(hit: Hit, q: string, scope: string) -> bool {
+  let key = q.trim()
+  if key.isEmpty() || scope == "all" { return true }
+  if scope == "title" { return hit.book.name.contains(key, ignoreCase: true) }
+  if scope == "author" { return hit.book.author.contains(key, ignoreCase: true) }
+  if scope == "exact" {
+    return hit.book.name.trim().equals(key, ignoreCase: true) ||
+      hit.book.author.trim().equals(key, ignoreCase: true)
+  }
+  return true
+}
+
+fn scopeName(scope: string) -> string {
+  if scope == "title" { return "书名" }
+  if scope == "author" { return "作者" }
+  if scope == "exact" { return "精确" }
+  return "全部"
+}
+
+/// 列表里的一行：一本书，和合并重复书时它还在几个书源里。
+struct ShownHit {
+  hit: Hit
+  also: int = 0
+}
+
+fn shownHits(results: [Hit], q: string, scope: string, dedupe: bool) -> [ShownHit] {
+  let filtered = results.filter(h => hitMatches(h, q, scope))
+  if !dedupe { return filtered.map(h => ShownHit(hit: h)) }
+  var out: [ShownHit] = []
+  for h in filtered {
+    let key = "{h.book.name.lower()}\n{h.book.author.lower()}"
+    var found = false
+    for i in 0..<out.count() {
+      let at = "{out[i].hit.book.name.lower()}\n{out[i].hit.book.author.lower()}"
+      if at == key {
+        var row = out[i]
+        row.also += 1
+        out[i] = row
+        found = true
+        break
+      }
+    }
+    if !found { out.push(ShownHit(hit: h)) }
+  }
+  return out
+}
+
+struct SearchRequest {
+  token: int = 0
+  q: string = ""
+}
+
+/// 搜索页本身：没有结果时是提示，找到后是列表。一次搜索是一个带版本号
+/// 的 task：再按一次搜索、或点停止，旧的 task 被取消，慢的请求回来也
+/// 不会再写进界面。
+screen Search {
+  use allSources: sources.Sources
+
+  /// 书架接住一本刚取回来的书：它已经是一本普通书了。
+  event open(book: lib.Book)
+
+  title: "搜索"
+  bind search: key
+  searchPlaceholder: "书名或作者"
+
+  state key = ""
+  state busy = false
+  state results: [Hit] = []
+  state note = ""
+  /// 这一轮搜到哪儿了：每回来一个书源 +1。结果不再等全部书源。
+  state searched = 0
+  state failures: [string] = []
+  /// 搜索结果的范围；只影响显示，不会少发一个书源请求。
+  state scope = "all"
+  /// 合并同名同作者的书，只留第一个来源，并标出还有几个来源。
+  state dedupe = false
+  /// 一次请求：token 变了就取消上一轮。
+  state request = SearchRequest()
+
+  let env = environment()
+  let shown = shownHits(results, request.q, scope, dedupe)
+
+  on searchSubmit { start() }
+
+  toolbar {
+    Button(scopeName(scope)) {
+      icon: Icons.display
+      variant: .glass
+      tooltip: "搜索范围与结果"
+      menu: [
+        .section(title: "搜索范围", items: [
+          .button(title: "全部", checked: scope == "all", run: () => { scope = "all" }),
+          .button(title: "书名", checked: scope == "title", run: () => { scope = "title" }),
+          .button(title: "作者", checked: scope == "author", run: () => { scope = "author" }),
+          .button(title: "精确匹配", checked: scope == "exact", run: () => { scope = "exact" }),
+        ]),
+        .section(title: "结果", items: [
+          .button(title: "合并重复书", checked: dedupe, run: () => { dedupe = !dedupe }),
+        ]),
+      ]
+    }
+    if busy {
+      Button("停止") {
+        icon: Icons.close
+        variant: .glass
+        tooltip: "停止这一轮搜索"
+        on press { stop() }
+      }
+    }
+  }
+
+  /// 一个书源回来就写进结果：不再等最慢的那个。
+  async fn searchOne(e: sources.Entry, q: string, run: int) -> Outcome {
+    if request.token != run { return Outcome() }
+    let def = allSources.definition(e)
+    if def == none {
+      if request.token == run {
+        searched += 1
+        failures.push("{e.name} 的书源读不出来")
+      }
+      return Outcome(failed: "{e.name} 的书源读不出来")
+    }
+    do {
+      let books = try await sources.search(def!, q, 1)
+      if request.token != run { return Outcome() }
+      let hits = books.map(b => Hit(sourceId: e.id, sourceName: e.name, book: b))
+      results = (results + hits).sorted(key: h => h.book.name)
+      searched += 1
+      return Outcome(hits: hits)
+    } catch err {
+      if request.token != run { return Outcome() }
+      searched += 1
+      failures.push("{e.name}：{err.message}")
+      return Outcome(failed: "{e.name}：{err.message}")
+    }
+  }
+
+  fn start() {
+    let q = key.trim()
+    if q.isEmpty() { return }
+    if !sources.bookSourcesAvailable() {
+      results = []
+      note = "这个平台还没有书源引擎（legado-engine），暂时不能搜索书源"
+      snackbar(note)
+      return
+    }
+    if allSources.enabledCount() == 0 {
+      results = []
+      note = "还没有可用的书源，先去发现页导入一个"
+      snackbar(note)
+      return
+    }
+    request = SearchRequest(token: request.token + 1, q: q)
+    // 上一轮的 C 调用还可能在等网络：token 只让界面不再写，叫停引擎才会
+    // 真的断开。这一步失败也不影响这一轮（取消不粘手）。
+    sources.nativeCancel()
+  }
+
+  fn stop() {
+    if !busy { return }
+    request = SearchRequest(token: request.token + 1, q: "")
+    sources.nativeCancel()
+    snackbar("已停止搜索")
+  }
+
+  // 搜索在一个 task 里：request.token 一变（新搜索或停止），上一轮就被
+  // 取消；它正在 await 的 all(...) 也会被取消，而不是留在后台继续跑。
+  task(request.token) {
+    if request.q.isEmpty() {
+      busy = false
+      return
+    }
+    await run(request.q, request.token)
+  }
+
+  async fn run(q: string, run: int) {
+    busy = true
+    note = ""
+    results = []
+    failures = []
+    searched = 0
+    let total = allSources.enabledCount()
+    snackbar("正在 {total} 个书源里找「{q}」…")
+    let list = allSources.enabled()
+    let _outcomes = await all(list, e => await searchOne(e, q, run), limit: 8)
+    if request.token != run { return }
+    busy = false
+    let found = shownHits(results, q, scope, dedupe).count()
+    if found == 0 {
+      if !results.isEmpty() {
+        note = "找到 {results.count()} 本，但没有符合「{scopeName(scope)}」这范围的"
+      } else if failures.isEmpty() {
+        note = "没有找到「{q}」"
+      } else {
+        note = "没有找到「{q}」。{failures.first() ?? ""}"
+      }
+      snackbar(note)
+    } else {
+      note = ""
+      let extra = if failures.isEmpty() { "" } else { " · {failures.count()} 个书源失败" }
+      snackbar("找到 {found} 本{extra}")
+    }
+  }
+
+  // 上下的安全区不能整页套 SafeArea：结果列表自己会按 tab 栏调整，
+  // 再让一次就滚不到玻璃下面。左右让开；搜索框在导航栏里，内容从栏下开始。
+  View {
+    grow: 1
+    padding: [0, env.safeLeft, 0, env.safeRight]
+
+    if allSources.isEmpty() {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 14
+        padding: [24, 40, env.safeBottom + 24, 40]
+        Symbol(Icons.contents) {
+          font: .title
+          color: .tertiaryLabel
+        }
+        Text("还没有书源") {
+          font: .title3
+        }
+        Text("书源告诉 Quire 去哪里搜、怎么读一本书。去发现页导入一份阅读3.0（Legado）的书源 JSON 就可以开始。") {
+          font: .footnote
+          color: .secondaryLabel
+          textAlign: .center
+        }
+        Button("返回发现页") {
+          on press { pop() }
+        }
+      }
+    } else if shown.isEmpty() {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 10
+        padding: [24, 40, env.safeBottom + 24, 40]
+        if busy {
+          ProgressRing {}
+          Text("正在 {allSources.enabledCount()} 个书源里找…（{searched}/{allSources.enabledCount()}）") {
+            font: .footnote
+            color: .secondaryLabel
+          }
+        } else {
+          Symbol(Icons.search) {
+            font: .title
+            color: .tertiaryLabel
+          }
+          Text(if !note.isEmpty() {
+            note
+          } else if !results.isEmpty() {
+            "没有符合「{scopeName(scope)}」这范围的书"
+          } else {
+            "在 {allSources.enabledCount()} 个书源里搜一本书"
+          }) {
+            font: .footnote
+            color: .secondaryLabel
+            textAlign: .center
+          }
+        }
+      }
+    } else {
+      List {
+        appearance: .plain
+        grow: 1
+        for row in shown key "{row.hit.sourceId}:{row.hit.book.bookUrl}" {
+          ResultRow(row.hit) {
+            also: row.also
+            on open {
+              push(SearchBook(row.hit) {
+                on open(book) { emit open(book) }
+              })
+            }
+          }
+        }
+      }
+    }
+  }
+}

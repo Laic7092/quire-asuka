@@ -1,0 +1,32 @@
+// 内容源：书源、订阅源和净化规则的管理入口。
+//
+// 发现页只负责浏览，导入和管理都收在这里：三个来源各占一段，书源列表、
+// 订阅列表和规则列表不挤在同一个工具栏里。
+
+screen ContentSources {
+  let env = environment()
+
+  state tab = 0
+
+  title: "内容源"
+
+  Column {
+    grow: 1
+    gap: 0
+
+    Column {
+      padding: [12, 22, 6, 22]
+      Segmented(["书源", "订阅源", "净化规则"]) {
+        selected: tab
+        on change(i) { tab = i }
+      }
+    }
+
+    match tab {
+      0 => SourceManager() { embedded: true }
+      1 => RssManager() { embedded: true }
+      2 => ReplaceManager() { embedded: true }
+      _ => SourceManager() { embedded: true }
+    }
+  }
+}

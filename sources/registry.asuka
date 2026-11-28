@@ -40,13 +40,25 @@ pub struct ImportReport {
   names: [string] = []
   /// 新进来的那几条的 id：导入后只给它们播种变量。
   ids: [string] = []
+  /// 同一个分享包里分出来的订阅源和净化规则（0.4.0 的 `legado_import`）。
+  rssAdded: int = 0
+  rssSkipped: int = 0
+  replaceAdded: int = 0
+  replaceSkipped: int = 0
+  /// 引擎认不出的对象个数：非零时提示“部分导入”，不假装全都进来了。
+  unknown: int = 0
 
   pub fn text() -> string {
     var parts: [string] = []
     if added > 0 { parts.push("导入 {added} 个书源") }
-    if skipped > 0 { parts.push("已有 {skipped} 个") }
+    if rssAdded > 0 { parts.push("导入 {rssAdded} 个订阅源") }
+    if replaceAdded > 0 { parts.push("导入 {replaceAdded} 条净化规则") }
+    if skipped > 0 { parts.push("已有 {skipped} 个书源") }
+    if rssSkipped > 0 { parts.push("已有 {rssSkipped} 个订阅源") }
+    if replaceSkipped > 0 { parts.push("已有 {replaceSkipped} 条净化规则") }
     if failed > 0 { parts.push("{failed} 个读不出来") }
-    if parts.isEmpty() { return "没有可导入的书源" }
+    if unknown > 0 { parts.push("{unknown} 个认不出") }
+    if parts.isEmpty() { return "没有可导入的内容" }
     return parts.joined(separator: " · ")
   }
 }
@@ -193,6 +205,13 @@ pub store Sources {
   /// 下整份导入。
   pub fn importText(text: string) throws -> ImportReport {
     let values = try parseList(text)
+    return addBookSources(values)
+  }
+
+  /// 书源那一组进列表。导入的合集可能还带着订阅源和净化规则，这两组由
+  /// `importAny` 交给各自的 store；只读 JSON 的入口（测试、旧路径）只走
+  /// 这一半。
+  fn addBookSources(values: [json.Value]) -> ImportReport {
     var report = ImportReport()
     for v in values {
       let url = urlOf(v)
@@ -230,8 +249,30 @@ pub store Sources {
     return report
   }
 
-  /// 从一段地址导入：书源合集常放在一个 raw 链接里。
+  /// 一次导入的全部内容：分享链接、裸地址、base64、gzip 或裸 JSON，由
+  /// 引擎解成书源、订阅源和净化规则三组。没有引擎的平台退回只认 JSON
+  /// 的 `importText`；那时链接由 `importUrl` 自己取。
+  pub async fn importAny(text: string) throws -> ImportReport {
+    if !nativeAvailable() { return try importText(text) }
+    let imported = try await nativeImport(text)
+    var report = addBookSources(imported.bookSources)
+    let rss = rssSources.importValues(imported.rssSources)
+    report.rssAdded = rss.added
+    report.rssSkipped = rss.skipped
+    let rules = replaceRules.importValues(imported.replaceRules)
+    report.replaceAdded = rules.added
+    report.replaceSkipped = rules.skipped
+    report.unknown = imported.unknown
+    if report.added == 0 && report.rssAdded == 0 && report.replaceAdded == 0 && report.unknown == 0 {
+      throw Error(report.text())
+    }
+    return report
+  }
+
+  /// 从一段地址导入：书源合集常放在一个 raw 链接里。有引擎时让它下载，
+  /// 分享链接、base64 和 gzip 也能认；没有引擎时自己取回来只读 JSON。
   pub async fn importUrl(address: string) throws -> ImportReport {
+    if nativeAvailable() { return try await importAny(address.trim()) }
     let page = try await get(address.trim(), [:])
     return try importText(page.text)
   }
@@ -244,7 +285,7 @@ pub store Sources {
     return none
   }
 
-  /// 书源变量：引擎 0.3.0 不读导入 JSON 里的 `variable`，只读它自己
+  /// 书源变量：引擎不读导入 JSON 里的 `variable`，只读它自己
   /// 存储目录下的那份。所以导入（或从同步里拿回来）时，把书源自带的
   /// 变量写一遍；已经有值的不动，用户改过的不会被盖掉。
   /// `only` 为空时看所有书源（开机时补一次）。

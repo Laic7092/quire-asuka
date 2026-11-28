@@ -1,6 +1,6 @@
 // The book engine's C ABI, shaped for Asuka.
 //
-// ebook-engine 0.5.1's scalar surface takes an opaque `EbEngine *` and, for
+// ebook-engine 0.6.0's scalar surface takes an opaque `EbEngine *` and, for
 // layout, a `const EbLayoutOptions *`; a selection is an `EbSelection *` whose
 // rectangles and text only the library can read. Asuka's `extern` passes
 // structs by value and can't read memory behind a `Pointer`, so this file is
@@ -17,8 +17,10 @@
 //   * both release functions have the signature Asuka's `extern type` wants
 //     (one pointer, no result).
 //
-// `ebook_abi.h` beside this file is the 0.5.1 header: the library for the host
-// is in `lib/<target>/`, and both are the same release.
+// `ebook_abi.h` beside this file is the 0.6.0 header: the library for the host
+// is in `lib/<target>/`, and both are the same release. The ABI is still
+// version 3: 0.6.0's Chinese typography (profiles, line/page DP, orphan
+// repair) is chosen by the book's own `lang`, not by a new call.
 
 #include <stdatomic.h>
 #include <stdint.h>

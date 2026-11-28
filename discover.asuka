@@ -1,0 +1,416 @@
+// 发现：带 exploreUrl 的书源，按书源自己的分类浏览。
+//
+// 这一页只负责“看”：挑一个书源、点一个分类，再进分类里的书。导入和管理
+// 在「内容源」里，搜索在「搜索」里，发现页不重复摆入口。
+
+import ./lib
+import ./sources
+
+/// 发现页的一栏：哪个书源的哪个分类。
+struct ExploreHit {
+  sourceId: string
+  sourceName: string
+  category: sources.ExploreCategory
+}
+
+/// 一个分类里的行：一本书，或者最后那行「加载更多」。List 的行只能来自
+/// 一个 for，所以「加载更多」也是一行；挂在 for 后面的 Column 会让 List
+/// 在运行时 panic。
+enum DiscoverBookRow {
+  book(sources.Book, int)
+  more
+
+  fn key() -> string = match self {
+    .book(b, i) => "{b.bookUrl}:{i}"
+    .more => "__discover_more__"
+  }
+}
+
+/// 发现页的第一层：带 exploreUrl 的书源，各自带着自己的分类。
+struct ExploreSource {
+  id: string
+  name: string
+  group: string
+  categories: [sources.ExploreCategory]
+}
+
+async fn exploreSourceOf(store: sources.Sources, e: sources.Entry) -> ExploreSource? {
+  if let d = store.definition(e) {
+    let categories = await sources.exploreCategoriesOf(d)
+    if !categories.isEmpty() {
+      return ExploreSource(id: e.id, name: e.name, group: e.group, categories: categories)
+    }
+  }
+  return none
+}
+
+async fn exploreSources(store: sources.Sources, entries: [sources.Entry]) -> [ExploreSource] {
+  // 分类可能要从地址取回来：一两个书源慢，不要挡住其余书源。
+  let enabled = entries.filter(e => e.enabled)
+  let rows = await all(enabled, e => await exploreSourceOf(store, e), limit: 6)
+  return rows.compactMap(r => r)
+}
+
+/// 发现页的一条结果：和搜索的一条一样，只是从分类来。
+component ExploreResultRow(row: ExploreHit, book: sources.Book) {
+  event open
+
+  ResultRow(Hit(sourceId: row.sourceId, sourceName: row.sourceName, book: book)) {
+    on open { emit open }
+  }
+}
+
+component SourceFilterChip(title: string, selected: bool) {
+  event choose
+
+  Button(title) {
+    variant: if selected { .tinted } else { .bordered }
+    on press { emit choose }
+  }
+}
+
+/// 发现页的一个分类：几个字的标签，一行排好几个，不各占一整行。
+component CategoryChip(title: string) {
+  event choose
+
+  Button(title) {
+    variant: .bordered
+    font: .footnote
+    on press { emit choose }
+  }
+}
+
+/// 发现：带 exploreUrl 的书源。每个书源是 List 的一个分区，它的分类就是
+/// 分区里的原生行；点分类直接看这个分类的书。走的是引擎的
+/// `legado_explore`，和搜索共用同一套规则、JavaScript 和 cookie。
+screen Discover {
+  use allSources: sources.Sources
+
+  event open(book: lib.Book)
+
+  title: "发现"
+  let env = environment()
+  // 书源列表是 load 的输入：导入、删除或改开关后，发现页立刻重读，
+  // 不用退出这一页再进来。
+  let sourceEntries = allSources.entries
+  let rows = load exploreSources(allSources, sourceEntries)
+  let sources: [ExploreSource] = match rows {
+    .ready(list) => list
+    _ => []
+  }
+  /// 只看一个书源（空的是全部）：书源一多，横着挑比竖着翻快。
+  state jump = ""
+  let picked = sources.find(s => s.id == jump)
+  let shown = if picked == none { sources } else { [picked!] }
+  toolbar {
+    Button("搜索书源") {
+      icon: Icons.search
+      variant: .glass
+      tooltip: "搜索书源"
+      on press {
+        push(Search() {
+          on open(book) { emit open(book) }
+        })
+      }
+    }
+    Button("内容源") {
+      icon: Icons.contents
+      variant: .glass
+      tooltip: "书源、订阅源与净化规则"
+      on press { push(ContentSources()) }
+    }
+  }
+
+  View {
+    grow: 1
+    padding: [0, env.safeLeft, 0, env.safeRight]
+    match rows {
+      .pending => Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        padding: [24, 40]
+        ProgressRing {}
+        Text("正在读取书源的发现页…") {
+          font: .footnote
+          color: .secondaryLabel
+        }
+      }
+      .failed(e) => Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        padding: [24, 40]
+        Text("发现页没有读出来") { font: .headline }
+        Text(e.message) {
+          font: .footnote
+          color: .secondaryLabel
+          textAlign: .center
+        }
+        Button("重试") {
+          on press { rows.reload() }
+        }
+      }
+      .ready(list) => if list.isEmpty() {
+        Column {
+          grow: 1
+          justify: .center
+          align: .center
+          gap: 12
+          padding: [24, 40]
+          Symbol(Icons.globe) {
+            font: .title
+            color: .tertiaryLabel
+          }
+          Text("没有带发现页的书源") {
+            font: .headline
+          }
+          Text("这个书源的 exploreUrl 是空的，或者还没有启用。导入或管理书源在右上角。") {
+            font: .footnote
+            color: .secondaryLabel
+            textAlign: .center
+          }
+        }
+      } else {
+        // 整页只有一个 List：顶部 inset、状态栏和导航栏都交给它。
+        List {
+          appearance: .plain
+          grow: 1
+          for (i, s) in shown.enumerated() key s.id {
+            Column {
+              gap: 0
+              if i == 0 && sources.count() > 1 {
+                Scroll {
+                  width: 100%
+                  horizontal: true
+                  padding: [0, lib.pageKeyline, 8, lib.pageKeyline]
+                  Row {
+                    gap: 8
+                    SourceFilterChip("全部", jump.isEmpty()) {
+                      on choose { jump = "" }
+                    }
+                    for x in sources key x.id {
+                      SourceFilterChip(x.name, jump == x.id) {
+                        on choose { jump = if jump == x.id { "" } else { x.id } }
+                      }
+                    }
+                  }
+                }
+              }
+              Row {
+                gap: 8
+                align: .center
+                padding: [if i == 0 && sources.count() <= 1 {
+                  0
+                } else if i == 0 {
+                  6
+                } else {
+                  12
+                }, lib.pageKeyline, 6, lib.pageKeyline]
+                Text(s.name) {
+                  font: .headline
+                  grow: 1
+                  lines: 1
+                }
+                Text(if s.group.isEmpty() { "{s.categories.count()} 个分类" } else { "{s.group} · {s.categories.count()} 个分类" }) {
+                  font: .caption
+                  color: .secondaryLabel
+                  lines: 1
+                }
+              }
+              Row {
+                wrap: true
+                gap: 8
+                padding: [0, lib.pageKeyline]
+                for c in s.categories key c.url {
+                  CategoryChip(c.title) {
+                    on choose {
+                      push(DiscoverList(ExploreHit(sourceId: s.id, sourceName: s.name, category: c)) {
+                        on open(book) { emit open(book) }
+                      })
+                    }
+                  }
+                }
+              }
+              View { height: 14 }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+/// 一个发现分类里的书。点一本和搜索结果一样，进详情。
+screen DiscoverList(row: ExploreHit) {
+  use allSources: sources.Sources
+
+  event open(book: lib.Book)
+
+  title: row.category.title
+  let target = row.category.url
+  let books = load booksOf(row)
+
+  async fn booksOf(the: ExploreHit) throws -> [sources.Book] {
+    if the.category.url.trim().isEmpty() { throw Error("这个分类没有地址") }
+    let def = allSources.definitionOf(the.sourceId)
+    if def == none { throw Error("这个书源已经不在列表里了") }
+    // 有些书源自己的发现页会绕远路；到了时间还没回来，说清楚，而不是
+    // 一直停在“正在打开”。
+    return try await withTimeout(20s) {
+      return try await sources.explore(def!, the.category.url)
+    }
+  }
+
+  /// 已经翻到的页：第一页在 `books`，后面的接在 `extra` 里。
+  state extra: [sources.Book] = []
+  state nextPage = 2
+  state loadingMore = false
+  state moreNote = ""
+  /// 静态分类地址只有第一页，就不给「加载更多」。
+  state more = sources.canExplorePages(row.category.url)
+  let shownBooks = (books.value ?? []) + extra
+
+  /// List 的每一行：先书，最后是「加载更多」那一行（到了头就没有）。
+  fn shownRows() -> [DiscoverBookRow] {
+    var out = shownBooks.enumerated().map(p => DiscoverBookRow.book(p.1, p.0))
+    if more || loadingMore || !moreNote.isEmpty() {
+      out.push(DiscoverBookRow.more)
+    }
+    return out
+  }
+
+  async fn loadMore() {
+    if loadingMore || !more { return }
+    let def = allSources.definitionOf(row.sourceId)
+    if def == none {
+      more = false
+      moreNote = "这个书源已经不在列表里了"
+      return
+    }
+    loadingMore = true
+    moreNote = ""
+    do {
+      let found = try await withTimeout(20s) {
+        return try await sources.explorePage(def!, url: row.category.url, page: nextPage)
+      }
+      // 有些不带页号的地址会一直回同一页：没有新的书就算到头了。
+      var fresh: [sources.Book] = []
+      var seen = shownBooks.map(b => b.bookUrl)
+      for b in found {
+        if b.bookUrl.isEmpty() || seen.contains(b.bookUrl) { continue }
+        seen.push(b.bookUrl)
+        fresh.push(b)
+      }
+      if fresh.isEmpty() {
+        more = false
+        moreNote = "没有更多了"
+      } else {
+        extra = extra + fresh
+        nextPage += 1
+      }
+    } catch e {
+      moreNote = e.message
+    }
+    loadingMore = false
+  }
+
+  View {
+    grow: 1
+    match books {
+      .pending => Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        padding: [24, 40]
+        ProgressRing {}
+        Text("正在打开「{row.category.title}」…") {
+          font: .footnote
+          color: .secondaryLabel
+        }
+        Text(target) {
+          font: .caption2
+          color: .tertiaryLabel
+          textAlign: .center
+          lines: 2
+        }
+      }
+      .failed(e) => Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        padding: [24, 40]
+        Text("这个分类没有打开") { font: .headline }
+        Text(e.message) {
+          font: .footnote
+          color: .secondaryLabel
+          textAlign: .center
+        }
+        Text(target) {
+          font: .caption2
+          color: .tertiaryLabel
+          textAlign: .center
+          lines: 2
+        }
+        Button("重试") {
+          on press { books.reload() }
+        }
+      }
+      .ready(list) => if list.isEmpty() && extra.isEmpty() {
+        Column {
+          grow: 1
+          justify: .center
+          align: .center
+          gap: 10
+          padding: [24, 40]
+          Symbol(Icons.globe) {
+            font: .title
+            color: .tertiaryLabel
+          }
+          Text("这个分类里没有书") {
+            font: .footnote
+            color: .secondaryLabel
+          }
+        }
+      } else {
+        List {
+          appearance: .plain
+          grow: 1
+          for r in shownRows() key r.key() {
+            match r {
+              .book(book, _) => ExploreResultRow(row, book) {
+                on open {
+                  push(SearchBook(Hit(sourceId: row.sourceId, sourceName: row.sourceName, book: book)) {
+                    on open(b) { emit open(b) }
+                  })
+                }
+              }
+              .more => Column {
+                gap: 6
+                align: .center
+                padding: [6, lib.pageKeyline, 24, lib.pageKeyline]
+                if loadingMore {
+                  ProgressRing {}
+                } else if more {
+                  Button("加载更多") {
+                    on press { await loadMore() }
+                  }
+                }
+                if !moreNote.isEmpty() {
+                  Text(moreNote) {
+                    font: .footnote
+                    color: .secondaryLabel
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,73 @@
+// 订阅源与净化规则的管理页：导入之后先看清有什么。
+
+import ./sources
+
+component RssHarness {
+  RssManager()
+}
+
+component ReplaceHarness {
+  ReplaceManager()
+}
+
+test "the RSS manager lists imported feeds with their group" {
+  let was = sources.rssSources.entries
+  sources.rssSources.entries = [
+    sources.RssEntry(id: "a", name: "科技周刊", url: "https://rss.test/tech", group: "科技", json: r#"{"sourceName":"科技周刊","sourceUrl":"https://rss.test/tech"}"#),
+    sources.RssEntry(id: "b", name: "每日新闻", url: "https://rss.test/news", enabled: false, json: r#"{"sourceName":"每日新闻","sourceUrl":"https://rss.test/news"}"#),
+  ]
+  let app = mount(RssHarness())
+  await app.idle()
+  app.expect("订阅源")
+  app.expect("科技周刊")
+  app.expect("每日新闻")
+  app.expect("科技")
+  app.expect("2 个订阅源 · 1 个在用")
+  sources.rssSources.entries = was
+}
+
+test "the replace manager lists rules and their scope" {
+  let was = sources.replaceRules.entries
+  sources.replaceRules.entries = [
+    sources.ReplaceEntry(
+      id: "a",
+      name: "删作者的话",
+      json: r#"{"name":"删作者的话","pattern":"作者的话.*","replacement":"","isEnabled":true,"order":1}"#,
+    ),
+    sources.ReplaceEntry(
+      id: "b",
+      name: "标题去序号",
+      title: true,
+      enabled: false,
+      json: r#"{"name":"标题去序号","pattern":"^第\\d+章\\s*","replacement":"","isEnabled":false,"scopeTitle":true}"#,
+    ),
+  ]
+  let app = mount(ReplaceHarness())
+  await app.idle()
+  app.expect("净化规则")
+  app.expect("删作者的话")
+  app.expect("标题去序号")
+  app.expect("2 条规则 · 1 条在用")
+  app.expect("正文")
+  app.expect("标题")
+  sources.replaceRules.entries = was
+}
+
+test "an RSS summary loses its tags and entities" {
+  expect(sources.summaryText("<p>甲 &amp; 乙</p><p>丙</p>") == "甲 & 乙 丙")
+  expect(sources.summaryText("没有标签") == "没有标签")
+}
+
+test "the RSS manager follows a later import" {
+  let was = sources.rssSources.entries
+  sources.rssSources.entries = []
+  let app = mount(RssHarness())
+  await app.idle()
+  app.expect("还没有订阅源")
+  sources.rssSources.entries = [
+    sources.RssEntry(id: "c", name: "后来导入", url: "https://rss.test/later", json: r#"{"sourceName":"后来导入","sourceUrl":"https://rss.test/later"}"#),
+  ]
+  await app.idle()
+  app.expect("后来导入")
+  sources.rssSources.entries = was
+}

@@ -1,0 +1,397 @@
+// 订阅源的列表与阅读，以及导入的净化规则的管理。
+//
+// 规则本身都在 legado-engine 里跑：这里只列出导入的条目、开关和删除，
+// 再把选中订阅源的文章取回来。订阅源还没有自己的书架，所以从书源管理
+// 或发现页进来，读完就回去。
+
+import ./lib
+import ./sources
+
+/// 订阅源：导入后从这里挑一个读；设置和书源一样只有开关和删除。
+component RssManager {
+  let env = environment()
+
+  /// 装在「内容源」的分段标签里时不画自己的标题和关闭按钮。
+  prop embedded = false
+
+  let rows = sources.rssSources.list()
+
+  fn askDelete(e: sources.RssEntry) {
+    alert("删除「{e.name}」？", message: "只是不再显示这个订阅源，重新导入还能回来。", actions: [
+      .button(title: "取消", run: () => {}),
+      .button(title: "删除", role: .destructive, run: () => {
+        sources.rssSources.remove(e.id)
+        snackbar("已删除「{e.name}」")
+      }),
+    ])
+  }
+
+  fn askClear() {
+    let count = sources.rssSources.count()
+    if count == 0 { return }
+    alert("清除 {count} 个订阅源？", message: "导入的书源和净化规则不受影响。", actions: [
+      .button(title: "取消", run: () => {}),
+      .button(title: "清除", role: .destructive, run: () => {
+        sources.rssSources.clear()
+        snackbar("已清除订阅源")
+      }),
+    ])
+  }
+
+  Column {
+    grow: 1
+    gap: 12
+    padding: lib.sheetPad(env, top: if embedded { 4 } else { 22 }, bottom: 26, side: 22)
+
+    Row {
+      gap: 8
+      align: .center
+      if !embedded {
+        Text("订阅源") {
+          font: .title3
+          grow: 1
+        }
+      } else {
+        View { grow: 1 }
+      }
+      Button("") {
+        icon: Icons.add
+        variant: .glass
+        tooltip: "导入订阅源"
+        on press { present(SourceImport()) }
+      }
+      if !embedded {
+        Button("") {
+          icon: Icons.close
+          variant: .glass
+          on press { dismiss() }
+        }
+      }
+    }
+
+    Text("{sources.rssSources.count()} 个订阅源 · {sources.rssSources.enabledCount()} 个在用") {
+      font: .footnote
+      color: .secondaryLabel
+    }
+
+    if rows.isEmpty() {
+      Column {
+        gap: 10
+        padding: [22, 0]
+        align: .center
+        Text("还没有订阅源") { font: .headline }
+        Text("导入一份阅读（Legado）的订阅源 JSON；混在书源合集里的订阅源也会落在这里。") {
+          font: .footnote
+          color: .secondaryLabel
+          textAlign: .center
+        }
+        Button("导入订阅源") {
+          on press { present(SourceImport()) }
+        }
+      }
+    } else {
+      List {
+        grow: 1
+        appearance: .plain
+        for e in rows key e.id {
+          Row {
+            gap: 10
+            align: .center
+            padding: [10, 0]
+            Column {
+              grow: 1
+              gap: 2
+              opacity: if e.enabled { 1 } else { 0.45 }
+              on press { push(RssFeed(e)) }
+              Text(e.name) {
+                font: .body
+                lines: 1
+              }
+              Text(e.url) {
+                font: .caption
+                color: .tertiaryLabel
+                lines: 1
+              }
+              if !e.group.trim().isEmpty() {
+                Text(e.group) {
+                  font: .caption
+                  color: .secondaryLabel
+                }
+              }
+            }
+            Toggle {
+              on: e.enabled
+              checkbox: true
+              height: 32
+              on change(v) { sources.rssSources.setEnabled(e.id, v) }
+            }
+            Button("") {
+              icon: Icons.trash
+              variant: .plain
+              on press { askDelete(e) }
+            }
+          }
+        }
+      }
+      if !rows.isEmpty() {
+        Button("清除全部订阅源") {
+          variant: .plain
+          on press { askClear() }
+        }
+      }
+    }
+
+    Text(if sources.bookSourcesAvailable() {
+      "订阅源的规则也由 {sources.nativeVersion()} 执行。"
+    } else {
+      "这个平台还没有书源引擎（legado-engine），订阅源暂时不能读。"
+    }) {
+      font: .caption
+      color: .tertiaryLabel
+    }
+  }
+}
+
+/// 一个订阅源的文章列表；点一篇打开正文。
+screen RssFeed(entry: sources.RssEntry) {
+  let env = environment()
+
+  title: entry.name
+
+  state articles: [sources.RssArticle] = []
+  state nextUrl = ""
+  state busy = true
+  state moreBusy = false
+  state error = ""
+
+  task { await fetchFirst() }
+
+  async fn fetchFirst() {
+    busy = true
+    moreBusy = false
+    error = ""
+    articles = []
+    nextUrl = ""
+    do {
+      let page = try await sources.articlesOf(entry)
+      articles = page.articles
+      nextUrl = page.nextUrl
+    } catch e {
+      error = e.message
+    }
+    busy = false
+  }
+
+  async fn reload() {
+    if busy || moreBusy { return }
+    await fetchFirst()
+  }
+
+  async fn loadMore() {
+    if moreBusy || nextUrl.isEmpty() { return }
+    moreBusy = true
+    error = ""
+    do {
+      let page = try await sources.articlesOf(entry, sortUrl: nextUrl)
+      articles = articles + page.articles
+      nextUrl = page.nextUrl
+    } catch e {
+      error = e.message
+    }
+    moreBusy = false
+  }
+
+  toolbar {
+    Button("") {
+      icon: Icons.globe
+      variant: .glass
+      tooltip: "刷新"
+      on press { await reload() }
+      disabled: busy || moreBusy
+    }
+  }
+
+  Column {
+    grow: 1
+    gap: 12
+    padding: [14, lib.pageKeyline, 24, lib.pageKeyline]
+
+    Text(entry.url) {
+      font: .caption
+      color: .tertiaryLabel
+      lines: 1
+    }
+
+    if busy {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        ProgressRing {}
+        Text("正在取文章…") {
+          font: .footnote
+          color: .secondaryLabel
+        }
+      }
+    } else if articles.isEmpty() && !error.isEmpty() {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        Text("文章没有取回来") { font: .headline }
+        Text(error) {
+          font: .footnote
+          color: .secondaryLabel
+          textAlign: .center
+        }
+        Button("重试") {
+          on press { await reload() }
+        }
+      }
+    } else if articles.isEmpty() {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 10
+        Text("这个订阅源还没有文章") { font: .headline }
+        Text("可能是订阅地址或规则不对；也可以刷新再试。") {
+          font: .footnote
+          color: .secondaryLabel
+          textAlign: .center
+        }
+        Button("刷新") {
+          on press { await reload() }
+        }
+      }
+    } else {
+      List {
+        grow: 1
+        appearance: .plain
+        for (i, a) in articles.enumerated() key i {
+          Column {
+            gap: 4
+            padding: [10, 0]
+            on press { push(RssArticle(entry, a)) }
+            Text(a.title) {
+              font: .body
+              lines: 2
+            }
+            if !a.summary.isEmpty() {
+              Text(a.summary) {
+                font: .caption
+                color: .secondaryLabel
+                lines: 2
+              }
+            }
+            Row {
+              gap: 8
+              if !a.date.isEmpty() {
+                Text(a.date) {
+                  font: .caption
+                  color: .tertiaryLabel
+                  lines: 1
+                }
+              }
+              if !a.origin.isEmpty() {
+                Text(a.origin) {
+                  font: .caption
+                  color: .tertiaryLabel
+                  lines: 1
+                }
+              }
+            }
+          }
+        }
+      }
+
+      if !error.isEmpty() {
+        Text(error) {
+          font: .footnote
+          color: .orange
+        }
+      }
+      if !nextUrl.isEmpty() {
+        Button(if moreBusy { "加载中…" } else { "加载更多" }) {
+          on press { await loadMore() }
+          disabled: moreBusy
+        }
+      }
+    }
+  }
+}
+
+/// 一篇文章的正文。与书源正文一样，段落按行断开画。
+screen RssArticle(entry: sources.RssEntry, article: sources.RssArticle) {
+  let env = environment()
+
+  title: article.title
+
+  state body = ""
+  state busy = true
+  state error = ""
+
+  task { await load() }
+
+  async fn load() {
+    if !busy { return }
+    error = ""
+    do {
+      body = try await sources.articleContentOf(entry, article)
+    } catch e {
+      error = e.message
+    }
+    busy = false
+  }
+
+  Column {
+    grow: 1
+    gap: 0
+    padding: [14, lib.pageKeyline, 24, lib.pageKeyline]
+
+    if !article.date.isEmpty() {
+      Text(article.date) {
+        font: .caption
+        color: .tertiaryLabel
+        padding: [4, 0, 10, 0]
+      }
+    }
+
+    if busy {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        ProgressRing {}
+        Text("正在取正文…") {
+          font: .footnote
+          color: .secondaryLabel
+        }
+      }
+    } else if !error.isEmpty() {
+      Column {
+        grow: 1
+        justify: .center
+        align: .center
+        gap: 12
+        Text("正文没有取回来") { font: .headline }
+        Text(error) {
+          font: .footnote
+          color: .secondaryLabel
+          textAlign: .center
+        }
+        Button("重试") {
+          on press {
+            busy = true
+            await load()
+          }
+        }
+      }
+    } else {
+      ChapterBody(body)
+    }
+  }
+}

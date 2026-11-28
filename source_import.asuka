@@ -1,0 +1,216 @@
+// 导入书源：粘贴 JSON、读剪贴板、从链接或文件取。
+//
+// 书源、订阅源和净化规则都从这里进来；引擎的 `legado_import` 按内容
+// 形状分开，预览只先说是几个、叫什么。
+
+import platform/device
+import platform/dialog
+import std/fs
+
+import ./lib
+import ./sources
+
+/// 导入书源：粘贴一段 JSON，或者从链接、文件取。
+component SourceImport {
+  use allSources: sources.Sources
+  let env = environment()
+
+  state mode = 0
+  state text = ""
+  state address = ""
+  state busy = false
+  state note = ""
+  state error = ""
+  /// 这一次真正新进来的书源：导入后列出来，才知道进来了什么。
+  state addedNames: [string] = []
+
+  let preview = previewOf(text)
+  let ready = if mode == 0 { preview.count > 0 } else { !address.trim().isEmpty() }
+  let previewNames = if preview.names.count() <= 3 {
+    preview.names.joined(separator: "、")
+  } else {
+    "{preview.names.slice(0, 3).joined(separator: "、")} 等 {preview.count} 个"
+  }
+  let addedList = if addedNames.count() <= 5 {
+    addedNames.joined(separator: "、")
+  } else {
+    "{addedNames.slice(0, 5).joined(separator: "、")} 等 {addedNames.count()} 个"
+  }
+
+  let engineNote = if sources.bookSourcesAvailable() {
+    "书源规则与 JavaScript 由 {sources.nativeVersion()} 执行；cookie 和书源变量存在应用目录里。"
+  } else {
+    "这个平台还没有书源引擎（legado-engine），导入的书源暂时不能搜索。"
+  }
+
+  async fn run() {
+    if busy { return }
+    busy = true
+    note = ""
+    error = ""
+    addedNames = []
+    do {
+      let report = if mode == 0 {
+        try await allSources.importAny(text)
+      } else {
+        try await allSources.importUrl(address)
+      }
+      note = report.text()
+      addedNames = report.names
+      if report.added > 0 || report.rssAdded > 0 || report.replaceAdded > 0 {
+        text = ""
+        address = ""
+        // 书源自带的变量（Legado 的 `variable`）写进引擎：它不读 JSON
+        // 里的这个字段，登录用的账号密码于是要先到这里。
+        await allSources.seedVariables(report.ids)
+      }
+    } catch e {
+      error = e.message
+    }
+    busy = false
+  }
+
+  async fn fromFile() {
+    if busy { return }
+    busy = true
+    note = ""
+    error = ""
+    addedNames = []
+    do {
+      let paths = try await dialog.open(
+        title: "导入书源",
+        button: "导入",
+        filters: [dialog.Filter(name: "书源 JSON", extensions: ["json", "txt"])],
+      )
+      var names: [string] = []
+      for p in paths {
+        let content = try await spawn { try fs.readText(p) }
+        let report = try await allSources.importAny(content)
+        note = if note.isEmpty() { report.text() } else { "{note}\n{report.text()}" }
+        for name in report.names { names.push(name) }
+        addedNames = names
+        await allSources.seedVariables(report.ids)
+      }
+    } catch e {
+      error = e.message
+    }
+    busy = false
+  }
+
+  /// 书源常常是别人发来的一段文字或一个链接：先读剪贴板，少一次长按。
+  async fn pasteClipboard() {
+    if busy { return }
+    do {
+      let got = try await device.clipboardText()
+      let t = got?.trim() ?? ""
+      if t.isEmpty() {
+        error = "剪贴板里没有文字"
+        return
+      }
+      error = ""
+      if mode == 0 {
+        text = t
+      } else {
+        address = t
+      }
+    } catch e {
+      error = e.message
+    }
+  }
+
+  Column {
+    gap: 14
+    padding: lib.sheetPad(env, top: 22, bottom: 28, side: 22)
+
+    Row {
+      gap: 8
+      align: .center
+      Text("导入书源") {
+        font: .title3
+        grow: 1
+      }
+      Button("") {
+        icon: Icons.close
+        variant: .glass
+        on press { dismiss() }
+      }
+    }
+
+    Segmented(["粘贴", "链接"]) {
+      selected: mode
+      on change(i) { mode = i }
+    }
+
+    if mode == 0 {
+      TextField {
+        bind text: text
+        multiline: true
+        placeholder: "把书源 JSON 粘在这里（单个或一份合集）"
+        height: 200
+      }
+      if !text.trim().isEmpty() {
+        // 先说是几个、叫什么，或者哪里不对：不用按了导入才知道。
+        Text(if preview.error.isEmpty() {
+          "识别到 {preview.count} 个书源：{previewNames}"
+        } else {
+          preview.error
+        }) {
+          font: .caption
+          color: if preview.error.isEmpty() { .secondaryLabel } else { .orange }
+          lines: 3
+        }
+      }
+    } else {
+      TextField {
+        bind text: address
+        placeholder: "https://…/sources.json"
+        autocapitalize: .off
+        autocorrect: .no
+        returnKey: .search
+      }
+    }
+
+    Row {
+      gap: 10
+      Button(if busy { "导入中…" } else { "导入" }) {
+        on press { await run() }
+        disabled: busy || !ready
+      }
+      Button("粘贴") {
+        on press { await pasteClipboard() }
+        disabled: busy
+      }
+      Button("从文件导入") {
+        on press { await fromFile() }
+        disabled: busy
+      }
+    }
+
+    if !error.isEmpty() {
+      Text(error) {
+        font: .footnote
+        color: .orange
+      }
+    }
+
+    if !note.isEmpty() {
+      Text(note) {
+        font: .footnote
+        color: .secondaryLabel
+      }
+    }
+
+    if !addedNames.isEmpty() {
+      Text("新导入：{addedList}") {
+        font: .caption
+        color: .secondaryLabel
+        lines: 3
+      }
+    }
+
+    Text(engineNote) {
+      font: .caption
+      color: .tertiaryLabel
+    }
+  }
+}

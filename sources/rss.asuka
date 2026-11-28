@@ -1,0 +1,212 @@
+// 订阅源（Legado 的 RssSource）：`sourceUrl` 和一组 `ruleArticles` /
+// `ruleContent` 规则，写法与书源通用，由 legado-engine 执行
+// （`legado_rss_articles` / `legado_rss_content`）。
+//
+// 导入时和书源住在一起：`legado_import` 把混在同一个分享包里的订阅源分出
+// 来，这里按键去重。列表与阅读在根包的 `rss_ui.asuka`：从书源管理或发现
+// 页的「订阅」进去，按订阅源自己的规则取文章和正文。
+
+import std/crypto
+import std/json
+import std/store
+
+pub struct RssEntry {
+  id: string
+  name: string
+  group: string = ""
+  url: string
+  enabled: bool = true
+  /// 导入时那段原文：引擎要的字段一个也不丢。
+  json: string
+  added: int = 0
+}
+
+pub struct RssImport {
+  added: int = 0
+  skipped: int = 0
+}
+
+fn rssString(v: json.Value, key: string) -> string {
+  if let found = v.get(key) {
+    return match found {
+      .string(s) => s
+      _ => ""
+    }
+  }
+  return ""
+}
+
+fn rssBool(v: json.Value, key: string, fallback: bool) -> bool {
+  if let found = v.get(key) {
+    return match found {
+      .bool(b) => b
+      .int(n) => n != 0
+      _ => fallback
+    }
+  }
+  return fallback
+}
+
+/// 2.x 的 `sourceName` / `enable` 和 3.0 的 `sourceUrl` / `enabled` 都认。
+fn rssURLOf(v: json.Value) -> string {
+  let url = rssString(v, "sourceUrl").trim()
+  if !url.isEmpty() { return url }
+  return rssString(v, "source_url").trim()
+}
+
+fn rssNameOf(v: json.Value, url: string) -> string {
+  var name = rssString(v, "sourceName").trim()
+  if name.isEmpty() { name = rssString(v, "source_name").trim() }
+  return if name.isEmpty() { url } else { name }
+}
+
+pub store RssSources {
+  pub state entries: [RssEntry] = store.read("rss.entries", [])
+
+  effect { store.write("rss.entries", entries) }
+
+  pub fn list() -> [RssEntry] = entries
+
+  pub fn count() -> int = entries.count()
+
+  pub fn isEmpty() -> bool = entries.isEmpty()
+
+  pub fn enabled() -> [RssEntry] = entries.filter(e => e.enabled)
+
+  pub fn enabledCount() -> int = entries.count(where: e => e.enabled)
+
+  pub fn has(url: string) -> bool = entries.any(e => e.url == url)
+
+  pub fn entryOf(key: string) -> RssEntry? = entries.find(e => e.id == key || e.url == key)
+
+  pub fn definition(e: RssEntry) -> json.Value? {
+    return try? json.parse(e.json)
+  }
+
+  pub fn importValues(values: [json.Value]) -> RssImport {
+    var report = RssImport()
+    var next = entries
+    for v in values {
+      let url = rssURLOf(v)
+      if url.isEmpty() {
+        report.skipped += 1
+        continue
+      }
+      if next.any(e => e.url == url) {
+        report.skipped += 1
+        continue
+      }
+      next.push(RssEntry(
+        id: crypto.sha256(url.bytes()).hex(),
+        name: rssNameOf(v, url),
+        group: rssString(v, "sourceGroup").trim(),
+        url: url,
+        enabled: rssBool(v, "enabled", rssBool(v, "enable", true)),
+        json: "{v}",
+        added: 0,
+      ))
+      report.added += 1
+    }
+    if report.added > 0 { entries = next }
+    return report
+  }
+
+  pub fn setEnabled(id: string, on: bool) {
+    var next: [RssEntry] = []
+    for e in entries {
+      var row = e
+      if row.id == id { row.enabled = on }
+      next.push(row)
+    }
+    entries = next
+  }
+
+  pub fn remove(id: string) {
+    entries = entries.filter(e => e.id != id)
+  }
+
+  pub fn clear() {
+    entries = []
+  }
+}
+
+/// 应用里唯一的一份订阅源列表。导入、管理页和阅读页都改这一份；它是
+/// 应用级 state，所以没有组件要 `provide` 它。
+pub state rssSources = RssSources()
+
+/// 订阅源的一篇文章，界面要的字段从引擎的 `RssArticle` 里取好。
+pub struct RssArticle {
+  title: string
+  link: string
+  date: string = ""
+  summary: string = ""
+  image: string = ""
+  origin: string = ""
+  /// 引擎要的原样 JSON；读正文时再递回去。
+  raw: string = ""
+}
+
+pub struct RssPage {
+  articles: [RssArticle] = []
+  nextUrl: string = ""
+}
+
+/// 订阅源的摘要里常有标签：列表只画一行字，先自己拆掉。正文不靠这个，
+/// 交给引擎的 HTML 解析器（`plainTextOf`）。
+pub fn summaryText(raw: string) -> string {
+  var out = ""
+  var inTag = false
+  for c in raw.chars() {
+    if c == '<' {
+      inTag = true
+      continue
+    }
+    if c == '>' {
+      inTag = false
+      out += " "
+      continue
+    }
+    if !inTag { out += "{c}" }
+  }
+  return out
+    .replace("&nbsp;", " ")
+    .replace("&lt;", "<")
+    .replace("&gt;", ">")
+    .replace("&quot;", "\"")
+    .replace("&#39;", "'")
+    .replace("&amp;", "&")
+    .replace("  ", " ")
+    .trim()
+}
+
+/// 一页文章。`sortUrl` 为空时用订阅源的 `sourceUrl`；翻页时传上一页的
+/// `nextUrl`。
+pub async fn articlesOf(entry: RssEntry, sortUrl: string = "") throws -> RssPage {
+  if !nativeAvailable() { throw Error("这个平台还没有书源引擎（legado-engine），订阅源暂时不能读") }
+  let page = try await nativeRssArticles(entry.json, sortUrl: sortUrl)
+  var out: [RssArticle] = []
+  for a in page.articles {
+    let link = a.link.trim()
+    let title = if a.title.trim().isEmpty() { link } else { a.title.trim() }
+    if link.isEmpty() && title.isEmpty() { continue }
+    out.push(RssArticle(
+      title: title,
+      link: link,
+      date: (a.pubDate ?? "").trim(),
+      summary: summaryText(a.description ?? ""),
+      image: a.image ?? "",
+      origin: a.origin,
+      raw: json.encode(a),
+    ))
+  }
+  return RssPage(articles: out, nextUrl: page.nextUrl.trim())
+}
+
+/// 一篇文章的正文，跟着订阅源的 `ruleNextPage` 翻页；HTML 交给引擎取文字。
+pub async fn articleContentOf(entry: RssEntry, article: RssArticle) throws -> string {
+  if !nativeAvailable() { throw Error("这个平台还没有书源引擎（legado-engine），订阅源暂时不能读") }
+  let raw = try await nativeRssContent(entry.json, article: article.raw)
+  let text = await plainTextOf(entry.json, raw)
+  if text.trim().isEmpty() { throw Error("这篇没有读到正文") }
+  return text
+}

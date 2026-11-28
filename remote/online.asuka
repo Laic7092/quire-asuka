@@ -138,7 +138,8 @@ pub async fn chapterText(def: sources.BookSource, id: string, meta: Meta, at: in
   ))
   try? await spawn { try fs.mkdirAll(chaptersDir(id)) }
   try? await spawn { try fs.writeText(path, text: text) }
-  return text
+  // 缓存存原文；净化在每次读出来时做，改规则后已缓存的章也能生效。
+  return await sources.applyReplaceRules(text, book: book, source: def)
 }
 
 /// 窗口里的一章该用哪一行当标题：引擎只认「第…章」这类标题行，书源

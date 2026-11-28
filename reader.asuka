@@ -212,6 +212,28 @@ fn prunePages(budget: int) {
   for path in pages { try? fs.remove(path) }
 }
 
+/// A new engine can lay the same chapter out differently — 0.6.0's Chinese
+/// typography changes line breaks, page heights and orphans — and a page file
+/// is named after the book, the type and the chapter, not the engine that drew
+/// it. On the first launch after an update, drop the page cache so a band the
+/// old engine drew is not shown again; the marker is the version string, kept
+/// outside the cache.
+fn dropPagesFromAnotherEngine() {
+  let marker = fs.join([fs.appDir(), "pages.version"])
+  let current = engine.version()
+  if let last = try? fs.readText(marker) {
+    if last == current { return }
+  }
+  let entries = (try? fs.walk(pagesDir())) ?? []
+  for entry in entries {
+    if entry.isDir { continue }
+    if entry.name.hasSuffix(".eqp") || entry.name.hasSuffix(".part") {
+      try? fs.remove(entry.path)
+    }
+  }
+  try? fs.writeText(marker, text: current)
+}
+
 /// One visible band of the column, at its place in the book's flow. The column
 /// is a real Scroll and the engine owns the flow (chapter tops, seams), so a
 /// band is only ever a window onto it, never a row of a list.

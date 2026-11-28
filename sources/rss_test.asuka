@@ -1,0 +1,19 @@
+// 订阅源的导入：名字、分组、开关和去重。
+
+import std/json
+
+test "rss sources import once, by sourceUrl" {
+  let store = RssSources()
+  let was = store.entries
+  store.entries = []
+  let values = (try json.parse(r##"[{"sourceName":"示例订阅","sourceUrl":"https://rss.test/feed","sourceGroup":"科技","enabled":true},{"sourceName":"示例订阅（旧）","sourceUrl":"https://rss.test/feed","enable":false},{"sourceName":"没有地址"}]"##)).asArray() ?? []
+  let report = store.importValues(values)
+  expect(report.added == 1)
+  expect(report.skipped == 2)
+  expect(store.entries[0].name == "示例订阅")
+  expect(store.entries[0].group == "科技")
+  expect(store.entries[0].enabled)
+  let again = store.importValues(values)
+  expect(again.added == 0)
+  store.entries = was
+}

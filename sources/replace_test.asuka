@@ -1,0 +1,39 @@
+// 净化规则的存取：导入去重、启用、规则数组和标题范围。
+
+import std/json
+
+test "imported replace rules keep their JSON and drop duplicates" {
+  let store = ReplaceRules()
+  let was = store.entries
+  store.entries = []
+  let values = (try json.parse(r##"[{"name":"删作者的话","pattern":"作者的话.*","replacement":"","isEnabled":true,"order":2},{"name":"删作者的话","pattern":"作者的话.*","replacement":"","isEnabled":false},{"name":"去空行","pattern":"\\n{3,}","replacement":"\n\n","scopeTitle":true}]"##)).asArray() ?? []
+  let first = store.importValues(values)
+  expect(first.added == 2)
+  expect(first.skipped == 1)
+  expect(store.entries.count() == 2)
+  expect(store.entries[0].json.contains("作者的话"))
+  let rules = store.rulesJSON()
+  // 第二条（同一身份）把 isEnabled 改成 false 的那条算重复，真正在用的
+  // 是第一条和“去空行”。
+  expect(rules.contains("作者的话"))
+  expect(rules.contains("去空行"))
+  let again = store.importValues(values)
+  expect(again.added == 0)
+  expect(again.skipped == 3)
+  store.entries = was
+}
+
+test "a disabled rule is not sent, a title rule is noticed" {
+  let store = ReplaceRules()
+  let was = store.entries
+  store.entries = []
+  let values = (try json.parse(r##"[{"name":"静音","pattern":"x","replacement":"y","isEnabled":false},{"name":"标题","pattern":"第(\\d+)章","replacement":"$1","scopeTitle":true}]"##)).asArray() ?? []
+  let report = store.importValues(values)
+  expect(report.added == 2)
+  expect(store.enabledCount() == 1)
+  expect(store.wantsTitles())
+  let rules = store.rulesJSON()
+  expect(!rules.contains("静音"))
+  expect(rules.contains("标题"))
+  store.entries = was
+}

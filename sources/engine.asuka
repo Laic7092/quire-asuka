@@ -151,13 +151,19 @@ fn looksLikeMarkup(text: string) -> bool {
   return false
 }
 
-async fn plainText(s: BookSource, text: string) -> string {
+/// 一段可能带 HTML 的文字变成阅读器能画的纯文字。书源和订阅源都用它：
+/// 交给引擎自己的 HTML 解析器（`body` 的 textNodes），实体也会解码。
+pub async fn plainTextOf(sourceJson: string, text: string) -> string {
   if !looksLikeMarkup(text) { return text }
-  if let plain = try? await nativeEvalRuleAsync(sourceJSON(s), rule: "body", body: text) {
+  if let plain = try? await nativeEvalRuleAsync(sourceJson, rule: "body", body: text) {
     let trimmed = plain.trim()
     if !trimmed.isEmpty() { return trimmed }
   }
   return text
+}
+
+async fn plainText(s: BookSource, text: string) -> string {
+  return await plainTextOf(sourceJSON(s), text)
 }
 
 async fn searchNative(s: BookSource, key: string, page: int) throws -> [Book] {
@@ -171,8 +177,8 @@ async fn searchNative(s: BookSource, key: string, page: int) throws -> [Book] {
   return out
 }
 
-async fn exploreNative(s: BookSource, url: string) throws -> [Book] {
-  let text = try await nativeExplore(sourceJSON(s), url: url)
+async fn exploreNative(s: BookSource, url: string, page: int) throws -> [Book] {
+  let text = try await nativeExplorePage(sourceJSON(s), url: url, key: "", page: page)
   let rows: [NativeSearchBook] = try json.decode(text)
   var out: [Book] = []
   for row in rows {
@@ -191,14 +197,15 @@ pub async fn search(s: BookSource, key: string, page: int) throws -> [Book] {
 /// 发现页的一个分类：和搜索一样，一条一本书。
 pub async fn explore(s: BookSource, url: string) throws -> [Book] {
   if !bookSourcesAvailable() { throw unavailable() }
-  return try await exploreNative(s, url)
+  return try await exploreNative(s, url, 1)
 }
 
-/// 发现页的下一页。引擎的 `legado_explore` 只取第 1 页（ABI 没有页参数），
-/// 页号由 `explorePageUrl` 写进分类地址。
+/// 发现页的下一页。0.4.0 的 `legado_explore_page` 填 `{{key}}` / `{{page}}`，
+/// 也认 `<1,2,3>` 和 `@js:`；地址里写死的 `?page=1` 它不改，所以先过一遍
+/// `explorePageUrl`（它同时保留旧的 `<js>page=` 写法），再把页号递给引擎。
 pub async fn explorePage(s: BookSource, url: string, page: int) throws -> [Book] {
   if !bookSourcesAvailable() { throw unavailable() }
-  return try await exploreNative(s, explorePageUrl(url, page))
+  return try await exploreNative(s, explorePageUrl(url, page), page)
 }
 
 async fn infoNative(s: BookSource, bookUrl: string, from: Book) throws -> Info {
@@ -231,11 +238,22 @@ pub async fn detailOf(s: BookSource, book: Book) throws -> Detail {
 async fn tocNative(s: BookSource, book: Book) throws -> [Chapter] {
   let text = try await nativeToc(sourceJSON(s), bookJson: bookJSON(book))
   let rows: [NativeChapter] = try json.decode(text)
+  let cleanTitles = replaceRules.wantsTitles()
   var out: [Chapter] = []
   for row in rows {
     if row.url.trim().isEmpty() { continue }
+    var title = if row.title.isEmpty() { "第 {out.count() + 1} 章" } else { row.title }
+    if cleanTitles {
+      title = await replaceRules.applyTo(
+        title,
+        bookName: book.name,
+        bookUrl: book.bookUrl,
+        sourceUrl: s.bookSourceUrl,
+        target: "title",
+      )
+    }
     out.push(Chapter(
-      title: if row.title.isEmpty() { "第 {out.count() + 1} 章" } else { row.title },
+      title: title,
       url: row.url,
       index: row.index,
       isVip: row.isVip,
@@ -259,15 +277,28 @@ async fn contentNative(s: BookSource, book: Book, chapter: Chapter) throws -> st
     bookJson: bookJSON(book),
     chapterJson: chapterJSON(chapter),
   )
-  let text = await plainText(s, raw)
-  if text.trim().isEmpty() { throw Error("这一章没有读到正文") }
-  return text
+  let plain = await plainText(s, raw)
+  if plain.trim().isEmpty() { throw Error("这一章没有读到正文") }
+  return plain
 }
 
 /// 正文：一章的文字。规则能读这本书（`book.name` 之类）和这一章。
+/// 返回原文（未净化）：调用方要缓存就缓存它，要显示再 `applyReplaceRules`。
 pub async fn contentOf(s: BookSource, book: Book, chapter: Chapter) throws -> string {
   if !bookSourcesAvailable() { throw unavailable() }
   return try await contentNative(s, book, chapter)
+}
+
+/// 把导入的净化规则作用到一段正文上。没有规则时原样返回；它不会抛错，
+/// 净化失败不该让一章读不出来。
+pub async fn applyReplaceRules(text: string, book: Book, source: BookSource, target: string = "content") -> string {
+  return await replaceRules.applyTo(
+    text,
+    bookName: book.name,
+    bookUrl: book.bookUrl,
+    sourceUrl: source.bookSourceUrl,
+    target: target,
+  )
 }
 
 /// 一本书的所有章节连成的一段文字，给「加入书架」写成的 .txt 用：每章
@@ -281,9 +312,10 @@ pub async fn wholeText(s: BookSource, tocUrl: string, limit: int = 0) throws -> 
     if limit > 0 && count >= limit { break }
     let body = try? await contentOf(s, book, chapter)
     if let text = body {
+      let clean = await applyReplaceRules(text, book: book, source: s)
       out.push(chapter.title)
       out.push("")
-      out.push(text)
+      out.push(clean)
       out.push("")
     }
     count += 1
@@ -302,7 +334,7 @@ pub async fn downloadOf(s: BookSource, url: string, into: string) throws -> Down
 }
 
 /// 书源现在存着的变量（引擎里那份，不是书源 JSON 里的 `variable`：
-/// 引擎 0.3.0 不读那个字段，导入时的值由 `seedVariables` 写进来）。
+/// 引擎不读那个字段，导入时的值由 `seedVariables` 写进来）。
 pub async fn storedVariables(s: BookSource) throws -> string {
   if !bookSourcesAvailable() { throw unavailable() }
   return try await nativeEval(sourceJSON(s), script: "source.getVariable()")

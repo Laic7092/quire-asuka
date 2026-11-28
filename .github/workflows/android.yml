@@ -14,7 +14,7 @@ permissions:
 
 env:
   # The engine release to build against: github.com/Laic7092/ebook-engine.
-  ENGINE_VERSION: v0.5.2
+  ENGINE_VERSION: v0.6.0
 
 concurrency:
   group: android-${{ github.ref }}

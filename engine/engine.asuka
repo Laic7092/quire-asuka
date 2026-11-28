@@ -1,4 +1,4 @@
-// The book engine, called through its C ABI (ebook-engine 0.5.1's
+// The book engine, called through its C ABI (ebook-engine 0.6.0's
 // `crates/ebook-abi`): it parses EPUB and plain text, lays a chapter out into
 // pages, rasterizes a page to a file this app shows, and searches a book's
 // text.
@@ -746,7 +746,7 @@ pub fn title(id: Engine?) -> string = eb_plain_title(id)
 pub let expectedAbi = 3
 
 /// What the linked library reports: the ABI it was compiled for, and the
-/// library's own version string ("ebook-abi 0.5.1").
+/// library's own version string ("ebook-abi 0.6.0").
 pub fn abiVersion() -> int = int(eb_plain_abi_version())
 pub fn version() -> string = eb_plain_version()
 

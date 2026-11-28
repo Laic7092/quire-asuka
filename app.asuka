@@ -63,6 +63,10 @@ component Quire {
   // if the reader asked for it, the shelf meets the server's.
   task {
     library.migratePaths()
+    // A page file names its book, type and chapter, not the engine build that
+    // drew it. After an engine update (0.6.0's typography changes pagination)
+    // the old bands must not be shown again.
+    dropPagesFromAnotherEngine()
     // 原生书源引擎的 cookie 和书源变量放在应用目录里；没有这个库的平台
     // 什么都不做，书源搜索会直接说这个平台暂时没有引擎。
     sources.nativeOpen(fs.join([fs.appDir(), "legado"]))

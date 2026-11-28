@@ -1,8 +1,14 @@
 // legado-engine, behind one handle this app keeps: the book sources' HTTP
-// clients, cookies, variables, rules and JavaScript. legado-engine 0.3.0 can
+// clients, cookies, variables, rules and JavaScript. legado-engine 0.4.0 can
 // use one handle from several threads at once (0.2.0 made the ABI's answers
 // per calling thread), so the app's searches overlap; an older engine still
 // gets one call at a time, behind the lock below.
+//
+// 0.4.0 added import (share links, base64, gzip, mixed collections), replace
+// rules (净化), RSS sources, explore paging and cancellation. The calls below
+// pass them through. Import takes the handle when it is open (a URL payload
+// needs its HTTP client); replace, RSS source parsing and the cancel call work
+// without one, and read their error from the engine's per-thread record.
 //
 // A platform with the engine's static library built (Linux, macOS, an iPhone)
 // compiles the calls below; one without it (the iOS simulator, Windows for
@@ -87,6 +93,10 @@ static int open_locked(void) {
 /// JSON with one string member: the storage directory, as the engine's
 /// open config takes it. The path's quotes, backslashes and control bytes are
 /// escaped; UTF-8 goes through as it is.
+///
+/// 0.4.0 is the first release that honours `timeoutSecs` (before it was
+/// `max(60, timeoutSecs)`), so this is the engine's default 15 seconds per
+/// request now — the app used to write 10 and get 60.
 static char *open_config(const char *dir) {
   // Every byte may become six ("\u0000"); the rest is the JSON around it.
   size_t size = strlen(dir) * 6 + 160;
@@ -104,7 +114,7 @@ static char *open_config(const char *dir) {
       *at++ = (char)*c;
     }
   }
-  sprintf(at, "\",\"userNs\":\"app\",\"timeoutSecs\":10}");
+  sprintf(at, "\",\"userNs\":\"app\",\"timeoutSecs\":15}");
   return json;
 }
 
@@ -147,6 +157,23 @@ void quire_legado_close(void) {
 }
 
 const char *quire_legado_error(void) { return failure; }
+
+/// Whether the last failure was this app asking the engine to stop
+/// (`legado_cancel`), not the source failing. Ask right after a NULL answer:
+/// the next failure replaces the record.
+int32_t quire_legado_cancelled(void) {
+  return strcmp(failure, "cancelled") == 0 ? 1 : 0;
+}
+
+/// Stop what this handle is doing, from any thread. The calls in flight return
+/// NULL with `quire_legado_error()` saying "cancelled"; the handle is usable at
+/// once (the cancel isn't sticky). Opening is not part of it: a cancel before
+/// the first call does nothing.
+void quire_legado_cancel(void) {
+  pthread_mutex_lock(&legado_lock);
+  if (legado_handle != NULL) legado_cancel(legado_handle);
+  pthread_mutex_unlock(&legado_lock);
+}
 
 /// 0.2.0 made the ABI's answer and error per calling thread, so one handle
 /// can be used from several threads at once. Older engines kept one shared
@@ -208,6 +235,22 @@ const char *quire_legado_explore(const char *source, const char *url) {
   LegadoEngine *engine = begin_call(&locked);
   if (engine == NULL) return NULL;
   const char *text = legado_explore(engine, source, url);
+  if (text == NULL) remember_failure(engine);
+  const char *copy = text != NULL ? keep(text) : NULL;
+  end_call(locked);
+  return copy;
+}
+
+/// One page of a discover category. `url` is the category's own address (its
+/// `{{key}}` / `{{page}}` templates are the engine's to fill); `key` may be
+/// empty. The app used to rewrite the page into the address itself, which
+/// missed the engine's other forms (`<1,2,3>`, `@js:`).
+const char *quire_legado_explore_page(const char *source, const char *url,
+                                      const char *key, int32_t page) {
+  int locked = 0;
+  LegadoEngine *engine = begin_call(&locked);
+  if (engine == NULL) return NULL;
+  const char *text = legado_explore_page(engine, source, url, key, page);
   if (text == NULL) remember_failure(engine);
   const char *copy = text != NULL ? keep(text) : NULL;
   end_call(locked);
@@ -320,6 +363,68 @@ const char *quire_legado_eval_rule(const char *source, const char *rule,
   return copy;
 }
 
+/// A share link, URL, base64, data URL, gzip payload or raw JSON, classified
+/// into book sources, RSS sources and replace rules. An inline payload needs
+/// no engine; a link that points at the network is downloaded with the
+/// handle's HTTP client. The answer keeps each original object's fields, so
+/// unknown ones survive.
+const char *quire_legado_import(const char *text) {
+  int locked = 0;
+  LegadoEngine *engine = begin_call(&locked);
+  // A NULL engine is still allowed here: legado_import decodes inline
+  // payloads itself, and its error record needs no handle either.
+  const char *answer_text = legado_import(engine, text);
+  if (answer_text == NULL) remember_failure(engine);
+  const char *copy = answer_text != NULL ? keep(answer_text) : NULL;
+  end_call(locked);
+  return copy;
+}
+
+/// Replace rules (净化) over text already in hand: no network and no handle.
+const char *quire_legado_replace(const char *rules, const char *text,
+                                 const char *context, const char *target) {
+  const char *answer_text = legado_replace(rules, text, context, target);
+  if (answer_text == NULL) {
+    remember_failure(NULL);
+    return NULL;
+  }
+  return keep(answer_text);
+}
+
+/// A list of RSS sources, as the summaries `legado_rss_sources` returns.
+const char *quire_legado_rss_sources(const char *json) {
+  const char *answer_text = legado_rss_sources(json);
+  if (answer_text == NULL) {
+    remember_failure(NULL);
+    return NULL;
+  }
+  return keep(answer_text);
+}
+
+/// One list page of an RSS source: `{"articles":[…],"nextUrl":…}`.
+const char *quire_legado_rss_articles(const char *source, const char *sort_url) {
+  int locked = 0;
+  LegadoEngine *engine = begin_call(&locked);
+  if (engine == NULL) return NULL;
+  const char *answer_text = legado_rss_articles(engine, source, sort_url);
+  if (answer_text == NULL) remember_failure(engine);
+  const char *copy = answer_text != NULL ? keep(answer_text) : NULL;
+  end_call(locked);
+  return copy;
+}
+
+/// One RSS article's body, following its `ruleNextPage`.
+const char *quire_legado_rss_content(const char *source, const char *article) {
+  int locked = 0;
+  LegadoEngine *engine = begin_call(&locked);
+  if (engine == NULL) return NULL;
+  const char *answer_text = legado_rss_content(engine, source, article);
+  if (answer_text == NULL) remember_failure(engine);
+  const char *copy = answer_text != NULL ? keep(answer_text) : NULL;
+  end_call(locked);
+  return copy;
+}
+
 #else
 
 static char failure[1024] =
@@ -338,6 +443,10 @@ void quire_legado_close(void) {}
 
 const char *quire_legado_error(void) { return failure; }
 
+int32_t quire_legado_cancelled(void) { return 0; }
+
+void quire_legado_cancel(void) {}
+
 const char *quire_legado_search(const char *source, const char *key, int32_t page) {
   (void)source;
   (void)key;
@@ -348,6 +457,15 @@ const char *quire_legado_search(const char *source, const char *key, int32_t pag
 const char *quire_legado_explore(const char *source, const char *url) {
   (void)source;
   (void)url;
+  return NULL;
+}
+
+const char *quire_legado_explore_page(const char *source, const char *url,
+                                      const char *key, int32_t page) {
+  (void)source;
+  (void)url;
+  (void)key;
+  (void)page;
   return NULL;
 }
 
@@ -408,6 +526,37 @@ const char *quire_legado_eval_rule(const char *source, const char *rule,
   (void)rule;
   (void)body;
   (void)base_url;
+  return NULL;
+}
+
+const char *quire_legado_import(const char *text) {
+  (void)text;
+  return NULL;
+}
+
+const char *quire_legado_replace(const char *rules, const char *text,
+                                 const char *context, const char *target) {
+  (void)rules;
+  (void)text;
+  (void)context;
+  (void)target;
+  return NULL;
+}
+
+const char *quire_legado_rss_sources(const char *json) {
+  (void)json;
+  return NULL;
+}
+
+const char *quire_legado_rss_articles(const char *source, const char *sort_url) {
+  (void)source;
+  (void)sort_url;
+  return NULL;
+}
+
+const char *quire_legado_rss_content(const char *source, const char *article) {
+  (void)source;
+  (void)article;
   return NULL;
 }
 

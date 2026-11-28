@@ -1,0 +1,203 @@
+// 一条书源自己的详情：它指向哪个站点、有哪些规则、要不要登录。
+//
+// 书源管理里点一行（不处于多选时）就到这里。这里不改规则：改规则要重新
+// 导入；这里只做书源自己的开关、分组和删除，并把规则的大致形状说清楚。
+
+import ./lib
+import ./sources
+
+fn sourceKindName(kind: int) -> string {
+  if kind == 1 { return "音频" }
+  if kind == 2 { return "图片" }
+  return "文本"
+}
+
+fn sourceHasSearch(d: sources.BookSource) -> bool {
+  return !d.searchUrl.trim().isEmpty() || d.ruleSearch != none
+}
+
+fn sourceHasInfo(d: sources.BookSource) -> bool = d.ruleBookInfo != none
+
+fn sourceHasToc(d: sources.BookSource) -> bool = d.ruleToc != none
+
+fn sourceHasContent(d: sources.BookSource) -> bool = d.ruleContent != none
+
+fn sourceRuleLine(d: sources.BookSource) -> string {
+  var parts: [string] = []
+  if sourceHasSearch(d) { parts.push("搜索") }
+  if !sources.exploreCategories(d).isEmpty() { parts.push("发现") }
+  if sourceHasInfo(d) { parts.push("详情") }
+  if sourceHasToc(d) { parts.push("目录") }
+  if sourceHasContent(d) { parts.push("正文") }
+  return if parts.isEmpty() { "没有可用的规则" } else { parts.joined(separator: " · ") }
+}
+
+component DetailFact(label: string, value: string) {
+  Row {
+    gap: 12
+    align: .start
+    Text(label) {
+      font: .footnote
+      color: .secondaryLabel
+      width: 72
+    }
+    Text(value) {
+      font: .footnote
+      color: .label
+      grow: 1
+      lines: 6
+    }
+  }
+}
+
+component SourceDetail(entry: sources.Entry) {
+  use allSources: sources.Sources
+  let env = environment()
+
+  state note = ""
+
+  let current = allSources.find(entry.id) ?? entry
+  let def = allSources.definition(current)
+  let groups = sources.entryGroups(current)
+  let categories: [sources.ExploreCategory] = if let d = def { sources.exploreCategories(d) } else { [] }
+  let variableKeys: [string] = if let d = def { sources.variableKeys(d) } else { [] }
+
+  fn askDelete() {
+    alert("删除「{current.name}」？", message: "书架上的在线书会打不开；删除也会同步到其他设备。", actions: [
+      .button(title: "取消", run: () => {}),
+      .button(title: "删除", role: .destructive, run: () => {
+        allSources.remove(current.id)
+        dismiss()
+        snackbar("已删除「{current.name}」")
+      }),
+    ])
+  }
+
+  Column {
+    grow: 1
+    gap: 14
+    padding: lib.sheetPad(env, top: 22, bottom: 26, side: 22)
+
+    Row {
+      gap: 8
+      align: .center
+      Text(current.name) {
+        font: .title3
+        grow: 1
+        lines: 2
+      }
+      Button("") {
+        icon: Icons.close
+        variant: .glass
+        on press { dismiss() }
+      }
+    }
+
+    Scroll {
+      grow: 1
+      Column {
+        gap: 12
+
+        DetailFact("地址", current.url)
+        DetailFact("分组", if groups.isEmpty() { "未分组" } else { groups.joined(separator: "、") })
+        DetailFact("类型", sourceKindName(def?.bookSourceType ?? 0))
+
+        Row {
+          gap: 10
+          align: .center
+          Text("状态") {
+            font: .footnote
+            color: .secondaryLabel
+            width: 72
+          }
+          Text(if current.enabled { "在用" } else { "已停用" }) {
+            font: .footnote
+            color: if current.enabled { .label } else { .secondaryLabel }
+            grow: 1
+          }
+          Toggle {
+            on: current.enabled
+            checkbox: true
+            height: 32
+            on change(v) {
+              allSources.setEnabled(current.id, v)
+              note = if v { "已启用，下一次搜索和发现会用它" } else { "已停用，不会再发请求" }
+            }
+          }
+        }
+
+        if let d = def {
+          DetailFact("规则", sourceRuleLine(d))
+          if !d.searchUrl.trim().isEmpty() {
+            DetailFact("搜索地址", d.searchUrl)
+          }
+          if !d.exploreUrl.trim().isEmpty() {
+            DetailFact("发现", if categories.isEmpty() {
+              d.exploreUrl
+            } else {
+              "{categories.count()} 个分类"
+            })
+          }
+          if !d.header.trim().isEmpty() {
+            DetailFact("请求头", d.header)
+          }
+          if !d.loginUrl.trim().isEmpty() {
+            DetailFact("登录页", d.loginUrl)
+          }
+          if !variableKeys.isEmpty() {
+            DetailFact("变量", variableKeys.joined(separator: "、"))
+          }
+          if !d.jsLib.trim().isEmpty() {
+            DetailFact("登录脚本", "书源自带 jsLib")
+          }
+          if !d.concurrentRate.trim().isEmpty() {
+            DetailFact("并发", d.concurrentRate)
+          }
+          if !d.variableComment.trim().isEmpty() {
+            Text(d.variableComment) {
+              font: .caption
+              color: .secondaryLabel
+              lines: 8
+            }
+          }
+          if !d.bookSourceComment.trim().isEmpty() {
+            Text(d.bookSourceComment) {
+              font: .footnote
+              color: .secondaryLabel
+              lines: 12
+            }
+          }
+        } else {
+          Text("这条书源的规则读不出来；重新导入一份可以修好。") {
+            font: .footnote
+            color: .orange
+          }
+        }
+
+        if !note.isEmpty() {
+          Text(note) {
+            font: .footnote
+            color: .secondaryLabel
+          }
+        }
+
+        Row {
+          gap: 10
+          Button("删除书源") {
+            variant: .plain
+            on press { askDelete() }
+          }
+        }
+
+        Text(if sources.bookSourcesAvailable() {
+          "规则和登录由 {sources.nativeVersion()} 执行；变量与 Cookie 在书源列表的钥匙按钮里填。"
+        } else {
+          "这个平台还没有书源引擎（legado-engine），这条书源暂时不能搜索。"
+        }) {
+          font: .caption
+          color: .tertiaryLabel
+        }
+      }
+    }
+  }
+}

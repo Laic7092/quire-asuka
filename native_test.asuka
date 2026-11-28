@@ -78,3 +78,54 @@ test "pasting a cookie replaces the source's whole session" {
   expect(!header.contains("sid=old"))
   expect(!header.contains("theme=dark"))
 }
+
+test "a share payload becomes book sources, RSS sources and replace rules" {
+  if !sources.nativeAvailable() { return }
+  let payload = r##"[{"bookSourceName":"书","bookSourceUrl":"https://import.test"},{"sourceName":"订阅","sourceUrl":"https://rss.test/feed"},{"name":"净化","pattern":"a","replacement":"b"}]"##
+  let imported = try await sources.nativeImport(payload)
+  expect(imported.bookSources.count() == 1)
+  expect(imported.rssSources.count() == 1)
+  expect(imported.replaceRules.count() == 1)
+  expect(imported.unknown == 0)
+}
+
+test "the native engine applies replace rules" {
+  if !sources.nativeAvailable() { return }
+  let rules = r##"[{"pattern":"猫","replacement":"猫猫","isEnabled":true}]"##
+  let out = try await sources.nativeReplace(rules, "小猫", context: "", target: "content")
+  expect(out.text == "小猫猫")
+  expect(out.applied.count() == 1)
+  expect(out.applied[0].changed)
+}
+
+test "RSS sources are parsed without a handle" {
+  if !sources.nativeAvailable() { return }
+  let list = try sources.nativeRssSources(r##"{"sourceName":"订阅","sourceUrl":"https://rss.test/feed"}"##)
+  expect(list.count() == 1)
+  expect(list[0].get("name")?.asString() == "订阅")
+}
+
+test "a mixed import lands in the book, RSS and replace stores" {
+  if !sources.nativeAvailable() { return }
+  let all = sources.Sources()
+  let wasEntries = all.entries
+  let wasRemoved = all.removed
+  let wasRss = sources.rssSources.entries
+  let wasRules = sources.replaceRules.entries
+  all.entries = []
+  all.removed = [:]
+  sources.rssSources.entries = []
+  sources.replaceRules.entries = []
+  let payload = r##"[{"bookSourceName":"书","bookSourceUrl":"https://mixed-import.test"},{"sourceName":"订阅","sourceUrl":"https://rss.mixed.test/feed"},{"name":"净化","pattern":"a","replacement":"b"}]"##
+  let report = try await all.importAny(payload)
+  expect(report.added == 1)
+  expect(report.rssAdded == 1)
+  expect(report.replaceAdded == 1)
+  expect(all.entryOf("https://mixed-import.test") != none)
+  expect(sources.rssSources.has("https://rss.mixed.test/feed"))
+  expect(sources.replaceRules.entries.count() == 1)
+  all.entries = wasEntries
+  all.removed = wasRemoved
+  sources.rssSources.entries = wasRss
+  sources.replaceRules.entries = wasRules
+}
