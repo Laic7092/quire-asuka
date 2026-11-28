@@ -8,6 +8,12 @@ build = 1
 icon = "icon.png"
 orientations = ["portrait", "landscape"]
 
+# 一键导入：书源站的链接是 yuedu://booksource/importonline?src=…。这个
+# 写法 iOS、Android 和桌面都认，链接会送到 App 根组件的 onOpenURL。
+# 少数站点发 legado://…；asuka 0.2 的 `scheme` 只写得下一个，iOS 的第二个
+# 由 .github/scripts/build-unsigned-ipa.sh 在打包前补进 Info.plist。
+scheme = "yuedu"
+
 # What the app opens: a .txt handed over by Files, Mail, or another app.
 [[fileTypes]]
 name = "Plain Text"

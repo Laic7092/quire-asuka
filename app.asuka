@@ -25,6 +25,15 @@ component Quire {
   /// third tab, and its bar's top right opens 搜索.
   state tab = 1
 
+  /// 别的应用递进来的东西：文件（「用 Quire 打开」）和链接（浏览器的
+  /// yuedu:// / legado://）。这些登记在 App 的根组件上：它一直在，冷启动
+  /// 时系统也找得到——放在 Tab 里的组件那时还没挂上。
+  state incomingFiles: [string] = []
+  state incomingLink = ""
+
+  onOpenFiles(paths => { incomingFiles = paths })
+  onOpenURL(raw => { incomingLink = raw })
+
   let paper = lib.paletteFor(library.theme).paper
 
   /// 打开一本书：云端书先只下载这一本，校验后再把阅读页放上来。
@@ -47,6 +56,78 @@ component Quire {
   fn revealReader() {
     if !readingMounted || readingShown { return }
     animate(Animation(duration: 520ms, curve: .spring)) { readingShown = true }
+  }
+
+  // 递进来的文件和链接不能等（onOpenFiles / onOpenURL 不是 async），
+  // 先记下，再交给能等的 task：一个 task 处理文件，一个处理链接。
+  task(incomingFiles) {
+    if incomingFiles.isEmpty() { return }
+    // 清空要等处理完：task 的 key 就是 incomingFiles，先在 await 之前写它
+    // 会把正在跑的这个 task 取消掉（导入于是停在半路）。
+    await receiveFiles(incomingFiles)
+    incomingFiles = []
+  }
+
+  task(incomingLink) {
+    if incomingLink.isEmpty() { return }
+    await importLink(incomingLink)
+    incomingLink = ""
+  }
+
+  /// 文件按后缀分派：.json 是书源合集，.txt/.epub 是书。
+  async fn receiveFiles(paths: [string]) {
+    for p in paths {
+      let name = lib.fileName(p)
+      if name.lower().hasSuffix(".json") {
+        await importSourceFile(p, name)
+      } else {
+        await importBookFile(p, name)
+      }
+    }
+  }
+
+  async fn importBookFile(p: string, name: string) {
+    let title = lib.titleOf(name)
+    do {
+      if try await library.importFile(p) {
+        snackbar("已加入《{title}》")
+      } else {
+        snackbar("《{title}》已经在书架上了")
+      }
+    } catch e {
+      snackbar(e.message)
+    }
+  }
+
+  async fn importSourceFile(p: string, name: string) {
+    if let store = allSources {
+      do {
+        let text = try await spawn { try fs.readText(p) }
+        let report = try await store.importAny(text)
+        snackbar(report.text())
+        await store.seedVariables(report.ids)
+      } catch e {
+        snackbar(e.message)
+      }
+    } else {
+      snackbar("这个平台还没有书源引擎，打不开 {name}")
+    }
+  }
+
+  /// 一键导入的链接：`yuedu://booksource/importonline?src=…` 和
+  /// `legado://import/auto?src=…` 的语法是引擎的，原样交给它解。
+  async fn importLink(raw: string) {
+    if let store = allSources {
+      do {
+        let report = try await store.importAny(raw)
+        snackbar(report.text())
+        await store.seedVariables(report.ids)
+      } catch e {
+        snackbar(e.message)
+      }
+    } else {
+      snackbar("这个平台还没有书源引擎（legado-engine）")
+    }
   }
 
   // A book whose first page takes long still gets shown: it says what it's

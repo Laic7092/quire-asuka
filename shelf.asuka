@@ -676,20 +676,6 @@ screen Shelf {
     }
   }
 
-  // Files handed over by Files, Mail or another app (iOS's "Open in").
-  // onOpenFiles can't wait, so hand them to a task that can.
-  state incoming: [string] = []
-
-  task(incoming) {
-    if !incoming.isEmpty() {
-      let paths = incoming
-      incoming = []
-      await bring(paths)
-    }
-  }
-
-  onOpenFiles(paths => { incoming = paths })
-
   async fn syncFromCloud() {
     do {
       let state = allSources?.syncState() ?? sources.SyncState()

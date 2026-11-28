@@ -154,6 +154,22 @@ while IFS= read -r dylib; do
 done < <(find "$app" -name "*.dylib" -type f)
 echo "::endgroup::"
 
+echo "::group::Give the app legado:// too"
+# asuka 0.2's `scheme` writes one scheme, and its `[ios.infoPlist]` takes
+# strings only. Book-source sites link both yuedu://… and legado://…, so the
+# second one is added here, beside what the build made.
+pb=/usr/libexec/PlistBuddy
+info="$app/Info.plist"
+$pb -c 'Delete :CFBundleURLTypes' "$info" 2>/dev/null || true
+$pb -c 'Add :CFBundleURLTypes array' "$info"
+$pb -c 'Add :CFBundleURLTypes:0 dict' "$info"
+$pb -c "Add :CFBundleURLTypes:0:CFBundleURLName string $id" "$info"
+$pb -c 'Add :CFBundleURLTypes:0:CFBundleURLSchemes array' "$info"
+$pb -c 'Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string yuedu' "$info"
+$pb -c 'Add :CFBundleURLTypes:0:CFBundleURLSchemes:1 string legado' "$info"
+$pb -c 'Print :CFBundleURLTypes' "$info"
+echo "::endgroup::"
+
 out="$app_dir/dist/$(basename "${built%.ipa}")-unsigned.ipa"
 rm -f "$out"
 (cd "$unpacked" && ditto -c -k --sequesterRsrc --keepParent Payload "$out")
